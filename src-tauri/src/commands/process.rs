@@ -87,9 +87,9 @@ fn find_codex_processes() -> anyhow::Result<Vec<u32>> {
 
     #[cfg(windows)]
     {
-        // Use tasklist on Windows
+        // Use tasklist on Windows - match exact "codex.exe"
         let output = Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq codex*", "/FO", "CSV", "/NH"])
+            .args(["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"])
             .output();
 
         if let Ok(output) = output {
@@ -98,10 +98,14 @@ fn find_codex_processes() -> anyhow::Result<Vec<u32>> {
                 // CSV format: "name","pid",...
                 let parts: Vec<&str> = line.split(',').collect();
                 if parts.len() > 1 {
-                    let pid_str = parts[1].trim_matches('"');
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        if pid != std::process::id() {
-                            pids.push(pid);
+                    let name = parts[0].trim_matches('"').to_lowercase();
+                    // Only match exact "codex.exe", not "codex-switcher.exe"
+                    if name == "codex.exe" {
+                        let pid_str = parts[1].trim_matches('"');
+                        if let Ok(pid) = pid_str.parse::<u32>() {
+                            if pid != std::process::id() {
+                                pids.push(pid);
+                            }
                         }
                     }
                 }
