@@ -51,36 +51,31 @@ fn find_codex_processes() -> anyhow::Result<Vec<u32>> {
             }
         }
 
-        // Also try ps for more reliable detection
+        // Use ps with custom format to get the actual command name
+        // %c = command name only, %p = pid
         let output = Command::new("ps")
-            .args(["aux"])
+            .args(["-eo", "pid,comm"])
             .output();
 
         if let Ok(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let line_lower = line.to_lowercase();
-                
-                // Skip our own app and related processes
-                if line_lower.contains("codex-switcher")
-                    || line_lower.contains("codex switcher")
-                    || line_lower.contains("grep")
-                    || line_lower.contains("pgrep")
-                {
-                    continue;
-                }
-                
-                // Look for codex CLI processes
-                // Match "codex" as a standalone word (not part of another word)
-                let has_codex = line_lower.split_whitespace().any(|word| {
-                    word == "codex" || word.ends_with("/codex") || word.starts_with("codex ")
-                }) || line_lower.contains("/codex ") || line_lower.contains("/codex\t");
-                
-                if has_codex {
-                    // Extract PID (second column in ps aux output)
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() > 1 {
-                        if let Ok(pid) = parts[1].parse::<u32>() {
+            for line in stdout.lines().skip(1) {  // Skip header
+                let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let command = parts[1..].join(" ");
+                    
+                    // Only match if the actual command/binary name is "codex"
+                    // This excludes "brew upgrade codex" because the command is "brew"
+                    let is_codex = command == "codex" 
+                        || command.ends_with("/codex")
+                        || command.starts_with("codex ");
+                    
+                    // Skip our own app
+                    let is_switcher = command.contains("codex-switcher") 
+                        || command.contains("Codex Switcher");
+                    
+                    if is_codex && !is_switcher {
+                        if let Ok(pid) = parts[0].parse::<u32>() {
                             if pid != std::process::id() && !pids.contains(&pid) {
                                 pids.push(pid);
                             }
