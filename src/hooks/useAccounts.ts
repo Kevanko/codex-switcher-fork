@@ -1,0 +1,180 @@
+import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type { AccountInfo, UsageInfo, AccountWithUsage } from "../types";
+
+export function useAccounts() {
+  const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadAccounts = useCallback(async (preserveUsage = false) => {
+    try {
+      setLoading(true);
+      setError(null);
+      const accountList = await invoke<AccountInfo[]>("list_accounts");
+      
+      if (preserveUsage) {
+        // Preserve existing usage data when just updating account info
+        setAccounts((prev) => {
+          const usageMap = new Map(prev.map((a) => [a.id, a.usage]));
+          return accountList.map((a) => ({
+            ...a,
+            usage: usageMap.get(a.id),
+          }));
+        });
+      } else {
+        setAccounts(accountList.map((a) => ({ ...a })));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshUsage = useCallback(async () => {
+    try {
+      const usageList = await invoke<UsageInfo[]>("refresh_all_accounts_usage");
+      setAccounts((prev) =>
+        prev.map((account) => {
+          const usage = usageList.find((u) => u.account_id === account.id);
+          return { ...account, usage, usageLoading: false };
+        })
+      );
+    } catch (err) {
+      console.error("Failed to refresh usage:", err);
+      throw err;
+    }
+  }, []);
+
+  const refreshSingleUsage = useCallback(async (accountId: string) => {
+    try {
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.id === accountId ? { ...a, usageLoading: true } : a
+        )
+      );
+      const usage = await invoke<UsageInfo>("get_usage", { accountId });
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.id === accountId ? { ...a, usage, usageLoading: false } : a
+        )
+      );
+    } catch (err) {
+      console.error("Failed to refresh single usage:", err);
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.id === accountId ? { ...a, usageLoading: false } : a
+        )
+      );
+      throw err;
+    }
+  }, []);
+
+  const switchAccount = useCallback(
+    async (accountId: string) => {
+      try {
+        await invoke("switch_account", { accountId });
+        await loadAccounts(true); // Preserve usage data
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts]
+  );
+
+  const deleteAccount = useCallback(
+    async (accountId: string) => {
+      try {
+        await invoke("delete_account", { accountId });
+        await loadAccounts();
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts]
+  );
+
+  const renameAccount = useCallback(
+    async (accountId: string, newName: string) => {
+      try {
+        await invoke("rename_account", { accountId, newName });
+        await loadAccounts(true); // Preserve usage data
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts]
+  );
+
+  const importFromFile = useCallback(
+    async (path: string, name: string) => {
+      try {
+        await invoke<AccountInfo>("add_account_from_file", { path, name });
+        await loadAccounts();
+        await refreshUsage();
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts, refreshUsage]
+  );
+
+  const startOAuthLogin = useCallback(async (accountName: string) => {
+    try {
+      const info = await invoke<{ auth_url: string; callback_port: number }>(
+        "start_login",
+        { accountName }
+      );
+      return info;
+    } catch (err) {
+      throw err;
+    }
+  }, []);
+
+  const completeOAuthLogin = useCallback(async () => {
+    try {
+      const account = await invoke<AccountInfo>("complete_login");
+      await loadAccounts();
+      await refreshUsage();
+      return account;
+    } catch (err) {
+      throw err;
+    }
+  }, [loadAccounts, refreshUsage]);
+
+  const cancelOAuthLogin = useCallback(async () => {
+    try {
+      await invoke("cancel_login");
+    } catch (err) {
+      console.error("Failed to cancel login:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAccounts().then(() => refreshUsage());
+    
+    // Auto-refresh usage every 60 seconds (same as official Codex CLI)
+    const interval = setInterval(() => {
+      refreshUsage().catch(() => {});
+    }, 60000);
+    
+    return () => clearInterval(interval);
+  }, [loadAccounts, refreshUsage]);
+
+  return {
+    accounts,
+    loading,
+    error,
+    loadAccounts,
+    refreshUsage,
+    refreshSingleUsage,
+    switchAccount,
+    deleteAccount,
+    renameAccount,
+    importFromFile,
+    startOAuthLogin,
+    completeOAuthLogin,
+    cancelOAuthLogin,
+  };
+}
