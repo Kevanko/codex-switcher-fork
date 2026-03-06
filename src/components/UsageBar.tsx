@@ -15,6 +15,19 @@ function formatResetTime(resetAt: number | null | undefined): string {
   return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`;
 }
 
+function formatExactResetTime(resetAt: number | null | undefined): string {
+  if (!resetAt) return "";
+
+  const date = new Date(resetAt * 1000);
+  const month = new Intl.DateTimeFormat(undefined, { month: "long" }).format(date);
+  const day = date.getDate();
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const period = date.getHours() >= 12 ? "PM" : "AM";
+  const hour12 = date.getHours() % 12 || 12;
+
+  return `${month} ${day}, ${hour12}:${minutes} ${period}`;
+}
+
 function formatWindowDuration(minutes: number | null | undefined): string {
   if (!minutes) return "";
   if (minutes < 60) return `${minutes}m`;
@@ -47,12 +60,17 @@ function RateLimitBar({
 
   const windowLabel = formatWindowDuration(windowMinutes);
   const resetLabel = formatResetTime(resetsAt);
+  const exactResetLabel = formatExactResetTime(resetsAt);
 
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs text-gray-500">
         <span>{label} {windowLabel && `(${windowLabel})`}</span>
-        <span>{remainingPercent.toFixed(0)}% left{resetLabel && ` • resets ${resetLabel}`}</span>
+        <span>
+          {remainingPercent.toFixed(0)}% left
+          {resetLabel && ` • resets ${resetLabel}`}
+          {resetLabel && exactResetLabel && ` (${exactResetLabel})`}
+        </span>
       </div>
       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
         <div

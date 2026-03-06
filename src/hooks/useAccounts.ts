@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AccountInfo, UsageInfo, AccountWithUsage } from "../types";
+import type { AccountInfo, UsageInfo, AccountWithUsage, WarmupSummary } from "../types";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
@@ -67,6 +67,24 @@ export function useAccounts() {
           a.id === accountId ? { ...a, usageLoading: false } : a
         )
       );
+      throw err;
+    }
+  }, []);
+
+  const warmupAccount = useCallback(async (accountId: string) => {
+    try {
+      await invoke("warmup_account", { accountId });
+    } catch (err) {
+      console.error("Failed to warm up account:", err);
+      throw err;
+    }
+  }, []);
+
+  const warmupAllAccounts = useCallback(async () => {
+    try {
+      return await invoke<WarmupSummary>("warmup_all_accounts");
+    } catch (err) {
+      console.error("Failed to warm up all accounts:", err);
       throw err;
     }
   }, []);
@@ -169,6 +187,8 @@ export function useAccounts() {
     loadAccounts,
     refreshUsage,
     refreshSingleUsage,
+    warmupAccount,
+    warmupAllAccounts,
     switchAccount,
     deleteAccount,
     renameAccount,

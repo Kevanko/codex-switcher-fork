@@ -8,7 +8,7 @@ pub mod types;
 use commands::{
     add_account_from_file, cancel_login, check_codex_processes, complete_login, delete_account,
     get_active_account_info, get_usage, list_accounts, refresh_all_accounts_usage, rename_account,
-    start_login, switch_account,
+    start_login, switch_account, warmup_account, warmup_all_accounts,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,6 +31,8 @@ pub fn run() {
             // Usage
             get_usage,
             refresh_all_accounts_usage,
+            warmup_account,
+            warmup_all_accounts,
             // Process detection
             check_codex_processes,
         ])

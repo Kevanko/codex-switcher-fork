@@ -5,11 +5,13 @@ import { UsageBar } from "./UsageBar";
 interface AccountCardProps {
   account: AccountWithUsage;
   onSwitch: () => void;
+  onWarmup: () => Promise<void>;
   onDelete: () => void;
   onRefresh: () => Promise<void>;
   onRename: (newName: string) => Promise<void>;
   switching?: boolean;
   switchDisabled?: boolean;
+  warmingUp?: boolean;
   masked?: boolean;
   onToggleMask?: () => void;
 }
@@ -39,11 +41,13 @@ function BlurredText({ children, blur }: { children: React.ReactNode; blur: bool
 export function AccountCard({
   account,
   onSwitch,
+  onWarmup,
   onDelete,
   onRefresh,
   onRename,
   switching,
   switchDisabled,
+  warmingUp,
   masked = false,
   onToggleMask,
 }: AccountCardProps) {
@@ -221,6 +225,20 @@ export function AccountCard({
             {switching ? "Switching..." : switchDisabled ? "Codex Running" : "Switch"}
           </button>
         )}
+        <button
+          onClick={() => {
+            void onWarmup();
+          }}
+          disabled={warmingUp}
+          className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+            warmingUp
+              ? "bg-amber-100 text-amber-500"
+              : "bg-amber-50 hover:bg-amber-100 text-amber-700"
+          }`}
+          title={warmingUp ? "Sending warm-up request..." : "Send minimal warm-up request"}
+        >
+          ⚡
+        </button>
         <button
           onClick={handleRefresh}
           disabled={isRefreshing}

@@ -115,7 +115,9 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
     #[cfg(unix)]
     {
         // Use ps with custom format to get the pid and full command line
-        let output = std::process::Command::new("ps").args(["-eo", "pid,command"]).output()?;
+        let output = std::process::Command::new("ps")
+            .args(["-eo", "pid,command"])
+            .output()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines().skip(1) {
@@ -123,15 +125,17 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
             if line.is_empty() {
                 continue;
             }
-            
+
             if let Some((pid_str, command)) = line.split_once(' ') {
                 let pid_str = pid_str.trim();
                 let command = command.trim();
-                
+
                 // Antigravity processes have a specific path format
-                let is_antigravity = (command.contains(".antigravity/extensions/openai.chatgpt") || command.contains(".vscode/extensions/openai.chatgpt")) 
-                    && (command.ends_with("codex app-server --analytics-default-enabled") || command.contains("/codex app-server"));
-                
+                let is_antigravity = (command.contains(".antigravity/extensions/openai.chatgpt")
+                    || command.contains(".vscode/extensions/openai.chatgpt"))
+                    && (command.ends_with("codex app-server --analytics-default-enabled")
+                        || command.contains("/codex app-server"));
+
                 if is_antigravity {
                     if let Ok(pid) = pid_str.parse::<u32>() {
                         pids.push(pid);
@@ -144,7 +148,7 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
     #[cfg(windows)]
     {
         // Use tasklist on Windows
-        // For Windows we might need a more precise WMI query to get command line args, 
+        // For Windows we might need a more precise WMI query to get command line args,
         // but for now we look for codex.exe PIDs and verify they're not ours
         let output = std::process::Command::new("tasklist")
             .creation_flags(0x08000000) // CREATE_NO_WINDOW

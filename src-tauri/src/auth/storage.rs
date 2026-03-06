@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::types::{AccountsStore, StoredAccount};
+use crate::types::{AccountsStore, AuthData, StoredAccount};
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
@@ -186,4 +186,54 @@ pub fn update_account_metadata(
 
     save_accounts(&store)?;
     Ok(())
+}
+
+/// Update ChatGPT OAuth tokens for an account and return the updated account.
+pub fn update_account_chatgpt_tokens(
+    account_id: &str,
+    id_token: String,
+    access_token: String,
+    refresh_token: String,
+    chatgpt_account_id: Option<String>,
+    email: Option<String>,
+    plan_type: Option<String>,
+) -> Result<StoredAccount> {
+    let mut store = load_accounts()?;
+
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == account_id)
+        .context("Account not found")?;
+
+    match &mut account.auth_data {
+        AuthData::ChatGPT {
+            id_token: stored_id_token,
+            access_token: stored_access_token,
+            refresh_token: stored_refresh_token,
+            account_id: stored_account_id,
+        } => {
+            *stored_id_token = id_token;
+            *stored_access_token = access_token;
+            *stored_refresh_token = refresh_token;
+            if let Some(new_account_id) = chatgpt_account_id {
+                *stored_account_id = Some(new_account_id);
+            }
+        }
+        AuthData::ApiKey { .. } => {
+            anyhow::bail!("Cannot update OAuth tokens for an API key account");
+        }
+    }
+
+    if let Some(new_email) = email {
+        account.email = Some(new_email);
+    }
+
+    if let Some(new_plan_type) = plan_type {
+        account.plan_type = Some(new_plan_type);
+    }
+
+    let updated = account.clone();
+    save_accounts(&store)?;
+    Ok(updated)
 }
