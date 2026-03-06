@@ -50,3 +50,9 @@ export interface WarmupSummary {
   warmed_accounts: number;
   failed_account_ids: string[];
 }
+
+export interface ImportAccountsSummary {
+  total_in_payload: number;
+  imported_count: number;
+  skipped_count: number;
+}

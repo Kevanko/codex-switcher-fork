@@ -244,6 +244,17 @@ pub struct WarmupSummary {
     pub failed_account_ids: Vec<String>,
 }
 
+/// Import summary for account config import operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportAccountsSummary {
+    /// Number of accounts found in the imported payload.
+    pub total_in_payload: usize,
+    /// Number of accounts actually imported.
+    pub imported_count: usize,
+    /// Number of accounts skipped because they already exist.
+    pub skipped_count: usize,
+}
+
 /// OAuth login information returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthLoginInfo {

@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::Utc;
+use tokio::time::{sleep, Duration};
 
 use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens};
 use crate::types::{AuthData, StoredAccount};
@@ -86,6 +87,34 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
     Ok(updated)
 }
 
+/// Build a new ChatGPT account from a refresh token.
+/// This is used by slim import to recreate full credentials.
+pub async fn create_chatgpt_account_from_refresh_token(
+    account_name: String,
+    refresh_token: String,
+) -> Result<StoredAccount> {
+    if refresh_token.trim().is_empty() {
+        anyhow::bail!("Missing refresh token for account {account_name}");
+    }
+
+    let refreshed = refresh_tokens_with_refresh_token(&refresh_token).await?;
+    let id_token = refreshed
+        .id_token
+        .context("Refresh response did not include id_token")?;
+    let next_refresh_token = refreshed.refresh_token.unwrap_or(refresh_token);
+    let (email, plan_type, account_id) = parse_id_token_claims(&id_token);
+
+    Ok(StoredAccount::new_chatgpt(
+        account_name,
+        email,
+        plan_type,
+        id_token,
+        refreshed.access_token,
+        next_refresh_token,
+        account_id,
+    ))
+}
+
 fn token_expired_or_near_expiry(access_token: &str) -> bool {
     match parse_jwt_exp(access_token) {
         Some(expiry) => expiry <= Utc::now().timestamp() + EXPIRY_SKEW_SECONDS,
@@ -144,13 +173,37 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
         urlencoding::encode(CLIENT_ID),
     );
 
-    let response = client
-        .post(format!("{DEFAULT_ISSUER}/oauth/token"))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(body)
-        .send()
-        .await
-        .context("Failed to send token refresh request")?;
+    let mut last_send_error = None;
+    let mut response = None;
+
+    for attempt in 1..=3u8 {
+        match client
+            .post(format!("{DEFAULT_ISSUER}/oauth/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                response = Some(resp);
+                break;
+            }
+            Err(err) => {
+                last_send_error = Some(err);
+                if attempt < 3 {
+                    sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+                }
+            }
+        }
+    }
+
+    let response = match response {
+        Some(resp) => resp,
+        None => {
+            let err = last_send_error.context("Failed to send token refresh request")?;
+            return Err(err.into());
+        }
+    };
 
     if !response.status().is_success() {
         let status = response.status();
