@@ -233,6 +233,17 @@ impl UsageInfo {
     }
 }
 
+/// Warm-up execution summary across accounts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarmupSummary {
+    /// Number of accounts that were targeted
+    pub total_accounts: usize,
+    /// Number of accounts whose warm-up request succeeded
+    pub warmed_accounts: usize,
+    /// Account IDs whose warm-up request failed
+    pub failed_account_ids: Vec<String>,
+}
+
 /// OAuth login information returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthLoginInfo {

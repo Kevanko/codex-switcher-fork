@@ -53,21 +53,23 @@ fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
                 if line.is_empty() {
                     continue;
                 }
-                
+
                 // The first part is PID, the rest is the command string
                 if let Some((pid_str, command)) = line.split_once(' ') {
                     let command = command.trim();
-                    
+
                     // Get the executable path/name (first word of the command string before args)
                     let executable = command.split_whitespace().next().unwrap_or("");
-                    
+
                     // Check if the executable is exactly "codex" or ends with "/codex"
                     let is_codex = executable == "codex" || executable.ends_with("/codex");
-                    
+
                     // Exclude if it's running from an extension or IDE integration (like Antigravity)
                     // These are expected background processes we shouldn't block on
-                    let is_ide_plugin = command.contains(".antigravity") || command.contains("openai.chatgpt") || command.contains(".vscode");
-                    
+                    let is_ide_plugin = command.contains(".antigravity")
+                        || command.contains("openai.chatgpt")
+                        || command.contains(".vscode");
+
                     // Skip our own app
                     let is_switcher =
                         command.contains("codex-switcher") || command.contains("Codex Switcher");

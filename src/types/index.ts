@@ -44,3 +44,9 @@ export interface CodexProcessInfo {
   can_switch: boolean;
   pids: number[];
 }
+
+export interface WarmupSummary {
+  total_accounts: number;
+  warmed_accounts: number;
+  failed_account_ids: string[];
+}

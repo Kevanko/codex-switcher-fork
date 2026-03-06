@@ -1,0 +1,165 @@
+//! ChatGPT OAuth token refresh helpers
+
+use anyhow::{Context, Result};
+use base64::Engine;
+use chrono::Utc;
+
+use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens};
+use crate::types::{AuthData, StoredAccount};
+
+const DEFAULT_ISSUER: &str = "https://auth.openai.com";
+const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const EXPIRY_SKEW_SECONDS: i64 = 60;
+
+#[derive(Debug, serde::Deserialize)]
+struct RefreshTokenResponse {
+    #[serde(default)]
+    id_token: Option<String>,
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+/// Ensure the account has a non-expired ChatGPT access token.
+/// Returns an updated account when a refresh was performed.
+pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<StoredAccount> {
+    match &account.auth_data {
+        AuthData::ApiKey { .. } => Ok(account.clone()),
+        AuthData::ChatGPT { access_token, .. } => {
+            if token_expired_or_near_expiry(access_token) {
+                println!(
+                    "[Auth] Access token expired/near expiry for account {}, refreshing",
+                    account.name
+                );
+                refresh_chatgpt_tokens(account).await
+            } else {
+                Ok(account.clone())
+            }
+        }
+    }
+}
+
+/// Force-refresh ChatGPT OAuth tokens for an account.
+pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAccount> {
+    let (current_id_token, current_refresh_token, current_account_id) = match &account.auth_data {
+        AuthData::ApiKey { .. } => return Ok(account.clone()),
+        AuthData::ChatGPT {
+            id_token,
+            refresh_token,
+            account_id,
+            ..
+        } => (id_token.clone(), refresh_token.clone(), account_id.clone()),
+    };
+
+    if current_refresh_token.is_empty() {
+        anyhow::bail!("Missing refresh token for account {}", account.name);
+    }
+
+    let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
+    let next_id_token = refreshed.id_token.unwrap_or(current_id_token);
+    let next_refresh_token = refreshed
+        .refresh_token
+        .unwrap_or_else(|| current_refresh_token.clone());
+
+    let (email, plan_type, parsed_account_id) = parse_id_token_claims(&next_id_token);
+    let next_account_id = parsed_account_id.or(current_account_id);
+
+    let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
+
+    let updated = update_account_chatgpt_tokens(
+        &account.id,
+        next_id_token,
+        refreshed.access_token,
+        next_refresh_token,
+        next_account_id,
+        email,
+        plan_type,
+    )?;
+
+    // Keep ~/.codex/auth.json in sync when this is the active account.
+    if is_active {
+        if let Err(err) = switch_to_account(&updated) {
+            println!("[Auth] Failed to sync active auth.json after token refresh: {err}");
+        }
+    }
+
+    Ok(updated)
+}
+
+fn token_expired_or_near_expiry(access_token: &str) -> bool {
+    match parse_jwt_exp(access_token) {
+        Some(expiry) => expiry <= Utc::now().timestamp() + EXPIRY_SKEW_SECONDS,
+        None => false,
+    }
+}
+
+fn parse_jwt_exp(token: &str) -> Option<i64> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    json.get("exp").and_then(|v| v.as_i64())
+}
+
+fn parse_id_token_claims(id_token: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let parts: Vec<&str> = id_token.split('.').collect();
+    if parts.len() != 3 {
+        return (None, None, None);
+    }
+
+    let payload = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) {
+        Ok(bytes) => bytes,
+        Err(_) => return (None, None, None),
+    };
+
+    let json: serde_json::Value = match serde_json::from_slice(&payload) {
+        Ok(v) => v,
+        Err(_) => return (None, None, None),
+    };
+
+    let email = json.get("email").and_then(|v| v.as_str()).map(String::from);
+    let auth_claims = json.get("https://api.openai.com/auth");
+    let plan_type = auth_claims
+        .and_then(|auth| auth.get("chatgpt_plan_type"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let account_id = auth_claims
+        .and_then(|auth| auth.get("chatgpt_account_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    (email, plan_type, account_id)
+}
+
+async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<RefreshTokenResponse> {
+    let client = reqwest::Client::new();
+    let body = format!(
+        "grant_type=refresh_token&refresh_token={}&client_id={}",
+        urlencoding::encode(refresh_token),
+        urlencoding::encode(CLIENT_ID),
+    );
+
+    let response = client
+        .post(format!("{DEFAULT_ISSUER}/oauth/token"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .context("Failed to send token refresh request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Token refresh failed: {status} - {body}");
+    }
+
+    response
+        .json::<RefreshTokenResponse>()
+        .await
+        .context("Failed to parse token refresh response")
+}

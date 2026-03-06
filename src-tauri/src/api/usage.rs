@@ -1,14 +1,20 @@
 //! Usage API client for fetching rate limits and credits
 
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT};
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
+    StatusCode,
+};
 
+use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use crate::types::{
     AuthData, CreditStatusDetails, RateLimitDetails, RateLimitStatusPayload, RateLimitWindow,
     StoredAccount, UsageInfo,
 };
 
 const CHATGPT_BACKEND_API: &str = "https://chatgpt.com/backend-api";
+const OPENAI_API: &str = "https://api.openai.com/v1";
+const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
 
 /// Get usage information for an account
 pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
@@ -32,58 +38,52 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
                 error: Some("Usage info not available for API key accounts".to_string()),
             })
         }
-        AuthData::ChatGPT {
-            access_token,
-            account_id,
-            ..
-        } => {
-            get_usage_with_chatgpt_token(
-                &account.id,
-                &account.name,
-                access_token,
-                account_id.as_deref(),
-            )
-            .await
-        }
+        AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
     }
 }
 
-/// Get usage with ChatGPT access token
-async fn get_usage_with_chatgpt_token(
-    account_id: &str,
-    account_name: &str,
-    access_token: &str,
-    chatgpt_account_id: Option<&str>,
-) -> Result<UsageInfo> {
-    let client = reqwest::Client::new();
-
-    let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("codex-cli/1.0.0"));
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {access_token}")).context("Invalid access token")?,
+/// Send a minimal authenticated request to warm up account traffic paths.
+pub async fn warmup_account(account: &StoredAccount) -> Result<()> {
+    println!(
+        "[Warmup] Sending warm-up request for account: {}",
+        account.name
     );
 
-    if let Some(acc_id) = chatgpt_account_id {
-        println!("[Usage] Using ChatGPT Account ID: {acc_id}");
-        if let Ok(header_name) = HeaderName::from_bytes(b"chatgpt-account-id") {
-            if let Ok(header_value) = HeaderValue::from_str(acc_id) {
-                headers.insert(header_name, header_value);
-            }
-        }
+    match &account.auth_data {
+        AuthData::ApiKey { key } => warmup_with_api_key(key).await,
+        AuthData::ChatGPT { .. } => warmup_with_chatgpt_auth(account).await,
+    }
+}
+
+async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInfo> {
+    let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
+    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
+
+    let response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        println!(
+            "[Usage] Unauthorized for account {}, refreshing token and retrying once",
+            fresh_account.name
+        );
+        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
+        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
+        let retry_response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
+        return parse_usage_response(
+            &refreshed_account.id,
+            &refreshed_account.name,
+            retry_response,
+        )
+        .await;
     }
 
-    // Use the WHAM endpoint for ChatGPT auth
-    let url = format!("{CHATGPT_BACKEND_API}/wham/usage");
-    println!("[Usage] Requesting: {url}");
+    parse_usage_response(&fresh_account.id, &fresh_account.name, response).await
+}
 
-    let response = client
-        .get(&url)
-        .headers(headers)
-        .send()
-        .await
-        .context("Failed to send usage request")?;
-
+async fn parse_usage_response(
+    account_id: &str,
+    account_name: &str,
+    response: reqwest::Response,
+) -> Result<UsageInfo> {
     let status = response.status();
     println!("[Usage] Response status: {status}");
 
@@ -117,6 +117,102 @@ async fn get_usage_with_chatgpt_token(
     );
 
     Ok(usage)
+}
+
+async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
+    let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
+    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
+
+    let mut response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        println!(
+            "[Warmup] Unauthorized for account {}, refreshing token and retrying once",
+            fresh_account.name
+        );
+        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
+        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
+        response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
+    }
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        println!("[Warmup] ChatGPT warm-up error response: {body}");
+        anyhow::bail!("ChatGPT warm-up failed with status {status}");
+    }
+
+    Ok(())
+}
+
+async fn warmup_with_api_key(api_key: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{OPENAI_API}/models"))
+        .header(USER_AGENT, CODEX_USER_AGENT)
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
+        .send()
+        .await
+        .context("Failed to send API key warm-up request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        println!("[Warmup] API key warm-up error response: {body}");
+        anyhow::bail!("API key warm-up failed with status {status}");
+    }
+
+    Ok(())
+}
+
+fn build_chatgpt_headers(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(CODEX_USER_AGENT));
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}")).context("Invalid access token")?,
+    );
+
+    if let Some(acc_id) = chatgpt_account_id {
+        println!("[Usage] Using ChatGPT Account ID: {acc_id}");
+        if let Ok(header_name) = HeaderName::from_bytes(b"chatgpt-account-id") {
+            if let Ok(header_value) = HeaderValue::from_str(acc_id) {
+                headers.insert(header_name, header_value);
+            }
+        }
+    }
+
+    Ok(headers)
+}
+
+fn extract_chatgpt_auth(account: &StoredAccount) -> Result<(&str, Option<&str>)> {
+    match &account.auth_data {
+        AuthData::ChatGPT {
+            access_token,
+            account_id,
+            ..
+        } => Ok((access_token.as_str(), account_id.as_deref())),
+        AuthData::ApiKey { .. } => anyhow::bail!("Account is not using ChatGPT OAuth"),
+    }
+}
+
+async fn send_chatgpt_usage_request(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<reqwest::Response> {
+    let client = reqwest::Client::new();
+    let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
+    let url = format!("{CHATGPT_BACKEND_API}/wham/usage");
+    println!("[Usage] Requesting: {url}");
+
+    client
+        .get(&url)
+        .headers(headers)
+        .send()
+        .await
+        .context("Failed to send usage request")
 }
 
 /// Convert API response to UsageInfo
@@ -159,24 +255,21 @@ fn extract_credits(credits: Option<CreditStatusDetails>) -> Option<CreditStatusD
     credits
 }
 
-/// Refresh all account usage in parallel
+/// Refresh all account usage
 pub async fn refresh_all_usage(accounts: &[StoredAccount]) -> Vec<UsageInfo> {
     println!("[Usage] Refreshing usage for {} accounts", accounts.len());
 
-    let futures: Vec<_> = accounts
-        .iter()
-        .map(|account| async move {
-            match get_account_usage(account).await {
-                Ok(info) => info,
-                Err(e) => {
-                    println!("[Usage] Error for {}: {}", account.name, e);
-                    UsageInfo::error(account.id.clone(), e.to_string())
-                }
+    let mut results = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        match get_account_usage(account).await {
+            Ok(info) => results.push(info),
+            Err(e) => {
+                println!("[Usage] Error for {}: {}", account.name, e);
+                results.push(UsageInfo::error(account.id.clone(), e.to_string()));
             }
-        })
-        .collect();
+        }
+    }
 
-    let results = futures::future::join_all(futures).await;
     println!("[Usage] Refresh complete");
     results
 }
