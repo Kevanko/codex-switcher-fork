@@ -38,6 +38,7 @@ pub async fn check_codex_processes() -> Result<CodexProcessInfo, String> {
 /// Find all running codex processes. Returns (active_pids, background_count)
 fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
     let mut pids = Vec::new();
+    #[allow(unused_mut)]
     let mut bg_count = 0;
 
     #[cfg(unix)]
