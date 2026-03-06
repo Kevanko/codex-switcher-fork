@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AccountInfo, UsageInfo, AccountWithUsage, WarmupSummary } from "../types";
+import type {
+  AccountInfo,
+  UsageInfo,
+  AccountWithUsage,
+  WarmupSummary,
+  ImportAccountsSummary,
+} from "../types";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
@@ -161,6 +167,58 @@ export function useAccounts() {
     }
   }, [loadAccounts, refreshUsage]);
 
+  const exportAccountsSlimText = useCallback(async () => {
+    try {
+      return await invoke<string>("export_accounts_slim_text");
+    } catch (err) {
+      throw err;
+    }
+  }, []);
+
+  const importAccountsSlimText = useCallback(
+    async (payload: string) => {
+      try {
+        const summary = await invoke<ImportAccountsSummary>("import_accounts_slim_text", {
+          payload,
+        });
+        await loadAccounts();
+        await refreshUsage();
+        return summary;
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts, refreshUsage]
+  );
+
+  const exportAccountsFullEncryptedFile = useCallback(
+    async (path: string) => {
+      try {
+        await invoke("export_accounts_full_encrypted_file", { path });
+      } catch (err) {
+        throw err;
+      }
+    },
+    []
+  );
+
+  const importAccountsFullEncryptedFile = useCallback(
+    async (path: string) => {
+      try {
+        const summary = await invoke<ImportAccountsSummary>(
+          "import_accounts_full_encrypted_file",
+          { path }
+        );
+        await loadAccounts();
+        await refreshUsage();
+        return summary;
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts, refreshUsage]
+  );
+
   const cancelOAuthLogin = useCallback(async () => {
     try {
       await invoke("cancel_login");
@@ -193,6 +251,10 @@ export function useAccounts() {
     deleteAccount,
     renameAccount,
     importFromFile,
+    exportAccountsSlimText,
+    importAccountsSlimText,
+    exportAccountsFullEncryptedFile,
+    importAccountsFullEncryptedFile,
     startOAuthLogin,
     completeOAuthLogin,
     cancelOAuthLogin,

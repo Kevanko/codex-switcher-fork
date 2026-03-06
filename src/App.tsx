@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { useAccounts } from "./hooks/useAccounts";
 import { AccountCard, AddAccountModal } from "./components";
 import type { CodexProcessInfo } from "./types";
@@ -18,16 +19,31 @@ function App() {
     deleteAccount,
     renameAccount,
     importFromFile,
+    exportAccountsSlimText,
+    importAccountsSlimText,
+    exportAccountsFullEncryptedFile,
+    importAccountsFullEncryptedFile,
     startOAuthLogin,
     completeOAuthLogin,
     cancelOAuthLogin,
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [configModalMode, setConfigModalMode] = useState<"slim_export" | "slim_import">(
+    "slim_export"
+  );
+  const [configPayload, setConfigPayload] = useState("");
+  const [configModalError, setConfigModalError] = useState<string | null>(null);
+  const [configCopied, setConfigCopied] = useState(false);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isExportingSlim, setIsExportingSlim] = useState(false);
+  const [isImportingSlim, setIsImportingSlim] = useState(false);
+  const [isExportingFull, setIsExportingFull] = useState(false);
+  const [isImportingFull, setIsImportingFull] = useState(false);
   const [isWarmingAll, setIsWarmingAll] = useState(false);
   const [warmingUpId, setWarmingUpId] = useState<string | null>(null);
   const [refreshSuccess, setRefreshSuccess] = useState(false);
@@ -39,6 +55,8 @@ function App() {
   const [otherAccountsSort, setOtherAccountsSort] = useState<
     "deadline_asc" | "deadline_desc" | "remaining_desc" | "remaining_asc"
   >("deadline_asc");
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement | null>(null);
 
   const toggleMask = (accountId: string) => {
     setMaskedAccounts((prev) => {
@@ -49,6 +67,19 @@ function App() {
         next.add(accountId);
       }
       return next;
+    });
+  };
+
+  const allMasked =
+    accounts.length > 0 && accounts.every((account) => maskedAccounts.has(account.id));
+
+  const toggleMaskAll = () => {
+    setMaskedAccounts((prev) => {
+      const shouldMaskAll = !accounts.every((account) => prev.has(account.id));
+      if (shouldMaskAll) {
+        return new Set(accounts.map((account) => account.id));
+      }
+      return new Set();
     });
   };
 
@@ -67,6 +98,20 @@ function App() {
     const interval = setInterval(checkProcesses, 3000); // Check every 3 seconds
     return () => clearInterval(interval);
   }, [checkProcesses]);
+
+  useEffect(() => {
+    if (!isActionsMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!actionsMenuRef.current) return;
+      if (!actionsMenuRef.current.contains(event.target as Node)) {
+        setIsActionsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isActionsMenuOpen]);
 
   const handleSwitch = async (accountId: string) => {
     // Check processes before switching
@@ -159,6 +204,116 @@ function App() {
     }
   };
 
+  const handleExportSlimText = async () => {
+    setConfigModalMode("slim_export");
+    setConfigModalError(null);
+    setConfigPayload("");
+    setConfigCopied(false);
+    setIsConfigModalOpen(true);
+
+    try {
+      setIsExportingSlim(true);
+      const payload = await exportAccountsSlimText();
+      setConfigPayload(payload);
+      showWarmupToast(`Slim text exported (${accounts.length} accounts).`);
+    } catch (err) {
+      console.error("Failed to export slim text:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setConfigModalError(message);
+      showWarmupToast("Slim export failed", true);
+    } finally {
+      setIsExportingSlim(false);
+    }
+  };
+
+  const openImportSlimTextModal = () => {
+    setConfigModalMode("slim_import");
+    setConfigModalError(null);
+    setConfigPayload("");
+    setConfigCopied(false);
+    setIsConfigModalOpen(true);
+  };
+
+  const handleImportSlimText = async () => {
+    if (!configPayload.trim()) {
+      setConfigModalError("Please paste the slim text string first.");
+      return;
+    }
+
+    try {
+      setIsImportingSlim(true);
+      setConfigModalError(null);
+      const summary = await importAccountsSlimText(configPayload);
+      setMaskedAccounts(new Set());
+      setIsConfigModalOpen(false);
+      showWarmupToast(
+        `Imported ${summary.imported_count}, skipped ${summary.skipped_count} (total ${summary.total_in_payload})`
+      );
+    } catch (err) {
+      console.error("Failed to import slim text:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setConfigModalError(message);
+      showWarmupToast("Slim import failed", true);
+    } finally {
+      setIsImportingSlim(false);
+    }
+  };
+
+  const handleExportFullFile = async () => {
+    try {
+      setIsExportingFull(true);
+      const selected = await save({
+        title: "Export Full Encrypted Account Config",
+        defaultPath: "codex-switcher-full.cswf",
+        filters: [
+          {
+            name: "Codex Switcher Full Backup",
+            extensions: ["cswf"],
+          },
+        ],
+      });
+
+      if (!selected) return;
+
+      await exportAccountsFullEncryptedFile(selected);
+      showWarmupToast("Full encrypted file exported.");
+    } catch (err) {
+      console.error("Failed to export full encrypted file:", err);
+      showWarmupToast("Full export failed", true);
+    } finally {
+      setIsExportingFull(false);
+    }
+  };
+
+  const handleImportFullFile = async () => {
+    try {
+      setIsImportingFull(true);
+      const selected = await open({
+        multiple: false,
+        title: "Import Full Encrypted Account Config",
+        filters: [
+          {
+            name: "Codex Switcher Full Backup",
+            extensions: ["cswf"],
+          },
+        ],
+      });
+
+      if (!selected || Array.isArray(selected)) return;
+
+      const summary = await importAccountsFullEncryptedFile(selected);
+      setMaskedAccounts(new Set());
+      showWarmupToast(
+        `Imported ${summary.imported_count}, skipped ${summary.skipped_count} (total ${summary.total_in_payload})`
+      );
+    } catch (err) {
+      console.error("Failed to import full encrypted file:", err);
+      showWarmupToast("Full import failed", true);
+    } finally {
+      setIsImportingFull(false);
+    }
+  };
+
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const hasRunningProcesses = processInfo && processInfo.count > 0;
@@ -211,74 +366,151 @@ function App() {
       {/* Header */}
       <header className="sticky top-0 z-40 bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_max-content] md:items-center md:gap-4">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
               <div className="h-10 w-10 rounded-xl bg-gray-900 flex items-center justify-center text-white font-bold text-lg">
                 C
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900 tracking-tight">
-                  Codex Switcher
-                </h1>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-xl font-bold text-gray-900 tracking-tight">
+                    Codex Switcher
+                  </h1>
+                  {processInfo && (
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${hasRunningProcesses
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : "bg-green-50 text-green-700 border-green-200"
+                        }`}
+                    >
+                      <span
+                        className={`inline-block w-1.5 h-1.5 rounded-full ${hasRunningProcesses ? "bg-amber-500" : "bg-green-500"
+                          }`}
+                      ></span>
+                      <span>
+                        {hasRunningProcesses
+                          ? `${processInfo.count} Codex running`
+                          : "0 Codex running"}
+                      </span>
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-gray-500">
                   Multi-account manager for Codex CLI
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              {/* Process Status Indicator */}
-              {processInfo && (
-                <div
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm h-10 ${hasRunningProcesses
-                      ? "bg-amber-50 text-amber-700 border border-amber-200"
-                      : "bg-green-50 text-green-700 border border-green-200"
-                    }`}
-                >
-                  <span
-                    className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${hasRunningProcesses ? "bg-amber-500 animate-pulse" : "bg-green-500"
-                      }`}
-                  ></span>
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
-                    <span>
-                      {hasRunningProcesses
-                        ? `${processInfo.count} Codex running`
-                        : "No Codex running"}
-                    </span>
-                    {processInfo.background_count > 0 && (
-                      <span className="opacity-70 text-xs font-medium">
-                        (+{processInfo.background_count} in IDE)
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0 md:ml-4 md:w-max md:flex-nowrap md:justify-end">
               <button
-                onClick={handleWarmupAll}
-                disabled={isWarmingAll || accounts.length === 0}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 transition-colors disabled:opacity-50"
-                title="Send minimal traffic using all accounts"
+                onClick={toggleMaskAll}
+                className="h-10 px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors shrink-0 whitespace-nowrap"
+                title={allMasked ? "Show all account names and emails" : "Hide all account names and emails"}
               >
-                {isWarmingAll ? "Warming all..." : "Warm-up All"}
+                <span className="flex items-center gap-2">
+                  {allMasked ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"
+                      />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  )}
+                  {allMasked ? "Show All" : "Hide All"}
+                </span>
               </button>
               <button
                 onClick={handleRefresh}
                 disabled={isRefreshing}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors disabled:opacity-50"
+                className="h-10 px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors disabled:opacity-50 shrink-0 whitespace-nowrap"
               >
-                {isRefreshing ? (
-                  <span className="flex items-center gap-2">
-                    <span className="animate-spin">↻</span> Refreshing...
-                  </span>
-                ) : (
-                  "↻ Refresh All"
-                )}
+                {isRefreshing ? "↻ Refreshing..." : "↻ Refresh All"}
               </button>
               <button
-                onClick={() => setIsAddModalOpen(true)}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-gray-900 hover:bg-gray-800 text-white transition-colors"
+                onClick={handleWarmupAll}
+                disabled={isWarmingAll || accounts.length === 0}
+                className="h-10 px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors disabled:opacity-50 shrink-0 whitespace-nowrap"
+                title="Send minimal traffic using all accounts"
               >
-                + Add Account
+                {isWarmingAll ? (
+                  <span className="flex items-center gap-2">
+                    <span className="animate-pulse">⚡</span> Warming...
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <span>⚡</span> Warm-up All
+                  </span>
+                )}
               </button>
+
+              <div className="relative" ref={actionsMenuRef}>
+                <button
+                  onClick={() => setIsActionsMenuOpen((prev) => !prev)}
+                  className="h-10 px-4 py-2 text-sm font-medium rounded-lg bg-gray-900 hover:bg-gray-800 text-white transition-colors shrink-0 whitespace-nowrap"
+                >
+                  Account ▾
+                </button>
+                {isActionsMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white shadow-xl p-2 z-50">
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
+                        setIsAddModalOpen(true);
+                      }}
+                      className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700"
+                    >
+                      + Add Account
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
+                        void handleExportSlimText();
+                      }}
+                      disabled={isExportingSlim}
+                      className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-50"
+                    >
+                      {isExportingSlim ? "Exporting..." : "Export Slim Text"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
+                        openImportSlimTextModal();
+                      }}
+                      disabled={isImportingSlim}
+                      className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-50"
+                    >
+                      {isImportingSlim ? "Importing..." : "Import Slim Text"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
+                        void handleExportFullFile();
+                      }}
+                      disabled={isExportingFull}
+                      className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-50"
+                    >
+                      {isExportingFull ? "Exporting..." : "Export Full Encrypted File"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
+                        void handleImportFullFile();
+                      }}
+                      disabled={isImportingFull}
+                      className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-50"
+                    >
+                      {isImportingFull ? "Importing..." : "Import Full Encrypted File"}
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -449,6 +681,89 @@ function App() {
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
       />
+
+      {/* Import/Export Config Modal */}
+      {isConfigModalOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white border border-gray-200 rounded-2xl w-full max-w-2xl mx-4 shadow-xl">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100">
+              <h2 className="text-lg font-semibold text-gray-900">
+                {configModalMode === "slim_export" ? "Export Slim Text" : "Import Slim Text"}
+              </h2>
+              <button
+                onClick={() => setIsConfigModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              {configModalMode === "slim_import" ? (
+                <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Existing accounts are kept. Only missing accounts are imported.
+                </p>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  This slim string contains account secrets. Keep it private.
+                </p>
+              )}
+              <textarea
+                value={configPayload}
+                onChange={(e) => setConfigPayload(e.target.value)}
+                readOnly={configModalMode === "slim_export"}
+                placeholder={
+                  configModalMode === "slim_export"
+                    ? isExportingSlim
+                      ? "Generating..."
+                      : "Export string will appear here"
+                    : "Paste config string here"
+                }
+                className="w-full h-48 px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:border-gray-400 focus:ring-1 focus:ring-gray-400 font-mono"
+              />
+              {configModalError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+                  {configModalError}
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3 p-5 border-t border-gray-100">
+              <button
+                onClick={() => setIsConfigModalOpen(false)}
+                className="px-4 py-2.5 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+              >
+                Close
+              </button>
+              {configModalMode === "slim_export" ? (
+                <button
+                  onClick={async () => {
+                    if (!configPayload) return;
+                    try {
+                      await navigator.clipboard.writeText(configPayload);
+                      setConfigCopied(true);
+                      setTimeout(() => setConfigCopied(false), 1500);
+                    } catch {
+                      setConfigModalError("Clipboard unavailable. Please copy manually.");
+                    }
+                  }}
+                  disabled={!configPayload || isExportingSlim}
+                  className="px-4 py-2.5 text-sm font-medium rounded-lg bg-gray-900 hover:bg-gray-800 text-white transition-colors disabled:opacity-50"
+                >
+                  {configCopied ? "Copied" : "Copy String"}
+                </button>
+              ) : (
+                <button
+                  onClick={handleImportSlimText}
+                  disabled={isImportingSlim}
+                  className="px-4 py-2.5 text-sm font-medium rounded-lg bg-gray-900 hover:bg-gray-800 text-white transition-colors disabled:opacity-50"
+                >
+                  {isImportingSlim ? "Importing..." : "Import Missing Accounts"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

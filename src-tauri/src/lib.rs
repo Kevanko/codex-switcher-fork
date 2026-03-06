@@ -7,8 +7,10 @@ pub mod types;
 
 use commands::{
     add_account_from_file, cancel_login, check_codex_processes, complete_login, delete_account,
-    get_active_account_info, get_usage, list_accounts, refresh_all_accounts_usage, rename_account,
-    start_login, switch_account, warmup_account, warmup_all_accounts,
+    export_accounts_full_encrypted_file, export_accounts_slim_text, get_active_account_info,
+    get_usage, import_accounts_full_encrypted_file, import_accounts_slim_text, list_accounts,
+    refresh_all_accounts_usage, rename_account, start_login, switch_account, warmup_account,
+    warmup_all_accounts,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +26,10 @@ pub fn run() {
             switch_account,
             delete_account,
             rename_account,
+            export_accounts_slim_text,
+            import_accounts_slim_text,
+            export_accounts_full_encrypted_file,
+            import_accounts_full_encrypted_file,
             // OAuth
             start_login,
             complete_login,
