@@ -6,6 +6,12 @@ use crate::auth::{
 };
 use crate::types::AccountInfo;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// List all accounts with their info
 #[tauri::command]
 pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
@@ -151,7 +157,7 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
         // For Windows we might need a more precise WMI query to get command line args,
         // but for now we look for codex.exe PIDs and verify they're not ours
         let output = std::process::Command::new("tasklist")
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .creation_flags(CREATE_NO_WINDOW)
             .args(["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"])
             .output()?;
 
