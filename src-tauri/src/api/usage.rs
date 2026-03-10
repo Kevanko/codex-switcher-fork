@@ -5,6 +5,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
     StatusCode,
 };
+use serde_json::{json, Value};
 
 use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use crate::types::{
@@ -13,6 +14,7 @@ use crate::types::{
 };
 
 const CHATGPT_BACKEND_API: &str = "https://chatgpt.com/backend-api";
+const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_API: &str = "https://api.openai.com/v1";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
 
@@ -123,7 +125,8 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
 
-    let mut response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    let mut response =
+        send_chatgpt_warmup_request(access_token, chatgpt_account_id, true).await?;
     if response.status() == StatusCode::UNAUTHORIZED {
         println!(
             "[Warmup] Unauthorized for account {}, refreshing token and retrying once",
@@ -131,7 +134,7 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
         );
         let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
         let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
-        response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
+        response = send_chatgpt_warmup_request(retry_token, retry_account_id, true).await?;
     }
 
     if !response.status().is_success() {
@@ -141,15 +144,20 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
         anyhow::bail!("ChatGPT warm-up failed with status {status}");
     }
 
+    let body = response.text().await.unwrap_or_default();
+    log_warmup_response("ChatGPT", &body, true);
+
     Ok(())
 }
 
 async fn warmup_with_api_key(api_key: &str) -> Result<()> {
     let client = reqwest::Client::new();
+    let payload = build_warmup_payload(false, true);
     let response = client
-        .get(format!("{OPENAI_API}/models"))
+        .post(format!("{OPENAI_API}/responses"))
         .header(USER_AGENT, CODEX_USER_AGENT)
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
+        .json(&payload)
         .send()
         .await
         .context("Failed to send API key warm-up request")?;
@@ -161,7 +169,45 @@ async fn warmup_with_api_key(api_key: &str) -> Result<()> {
         anyhow::bail!("API key warm-up failed with status {status}");
     }
 
+    let body = response.text().await.unwrap_or_default();
+    log_warmup_response("API key", &body, false);
+
     Ok(())
+}
+
+fn build_warmup_payload(stream: bool, include_max_output_tokens: bool) -> serde_json::Value {
+    let mut payload = json!({
+        "model": "gpt-5.2-codex",
+        "instructions": "You are Codex.",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Hi"
+                    }
+                ]
+            }
+        ],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "reasoning": {
+            "effort": "low"
+        },
+        "store": false,
+        "stream": stream
+    });
+
+    if include_max_output_tokens {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("max_output_tokens".to_string(), json!(1));
+        }
+    }
+
+    payload
 }
 
 fn build_chatgpt_headers(
@@ -213,6 +259,108 @@ async fn send_chatgpt_usage_request(
         .send()
         .await
         .context("Failed to send usage request")
+}
+
+async fn send_chatgpt_warmup_request(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    stream: bool,
+) -> Result<reqwest::Response> {
+    let client = reqwest::Client::new();
+    let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
+    let payload = build_warmup_payload(stream, false);
+
+    client
+        .post(CHATGPT_CODEX_RESPONSES_API)
+        .headers(headers)
+        .json(&payload)
+        .send()
+        .await
+        .context("Failed to send ChatGPT warm-up request")
+}
+
+fn log_warmup_response(source: &str, body: &str, is_sse: bool) {
+    if body.trim().is_empty() {
+        println!("[Warmup] {source} warm-up response was empty");
+        return;
+    }
+
+    let preview = truncate_text(body, 300);
+    println!("[Warmup] {source} warm-up response preview: {preview}");
+
+    let extracted = if is_sse {
+        extract_text_from_sse(body)
+    } else {
+        extract_text_from_json(body)
+    };
+
+    if let Some(message) = extracted {
+        let message_preview = truncate_text(&message, 200);
+        println!("[Warmup] {source} warm-up message: {message_preview}");
+    }
+}
+
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+    let mut out = text[..max_len].to_string();
+    out.push_str("...");
+    out
+}
+
+fn extract_text_from_sse(body: &str) -> Option<String> {
+    let mut last_text: Option<String> = None;
+    for line in body.lines() {
+        let line = line.trim();
+        if !line.starts_with("data:") {
+            continue;
+        }
+        let data = line.trim_start_matches("data:").trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(data) {
+            if let Some(text) = extract_last_text_from_value(&value) {
+                last_text = Some(text);
+            }
+        }
+    }
+    last_text.filter(|text| !text.trim().is_empty())
+}
+
+fn extract_text_from_json(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    extract_last_text_from_value(&value)
+}
+
+fn extract_last_text_from_value(value: &Value) -> Option<String> {
+    let mut last: Option<String> = None;
+    collect_last_text(value, &mut last);
+    last
+}
+
+fn collect_last_text(value: &Value, last: &mut Option<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                if matches!(key.as_str(), "text" | "delta" | "output_text") {
+                    if let Value::String(text) = val {
+                        if !text.is_empty() {
+                            *last = Some(text.clone());
+                        }
+                    }
+                }
+                collect_last_text(val, last);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_last_text(item, last);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Convert API response to UsageInfo
