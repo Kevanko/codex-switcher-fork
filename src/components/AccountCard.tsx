@@ -149,7 +149,11 @@ export function AccountCard({
             ) : (
               <h3
                 className="font-semibold text-gray-900 truncate cursor-pointer hover:text-gray-600"
-                onClick={() => !masked && setIsEditing(true)}
+                onClick={() => {
+                  if (masked) return;
+                  setEditName(account.name);
+                  setIsEditing(true);
+                }}
                 title={masked ? undefined : "Click to rename"}
               >
                 <BlurredText blur={masked}>{account.name}</BlurredText>
