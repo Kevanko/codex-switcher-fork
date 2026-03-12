@@ -338,6 +338,17 @@ function App() {
     setTimeout(() => setWarmupToast(null), 2500);
   };
 
+  const formatWarmupError = (err: unknown) => {
+    if (!err) return "Unknown error";
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === "string") return err;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return "Unknown error";
+    }
+  };
+
   const handleWarmupAccount = async (accountId: string, accountName: string) => {
     try {
       setWarmingUpId(accountId);
@@ -345,7 +356,10 @@ function App() {
       showWarmupToast(`Warm-up sent for ${accountName}`);
     } catch (err) {
       console.error("Failed to warm up account:", err);
-      showWarmupToast(`Warm-up failed for ${accountName}`, true);
+      showWarmupToast(
+        `Warm-up failed for ${accountName}: ${formatWarmupError(err)}`,
+        true
+      );
     } finally {
       setWarmingUpId(null);
     }
@@ -374,7 +388,7 @@ function App() {
       }
     } catch (err) {
       console.error("Failed to warm up all accounts:", err);
-      showWarmupToast("Warm-up all failed", true);
+      showWarmupToast(`Warm-up all failed: ${formatWarmupError(err)}`, true);
     } finally {
       setIsWarmingAll(false);
     }
