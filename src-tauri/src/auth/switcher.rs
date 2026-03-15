@@ -8,8 +8,6 @@ use chrono::Utc;
 
 use crate::types::{AuthData, AuthDotJson, StoredAccount, TokenData};
 
-use super::fs_utils::{write_bytes_atomic, FileLock};
-
 /// Get the official Codex home directory
 pub fn get_codex_home() -> Result<PathBuf> {
     // Check for CODEX_HOME environment variable first
@@ -37,11 +35,10 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     let auth_json = create_auth_json(account)?;
 
     let auth_path = codex_home.join("auth.json");
-    let _lock = FileLock::acquire(&auth_path)?;
     let content =
         serde_json::to_string_pretty(&auth_json).context("Failed to serialize auth.json")?;
 
-    write_bytes_atomic(&auth_path, content.as_bytes(), true)
+    fs::write(&auth_path, content)
         .with_context(|| format!("Failed to write auth.json: {}", auth_path.display()))?;
 
     // Set restrictive permissions on Unix

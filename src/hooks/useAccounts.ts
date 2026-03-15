@@ -6,10 +6,6 @@ import type {
   AccountWithUsage,
   WarmupSummary,
   ImportAccountsSummary,
-  ExportSecurityMode,
-  ScheduledWarmupSettings,
-  ScheduledWarmupStatus,
-  AppSettings,
 } from "../types";
 
 export function useAccounts() {
@@ -100,9 +96,9 @@ export function useAccounts() {
   }, []);
 
   const switchAccount = useCallback(
-    async (accountId: string, restartRunningCodex?: boolean) => {
+    async (accountId: string) => {
       try {
-        await invoke("switch_account", { accountId, restartRunningCodex });
+        await invoke("switch_account", { accountId });
         await loadAccounts(true); // Preserve usage data
       } catch (err) {
         throw err;
@@ -196,9 +192,9 @@ export function useAccounts() {
   );
 
   const exportAccountsFullEncryptedFile = useCallback(
-    async (path: string, passphrase?: string) => {
+    async (path: string) => {
       try {
-        await invoke("export_accounts_full_encrypted_file", { path, passphrase });
+        await invoke("export_accounts_full_encrypted_file", { path });
       } catch (err) {
         throw err;
       }
@@ -207,11 +203,11 @@ export function useAccounts() {
   );
 
   const importAccountsFullEncryptedFile = useCallback(
-    async (path: string, passphrase?: string) => {
+    async (path: string) => {
       try {
         const summary = await invoke<ImportAccountsSummary>(
           "import_accounts_full_encrypted_file",
-          { path, passphrase }
+          { path }
         );
         await loadAccounts();
         await refreshUsage();
@@ -229,30 +225,6 @@ export function useAccounts() {
     } catch (err) {
       console.error("Failed to cancel login:", err);
     }
-  }, []);
-
-  const getAppSettings = useCallback(async () => {
-    return await invoke<AppSettings>("get_app_settings");
-  }, []);
-
-  const saveExportSecurityMode = useCallback(async (mode: ExportSecurityMode) => {
-    return await invoke<AppSettings>("save_export_security_mode", { mode });
-  }, []);
-
-  const saveScheduledWarmupSettings = useCallback(async (schedule: ScheduledWarmupSettings) => {
-    return await invoke<AppSettings>("save_scheduled_warmup_settings", { schedule });
-  }, []);
-
-  const getScheduledWarmupStatus = useCallback(async () => {
-    return await invoke<ScheduledWarmupStatus>("get_scheduled_warmup_status");
-  }, []);
-
-  const dismissMissedScheduledWarmup = useCallback(async () => {
-    return await invoke<AppSettings>("dismiss_missed_scheduled_warmup");
-  }, []);
-
-  const runScheduledWarmupNow = useCallback(async () => {
-    return await invoke<WarmupSummary>("run_scheduled_warmup_now");
   }, []);
 
   useEffect(() => {
@@ -286,11 +258,5 @@ export function useAccounts() {
     startOAuthLogin,
     completeOAuthLogin,
     cancelOAuthLogin,
-    getAppSettings,
-    saveExportSecurityMode,
-    saveScheduledWarmupSettings,
-    getScheduledWarmupStatus,
-    dismissMissedScheduledWarmup,
-    runScheduledWarmupNow,
   };
 }
