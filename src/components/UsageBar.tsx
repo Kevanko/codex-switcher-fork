@@ -83,7 +83,7 @@ function RateLimitBar({
 }
 
 export function UsageBar({ usage, loading }: UsageBarProps) {
-  if (loading) {
+  if (loading && !usage) {
     return (
       <div className="space-y-2">
         <div className="text-xs text-gray-400 italic animate-pulse">
