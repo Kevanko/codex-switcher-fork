@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountInfo,
@@ -12,6 +12,51 @@ export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const accountsRef = useRef<AccountWithUsage[]>([]);
+  const maxConcurrentUsageRequests = 10;
+
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
+
+  const buildUsageError = useCallback(
+    (accountId: string, message: string, planType: string | null): UsageInfo => ({
+      account_id: accountId,
+      plan_type: planType,
+      primary_used_percent: null,
+      primary_window_minutes: null,
+      primary_resets_at: null,
+      secondary_used_percent: null,
+      secondary_window_minutes: null,
+      secondary_resets_at: null,
+      has_credits: null,
+      unlimited_credits: null,
+      credits_balance: null,
+      error: message,
+    }),
+    []
+  );
+
+  const runWithConcurrency = useCallback(
+    async <T,>(
+      items: T[],
+      worker: (item: T) => Promise<void>,
+      concurrency: number
+    ) => {
+      if (items.length === 0) return;
+      const limit = Math.min(Math.max(concurrency, 1), items.length);
+      let index = 0;
+      const runners = Array.from({ length: limit }, async () => {
+        while (true) {
+          const current = index++;
+          if (current >= items.length) return;
+          await worker(items[current]);
+        }
+      });
+      await Promise.allSettled(runners);
+    },
+    []
+  );
 
   const loadAccounts = useCallback(async (preserveUsage = false) => {
     try {
@@ -22,36 +67,83 @@ export function useAccounts() {
       if (preserveUsage) {
         // Preserve existing usage data when just updating account info
         setAccounts((prev) => {
-          const usageMap = new Map(prev.map((a) => [a.id, a.usage]));
+          const usageMap = new Map(
+            prev.map((a) => [a.id, { usage: a.usage, usageLoading: a.usageLoading }])
+          );
           return accountList.map((a) => ({
             ...a,
-            usage: usageMap.get(a.id),
+            usage: usageMap.get(a.id)?.usage,
+            usageLoading: usageMap.get(a.id)?.usageLoading,
           }));
         });
       } else {
-        setAccounts(accountList.map((a) => ({ ...a })));
+        setAccounts(accountList.map((a) => ({ ...a, usageLoading: false })));
       }
+      return accountList;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return [];
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const refreshUsage = useCallback(async () => {
+  const refreshUsage = useCallback(
+    async (accountList?: AccountInfo[] | AccountWithUsage[]) => {
     try {
-      const usageList = await invoke<UsageInfo[]>("refresh_all_accounts_usage");
+      const list = accountList ?? accountsRef.current;
+      if (list.length === 0) {
+        return;
+      }
+
+      const accountIds = list.map((account) => account.id);
+      const accountIdSet = new Set(accountIds);
+
       setAccounts((prev) =>
-        prev.map((account) => {
-          const usage = usageList.find((u) => u.account_id === account.id);
-          return { ...account, usage, usageLoading: false };
-        })
+        prev.map((account) =>
+          accountIdSet.has(account.id)
+            ? { ...account, usageLoading: true }
+            : account
+        )
+      );
+
+      await runWithConcurrency(
+        accountIds,
+        async (accountId) => {
+          try {
+            const usage = await invoke<UsageInfo>("get_usage", { accountId });
+            setAccounts((prev) =>
+              prev.map((account) =>
+                account.id === accountId
+                  ? { ...account, usage, usageLoading: false }
+                  : account
+              )
+            );
+          } catch (err) {
+            console.error("Failed to refresh usage:", err);
+            const message = err instanceof Error ? err.message : String(err);
+            setAccounts((prev) =>
+              prev.map((account) =>
+                account.id === accountId
+                  ? {
+                      ...account,
+                      usage: buildUsageError(accountId, message, account.plan_type ?? null),
+                      usageLoading: false,
+                    }
+                  : account
+              )
+            );
+          }
+        },
+        maxConcurrentUsageRequests
       );
     } catch (err) {
       console.error("Failed to refresh usage:", err);
       throw err;
     }
-  }, []);
+    },
+    [buildUsageError, maxConcurrentUsageRequests, runWithConcurrency]
+  );
 
   const refreshSingleUsage = useCallback(async (accountId: string) => {
     try {
@@ -68,9 +160,16 @@ export function useAccounts() {
       );
     } catch (err) {
       console.error("Failed to refresh single usage:", err);
+      const message = err instanceof Error ? err.message : String(err);
       setAccounts((prev) =>
         prev.map((a) =>
-          a.id === accountId ? { ...a, usageLoading: false } : a
+          a.id === accountId
+            ? {
+                ...a,
+                usage: buildUsageError(accountId, message, a.plan_type ?? null),
+                usageLoading: false,
+              }
+            : a
         )
       );
       throw err;
@@ -135,8 +234,8 @@ export function useAccounts() {
     async (path: string, name: string) => {
       try {
         await invoke<AccountInfo>("add_account_from_file", { path, name });
-        await loadAccounts();
-        await refreshUsage();
+        const accountList = await loadAccounts();
+        await refreshUsage(accountList);
       } catch (err) {
         throw err;
       }
@@ -159,8 +258,8 @@ export function useAccounts() {
   const completeOAuthLogin = useCallback(async () => {
     try {
       const account = await invoke<AccountInfo>("complete_login");
-      await loadAccounts();
-      await refreshUsage();
+      const accountList = await loadAccounts();
+      await refreshUsage(accountList);
       return account;
     } catch (err) {
       throw err;
@@ -181,8 +280,8 @@ export function useAccounts() {
         const summary = await invoke<ImportAccountsSummary>("import_accounts_slim_text", {
           payload,
         });
-        await loadAccounts();
-        await refreshUsage();
+        const accountList = await loadAccounts();
+        await refreshUsage(accountList);
         return summary;
       } catch (err) {
         throw err;
@@ -209,8 +308,8 @@ export function useAccounts() {
           "import_accounts_full_encrypted_file",
           { path }
         );
-        await loadAccounts();
-        await refreshUsage();
+        const accountList = await loadAccounts();
+        await refreshUsage(accountList);
         return summary;
       } catch (err) {
         throw err;
@@ -228,7 +327,7 @@ export function useAccounts() {
   }, []);
 
   useEffect(() => {
-    loadAccounts().then(() => refreshUsage());
+    loadAccounts().then((accountList) => refreshUsage(accountList));
     
     // Auto-refresh usage every 60 seconds (same as official Codex CLI)
     const interval = setInterval(() => {
