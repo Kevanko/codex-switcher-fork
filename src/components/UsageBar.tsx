@@ -86,6 +86,9 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
   if (loading) {
     return (
       <div className="space-y-2">
+        <div className="text-xs text-gray-400 italic animate-pulse">
+          Fetching usage...
+        </div>
         <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden animate-pulse">
           <div className="h-full w-2/3 bg-gray-200"></div>
         </div>
@@ -96,10 +99,18 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
     );
   }
 
-  if (!usage || usage.error) {
+  if (!usage) {
+    return (
+      <div className="text-xs text-gray-400 italic py-1 animate-pulse">
+        Fetching usage...
+      </div>
+    );
+  }
+
+  if (usage.error) {
     return (
       <div className="text-xs text-gray-400 italic py-1">
-        {usage?.error || "Usage unavailable"}
+        {usage.error}
       </div>
     );
   }

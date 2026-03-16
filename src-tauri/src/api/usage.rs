@@ -1,6 +1,7 @@
 //! Usage API client for fetching rate limits and credits
 
 use anyhow::{Context, Result};
+use futures::{stream, StreamExt};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
     StatusCode,
@@ -407,16 +408,20 @@ fn extract_credits(credits: Option<CreditStatusDetails>) -> Option<CreditStatusD
 pub async fn refresh_all_usage(accounts: &[StoredAccount]) -> Vec<UsageInfo> {
     println!("[Usage] Refreshing usage for {} accounts", accounts.len());
 
-    let mut results = Vec::with_capacity(accounts.len());
-    for account in accounts {
-        match get_account_usage(account).await {
-            Ok(info) => results.push(info),
-            Err(e) => {
-                println!("[Usage] Error for {}: {}", account.name, e);
-                results.push(UsageInfo::error(account.id.clone(), e.to_string()));
+    let concurrency = accounts.len().min(10).max(1);
+    let results: Vec<UsageInfo> = stream::iter(accounts.iter().cloned())
+        .map(|account| async move {
+            match get_account_usage(&account).await {
+                Ok(info) => info,
+                Err(e) => {
+                    println!("[Usage] Error for {}: {}", account.name, e);
+                    UsageInfo::error(account.id.clone(), e.to_string())
+                }
             }
-        }
-    }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
 
     println!("[Usage] Refresh complete");
     results

@@ -3,6 +3,7 @@
 use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};
 use crate::auth::{get_account, load_accounts};
 use crate::types::{UsageInfo, WarmupSummary};
+use futures::{stream, StreamExt};
 
 /// Get usage info for a specific account
 #[tauri::command]
@@ -36,13 +37,22 @@ pub async fn warmup_account(account_id: String) -> Result<(), String> {
 pub async fn warmup_all_accounts() -> Result<WarmupSummary, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
     let total_accounts = store.accounts.len();
-    let mut failed_account_ids = Vec::new();
+    let concurrency = total_accounts.min(10).max(1);
 
-    for account in &store.accounts {
-        if send_warmup(account).await.is_err() {
-            failed_account_ids.push(account.id.clone());
-        }
-    }
+    let results: Vec<(String, bool)> = stream::iter(store.accounts.into_iter())
+        .map(|account| async move {
+            let account_id = account.id.clone();
+            let failed = send_warmup(&account).await.is_err();
+            (account_id, failed)
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+
+    let failed_account_ids = results
+        .into_iter()
+        .filter_map(|(account_id, failed)| failed.then_some(account_id))
+        .collect::<Vec<_>>();
 
     let warmed_accounts = total_accounts.saturating_sub(failed_account_ids.len());
     Ok(WarmupSummary {
