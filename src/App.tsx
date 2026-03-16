@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useAccounts } from "./hooks/useAccounts";
-import { AccountCard, AddAccountModal } from "./components";
+import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
 import type { CodexProcessInfo } from "./types";
 import "./App.css";
 
@@ -632,7 +632,9 @@ function App() {
                           <path d="M6 8l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
                       </span>
-                    </div>
+      <UpdateChecker />
+
+    </div>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
