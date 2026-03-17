@@ -26,6 +26,8 @@ function App() {
     startOAuthLogin,
     completeOAuthLogin,
     cancelOAuthLogin,
+    loadMaskedAccountIds,
+    saveMaskedAccountIds,
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -66,6 +68,7 @@ function App() {
       } else {
         next.add(accountId);
       }
+      void saveMaskedAccountIds(Array.from(next));
       return next;
     });
   };
@@ -76,10 +79,9 @@ function App() {
   const toggleMaskAll = () => {
     setMaskedAccounts((prev) => {
       const shouldMaskAll = !accounts.every((account) => prev.has(account.id));
-      if (shouldMaskAll) {
-        return new Set(accounts.map((account) => account.id));
-      }
-      return new Set();
+      const next = shouldMaskAll ? new Set(accounts.map((account) => account.id)) : new Set<string>();
+      void saveMaskedAccountIds(Array.from(next));
+      return next;
     });
   };
 
@@ -98,6 +100,15 @@ function App() {
     const interval = setInterval(checkProcesses, 3000); // Check every 3 seconds
     return () => clearInterval(interval);
   }, [checkProcesses]);
+
+  // Load masked accounts from storage on mount
+  useEffect(() => {
+    loadMaskedAccountIds().then((ids) => {
+      if (ids.length > 0) {
+        setMaskedAccounts(new Set(ids));
+      }
+    });
+  }, [loadMaskedAccountIds]);
 
   useEffect(() => {
     if (!isActionsMenuOpen) return;

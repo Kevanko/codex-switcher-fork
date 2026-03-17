@@ -326,6 +326,23 @@ export function useAccounts() {
     }
   }, []);
 
+  const loadMaskedAccountIds = useCallback(async () => {
+    try {
+      return await invoke<string[]>("get_masked_account_ids");
+    } catch (err) {
+      console.error("Failed to load masked account IDs:", err);
+      return [];
+    }
+  }, []);
+
+  const saveMaskedAccountIds = useCallback(async (ids: string[]) => {
+    try {
+      await invoke("set_masked_account_ids", { ids });
+    } catch (err) {
+      console.error("Failed to save masked account IDs:", err);
+    }
+  }, []);
+
   useEffect(() => {
     loadAccounts().then((accountList) => refreshUsage(accountList));
     
@@ -357,5 +374,7 @@ export function useAccounts() {
     startOAuthLogin,
     completeOAuthLogin,
     cancelOAuthLogin,
+    loadMaskedAccountIds,
+    saveMaskedAccountIds,
   };
 }

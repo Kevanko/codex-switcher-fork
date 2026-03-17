@@ -447,6 +447,7 @@ async fn build_store_from_slim_payload(
         version: 1,
         accounts,
         active_account_id,
+        masked_account_ids: Vec::new(),
     })
 }
 
@@ -688,4 +689,16 @@ fn merge_accounts_store(
             skipped_count: total_in_payload.saturating_sub(imported_count),
         },
     )
+}
+
+/// Get the list of masked account IDs
+#[tauri::command]
+pub async fn get_masked_account_ids() -> Result<Vec<String>, String> {
+    crate::auth::storage::get_masked_account_ids().map_err(|e| e.to_string())
+}
+
+/// Set the list of masked account IDs
+#[tauri::command]
+pub async fn set_masked_account_ids(ids: Vec<String>) -> Result<(), String> {
+    crate::auth::storage::set_masked_account_ids(ids).map_err(|e| e.to_string())
 }
