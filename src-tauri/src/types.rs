@@ -13,6 +13,9 @@ pub struct AccountsStore {
     pub accounts: Vec<StoredAccount>,
     /// Currently active account ID
     pub active_account_id: Option<String>,
+    /// Set of account IDs that are masked (hidden)
+    #[serde(default)]
+    pub masked_account_ids: Vec<String>,
 }
 
 impl Default for AccountsStore {
@@ -21,6 +24,7 @@ impl Default for AccountsStore {
             version: 1,
             accounts: Vec::new(),
             active_account_id: None,
+            masked_account_ids: Vec::new(),
         }
     }
 }
