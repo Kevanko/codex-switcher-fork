@@ -1,6 +1,5 @@
 //! Process detection commands
 
-use anyhow::Context;
 use std::process::Command;
 
 #[cfg(windows)]

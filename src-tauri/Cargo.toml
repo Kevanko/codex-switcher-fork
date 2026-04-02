@@ -1,9 +1,10 @@
 [package]
 name = "codex-switcher"
-version = "0.1.6"
+version = "0.1.7"
 description = "A multi-account manager for Codex CLI"
 authors = ["lampese"]
 edition = "2021"
+default-run = "codex-switcher"
 
 [lib]
 name = "codex_switcher_lib"
