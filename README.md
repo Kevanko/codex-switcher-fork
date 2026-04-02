@@ -64,8 +64,23 @@ The browser dashboard serves the same UI and backend actions through `/api/invok
 This tool is designed **exclusively for individuals who personally own multiple OpenAI/ChatGPT accounts**. It is intended to help users manage their own accounts more conveniently.
 
 **This tool is NOT intended for:**
+
 - Sharing accounts between multiple users
 - Circumventing OpenAI's terms of service
 - Any form of account pooling or credential sharing
 
 By using this software, you agree that you are the rightful owner of all accounts you add to the application. The authors are not responsible for any misuse or violations of OpenAI's terms of service.
+
+## Versioning
+
+Use the version bump helper to keep app versions in sync across Tauri, Cargo, and the frontend.
+
+```bash
+# Exact version
+pnpm version:bump 0.1.7
+
+# Semver bumps
+pnpm version:patch
+pnpm version:minor
+pnpm version:major
+```

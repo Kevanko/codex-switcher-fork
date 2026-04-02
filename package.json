@@ -1,7 +1,7 @@
 {
   "name": "codex-switcher",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A multi-account manager for Codex CLI",
   "type": "module",
   "scripts": {
@@ -9,7 +9,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "sh ./scripts/tauri.sh",
-    "lan": "pnpm build && cargo run --manifest-path src-tauri/Cargo.toml --bin codex-web"
+    "lan": "pnpm build && cargo run --manifest-path src-tauri/Cargo.toml --bin codex-web",
+    "version:bump": "node scripts/bump-version.mjs",
+    "version:patch": "node scripts/bump-version.mjs patch",
+    "version:minor": "node scripts/bump-version.mjs minor",
+    "version:major": "node scripts/bump-version.mjs major"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",
