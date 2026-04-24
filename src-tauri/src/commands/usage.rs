@@ -1,8 +1,11 @@
 //! Usage query Tauri commands
 
-use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};
-use crate::auth::{get_account, load_accounts};
-use crate::types::{UsageInfo, WarmupSummary};
+use crate::api::usage::{
+    fetch_chatgpt_account_metadata, get_account_usage, refresh_all_usage,
+    warmup_account as send_warmup,
+};
+use crate::auth::{get_account, load_accounts, refresh_chatgpt_tokens, update_account_metadata};
+use crate::types::{AccountInfo, AuthData, UsageInfo, WarmupSummary};
 use futures::{stream, StreamExt};
 
 /// Get usage info for a specific account
@@ -13,6 +16,41 @@ pub async fn get_usage(account_id: String) -> Result<UsageInfo, String> {
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
     get_account_usage(&account).await.map_err(|e| e.to_string())
+}
+
+/// Force-refresh account metadata for a specific account.
+/// For ChatGPT accounts this refreshes OAuth tokens and pulls live subscription metadata.
+/// For API key accounts this is a no-op.
+#[tauri::command]
+pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo, String> {
+    let account = get_account(&account_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    let updated = match &account.auth_data {
+        AuthData::ApiKey { .. } => account,
+        AuthData::ChatGPT { .. } => {
+            let refreshed = refresh_chatgpt_tokens(&account)
+                .await
+                .map_err(|e| e.to_string())?;
+            let live_metadata = fetch_chatgpt_account_metadata(&refreshed)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            update_account_metadata(
+                &account_id,
+                None,
+                None,
+                live_metadata.plan_type,
+                Some(live_metadata.subscription_expires_at),
+            )
+            .map_err(|e| e.to_string())?
+        }
+    };
+
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let active_id = store.active_account_id.as_deref();
+    Ok(AccountInfo::from_stored(&updated, active_id))
 }
 
 /// Refresh usage info for all accounts

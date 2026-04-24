@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::Utc;
 
-use crate::types::{AuthData, AuthDotJson, StoredAccount, TokenData};
+use crate::types::{
+    parse_chatgpt_id_token_claims, AuthData, AuthDotJson, StoredAccount, TokenData,
+};
 
 /// Get the official Codex home directory
 pub fn get_codex_home() -> Result<PathBuf> {
@@ -99,52 +101,21 @@ pub fn import_from_auth_json_contents(
     if let Some(api_key) = auth.openai_api_key {
         Ok(StoredAccount::new_api_key(account_name, api_key))
     } else if let Some(tokens) = auth.tokens {
-        // Try to extract email and plan from id_token
-        let (email, plan_type) = parse_id_token_claims(&tokens.id_token);
+        let claims = parse_chatgpt_id_token_claims(&tokens.id_token);
 
         Ok(StoredAccount::new_chatgpt(
             account_name,
-            email,
-            plan_type,
+            claims.email,
+            claims.plan_type,
+            claims.subscription_expires_at,
             tokens.id_token,
             tokens.access_token,
             tokens.refresh_token,
-            tokens.account_id,
+            claims.account_id.or(tokens.account_id),
         ))
     } else {
         anyhow::bail!("auth.json contains neither API key nor tokens");
     }
-}
-
-/// Parse claims from a JWT ID token (without validation)
-fn parse_id_token_claims(id_token: &str) -> (Option<String>, Option<String>) {
-    let parts: Vec<&str> = id_token.split('.').collect();
-    if parts.len() != 3 {
-        return (None, None);
-    }
-
-    // Decode the payload (second part)
-    let payload =
-        match base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1]) {
-            Ok(bytes) => bytes,
-            Err(_) => return (None, None),
-        };
-
-    let json: serde_json::Value = match serde_json::from_slice(&payload) {
-        Ok(v) => v,
-        Err(_) => return (None, None),
-    };
-
-    let email = json.get("email").and_then(|v| v.as_str()).map(String::from);
-
-    // Look for plan type in the OpenAI auth claims
-    let plan_type = json
-        .get("https://api.openai.com/auth")
-        .and_then(|auth| auth.get("chatgpt_plan_type"))
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    (email, plan_type)
 }
 
 /// Read the current auth.json file if it exists

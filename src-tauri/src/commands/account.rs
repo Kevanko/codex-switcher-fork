@@ -177,7 +177,7 @@ pub async fn delete_account(account_id: String) -> Result<(), String> {
 /// Rename an account
 #[tauri::command]
 pub async fn rename_account(account_id: String, new_name: String) -> Result<(), String> {
-    crate::auth::storage::update_account_metadata(&account_id, Some(new_name), None, None)
+    crate::auth::storage::update_account_metadata(&account_id, Some(new_name), None, None, None)
         .map_err(|e| e.to_string())?;
     Ok(())
 }

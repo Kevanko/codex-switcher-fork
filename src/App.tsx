@@ -66,7 +66,12 @@ function App() {
   } | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [otherAccountsSort, setOtherAccountsSort] = useState<
-    "deadline_asc" | "deadline_desc" | "remaining_desc" | "remaining_asc"
+    | "deadline_asc"
+    | "deadline_desc"
+    | "remaining_desc"
+    | "remaining_asc"
+    | "subscription_asc"
+    | "subscription_desc"
   >("deadline_asc");
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -249,7 +254,7 @@ function App() {
     setIsRefreshing(true);
     setRefreshSuccess(false);
     try {
-      await refreshUsage();
+      await refreshUsage(undefined, { refreshMetadata: true });
       setRefreshSuccess(true);
       setTimeout(() => setRefreshSuccess(false), 2000);
     } finally {
@@ -415,6 +420,23 @@ function App() {
     const getResetDeadline = (resetAt: number | null | undefined) =>
       resetAt ?? Number.POSITIVE_INFINITY;
 
+    const getSubscriptionDeadline = (expiresAt: string | null | undefined) => {
+      if (!expiresAt) return null;
+      const timestamp = new Date(expiresAt).getTime();
+      return Number.isNaN(timestamp) ? null : timestamp;
+    };
+
+    const compareOptionalNumber = (
+      aValue: number | null,
+      bValue: number | null,
+      direction: "asc" | "desc"
+    ) => {
+      if (aValue === null && bValue === null) return 0;
+      if (aValue === null) return 1;
+      if (bValue === null) return -1;
+      return direction === "asc" ? aValue - bValue : bValue - aValue;
+    };
+
     const getRemainingPercent = (usedPercent: number | null | undefined) => {
       if (usedPercent === null || usedPercent === undefined) {
         return Number.NEGATIVE_INFINITY;
@@ -423,6 +445,30 @@ function App() {
     };
 
     return [...otherAccounts].sort((a, b) => {
+      if (
+        otherAccountsSort === "subscription_asc" ||
+        otherAccountsSort === "subscription_desc"
+      ) {
+        const subscriptionDiff = compareOptionalNumber(
+          getSubscriptionDeadline(a.subscription_expires_at),
+          getSubscriptionDeadline(b.subscription_expires_at),
+          otherAccountsSort === "subscription_asc" ? "asc" : "desc"
+        );
+        if (subscriptionDiff !== 0) return subscriptionDiff;
+
+        const deadlineDiff =
+          getResetDeadline(a.usage?.primary_resets_at) -
+          getResetDeadline(b.usage?.primary_resets_at);
+        if (deadlineDiff !== 0) return deadlineDiff;
+
+        const remainingDiff =
+          getRemainingPercent(b.usage?.primary_used_percent) -
+          getRemainingPercent(a.usage?.primary_used_percent);
+        if (remainingDiff !== 0) return remainingDiff;
+
+        return a.name.localeCompare(b.name);
+      }
+
       if (otherAccountsSort === "deadline_asc" || otherAccountsSort === "deadline_desc") {
         const deadlineDiff =
           getResetDeadline(a.usage?.primary_resets_at) -
@@ -702,7 +748,9 @@ function App() {
                     handleWarmupAccount(activeAccount.id, activeAccount.name)
                   }
                   onDelete={() => handleDelete(activeAccount.id)}
-                  onRefresh={() => refreshSingleUsage(activeAccount.id)}
+                  onRefresh={() =>
+                    refreshSingleUsage(activeAccount.id, { refreshMetadata: true })
+                  }
                   onRename={(newName) => renameAccount(activeAccount.id, newName)}
                   switching={switchingId === activeAccount.id}
                   switchDisabled={hasRunningProcesses ?? false}
@@ -735,6 +783,8 @@ function App() {
                               | "deadline_desc"
                               | "remaining_desc"
                               | "remaining_asc"
+                              | "subscription_asc"
+                              | "subscription_desc"
                           )
                         }
                         className="appearance-none font-sans text-xs sm:text-sm font-medium pl-3 pr-9 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 text-gray-700 dark:text-gray-200 shadow-sm hover:border-gray-400 dark:hover:border-gray-600 hover:shadow focus:outline-none focus:ring-2 focus:ring-gray-300 dark:focus:ring-gray-600 focus:border-gray-400 dark:focus:border-gray-600 transition-all"
@@ -746,6 +796,12 @@ function App() {
                         </option>
                         <option value="remaining_asc">
                           % remaining: lowest to highest
+                        </option>
+                        <option value="subscription_asc">
+                          Expiry: earliest to latest
+                        </option>
+                        <option value="subscription_desc">
+                          Expiry: latest to earliest
                         </option>
                       </select>
                       <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-gray-500 dark:text-gray-400">
@@ -770,7 +826,9 @@ function App() {
                       onSwitch={() => handleSwitch(account.id)}
                       onWarmup={() => handleWarmupAccount(account.id, account.name)}
                       onDelete={() => handleDelete(account.id)}
-                      onRefresh={() => refreshSingleUsage(account.id)}
+                      onRefresh={() =>
+                        refreshSingleUsage(account.id, { refreshMetadata: true })
+                      }
                       onRename={(newName) => renameAccount(account.id, newName)}
                       switching={switchingId === account.id}
                       switchDisabled={hasRunningProcesses ?? false}
