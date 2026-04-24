@@ -27,6 +27,52 @@ function formatLastRefresh(date: Date | null): string {
   return date.toLocaleDateString();
 }
 
+function getSubscriptionStatus(timestamp: string | null | undefined): {
+  label: string;
+  className: string;
+} {
+  if (!timestamp) {
+    return {
+      label: "Expiry unavailable",
+      className: "text-gray-400 dark:text-gray-500",
+    };
+  }
+
+  const expiryDate = new Date(timestamp);
+  const formattedDate = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(expiryDate);
+
+  const remainingMs = expiryDate.getTime() - Date.now();
+  if (remainingMs <= 0) {
+    return {
+      label: `Expired ${formattedDate}`,
+      className: "text-red-500 dark:text-red-400",
+    };
+  }
+
+  if (remainingMs <= 3 * 24 * 60 * 60 * 1000) {
+    return {
+      label: `Until ${formattedDate}`,
+      className: "text-red-500 dark:text-red-400",
+    };
+  }
+
+  if (remainingMs <= 7 * 24 * 60 * 60 * 1000) {
+    return {
+      label: `Until ${formattedDate}`,
+      className: "text-amber-500 dark:text-amber-400",
+    };
+  }
+
+  return {
+    label: `Until ${formattedDate}`,
+    className: "text-gray-400 dark:text-gray-500",
+  };
+}
+
 function BlurredText({ children, blur }: { children: React.ReactNode; blur: boolean }) {
   return (
     <span
@@ -116,6 +162,8 @@ export function AccountCard({
 
   const planKey = account.plan_type?.toLowerCase() || "api_key";
   const planColorClass = planColors[planKey] || planColors.free;
+  const showSubscriptionStatus = account.auth_mode === "chat_g_p_t";
+  const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at);
 
 
   return (
@@ -202,8 +250,15 @@ export function AccountCard({
       </div>
 
       {/* Last refresh time */}
-      <div className="text-xs text-gray-400 dark:text-gray-500 mb-3">
-        Last updated: {formatLastRefresh(lastRefresh)}
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs mb-3">
+        <div className="text-gray-400 dark:text-gray-500">
+          Last updated: {formatLastRefresh(lastRefresh)}
+        </div>
+        {showSubscriptionStatus && (
+          <div className={`text-right ${subscriptionStatus.className}`}>
+            {subscriptionStatus.label}
+          </div>
+        )}
       </div>
 
       {/* Actions */}

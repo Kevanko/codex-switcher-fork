@@ -180,7 +180,12 @@ Get-CimInstance Win32_Process |
 
     let output = Command::new("powershell.exe")
         .creation_flags(CREATE_NO_WINDOW)
-        .args(["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_SCRIPT])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            POWERSHELL_SCRIPT,
+        ])
         .output()
         .context("failed to query Windows process list")?;
 
@@ -195,7 +200,10 @@ Get-CimInstance Win32_Process |
     let mut active_pids = Vec::new();
     let mut ignored_count = 0;
 
-    for process in processes.iter().filter(|process| is_windows_codex_root_process(process)) {
+    for process in processes
+        .iter()
+        .filter(|process| is_windows_codex_root_process(process))
+    {
         let command = process.command_line.to_ascii_lowercase();
         if is_ide_plugin_process(&command) {
             ignored_count += 1;
@@ -203,9 +211,13 @@ Get-CimInstance Win32_Process |
         }
 
         let has_window = !process.main_window_title.trim().is_empty();
-        let has_renderer = windows_has_descendant_matching(process.process_id, &processes, |child| {
-            child.command_line.to_ascii_lowercase().contains("--type=renderer")
-        });
+        let has_renderer =
+            windows_has_descendant_matching(process.process_id, &processes, |child| {
+                child
+                    .command_line
+                    .to_ascii_lowercase()
+                    .contains("--type=renderer")
+            });
         let has_app_server =
             windows_has_descendant_matching(process.process_id, &processes, |child| {
                 let command = child.command_line.to_ascii_lowercase();
