@@ -5,10 +5,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub const ACCOUNTS_STORE_VERSION: u32 = 2;
+
 /// The main storage structure for all accounts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountsStore {
     /// Schema version for future migrations
+    #[serde(default = "default_accounts_store_version")]
     pub version: u32,
     /// List of all stored accounts
     pub accounts: Vec<StoredAccount>,
@@ -22,12 +25,16 @@ pub struct AccountsStore {
 impl Default for AccountsStore {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: ACCOUNTS_STORE_VERSION,
             accounts: Vec::new(),
             active_account_id: None,
             masked_account_ids: Vec::new(),
         }
     }
+}
+
+fn default_accounts_store_version() -> u32 {
+    1
 }
 
 /// A stored account with all its metadata and credentials
@@ -51,7 +58,14 @@ pub struct StoredAccount {
     /// When the account was added
     pub created_at: DateTime<Utc>,
     /// Last time this account was used
+    #[serde(default)]
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Last successfully fetched usage snapshot for this account
+    #[serde(default)]
+    pub cached_usage: Option<UsageInfo>,
+    /// When the cached usage snapshot was last updated
+    #[serde(default)]
+    pub cached_usage_updated_at: Option<DateTime<Utc>>,
 }
 
 impl StoredAccount {
@@ -67,6 +81,8 @@ impl StoredAccount {
             auth_data: AuthData::ApiKey { key: api_key },
             created_at: Utc::now(),
             last_used_at: None,
+            cached_usage: None,
+            cached_usage_updated_at: None,
         }
     }
 
@@ -96,6 +112,8 @@ impl StoredAccount {
             },
             created_at: Utc::now(),
             last_used_at: None,
+            cached_usage: None,
+            cached_usage_updated_at: None,
         }
     }
 }
@@ -224,6 +242,8 @@ pub struct AccountInfo {
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    pub cached_usage: Option<UsageInfo>,
+    pub cached_usage_updated_at: Option<DateTime<Utc>>,
 }
 
 impl AccountInfo {
@@ -248,12 +268,14 @@ impl AccountInfo {
             is_active: active_id == Some(&account.id),
             created_at: account.created_at,
             last_used_at: account.last_used_at,
+            cached_usage: account.cached_usage.clone(),
+            cached_usage_updated_at: account.cached_usage_updated_at,
         }
     }
 }
 
 /// Usage information for an account
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageInfo {
     /// Account ID
     pub account_id: String,

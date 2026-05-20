@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::Utc;
 
+use crate::auth::storage::{load_accounts, save_accounts};
 use crate::types::{
     parse_chatgpt_id_token_claims, AuthData, AuthDotJson, StoredAccount, TokenData,
 };
@@ -140,5 +141,62 @@ pub fn has_active_login() -> Result<bool> {
     match read_current_auth()? {
         Some(auth) => Ok(auth.openai_api_key.is_some() || auth.tokens.is_some()),
         None => Ok(false),
+    }
+}
+
+/// Reconcile the stored active account with the real Codex auth.json file.
+pub fn reconcile_active_account_with_current_auth() -> Result<Option<String>> {
+    let current_auth = match read_current_auth()? {
+        Some(auth) => auth,
+        None => return Ok(None),
+    };
+
+    let mut store = load_accounts()?;
+    let matched_id = store
+        .accounts
+        .iter()
+        .find(|account| account_matches_auth(account, &current_auth))
+        .map(|account| account.id.clone());
+
+    if let Some(matched_id) = matched_id.clone() {
+        if store.active_account_id.as_deref() != Some(matched_id.as_str()) {
+            store.active_account_id = Some(matched_id.clone());
+            save_accounts(&store)?;
+        }
+    }
+
+    Ok(matched_id)
+}
+
+fn account_matches_auth(account: &StoredAccount, auth: &AuthDotJson) -> bool {
+    match (&account.auth_data, auth.openai_api_key.as_ref(), auth.tokens.as_ref()) {
+        (AuthData::ApiKey { key }, Some(active_key), _) => key == active_key,
+        (
+            AuthData::ChatGPT {
+                id_token,
+                access_token,
+                refresh_token,
+                account_id,
+            },
+            _,
+            Some(tokens),
+        ) => {
+            if refresh_token == &tokens.refresh_token {
+                return true;
+            }
+
+            if let (Some(stored_account_id), Some(active_account_id)) =
+                (account_id.as_ref(), tokens.account_id.as_ref())
+            {
+                if stored_account_id == active_account_id {
+                    return true;
+                }
+            }
+
+            id_token == &tokens.id_token
+                && access_token == &tokens.access_token
+                && refresh_token == &tokens.refresh_token
+        }
+        _ => false,
     }
 }

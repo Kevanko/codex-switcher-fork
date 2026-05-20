@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-use crate::types::{AccountsStore, AuthData, StoredAccount};
+use crate::types::{AccountsStore, AuthData, StoredAccount, UsageInfo, ACCOUNTS_STORE_VERSION};
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
@@ -30,8 +30,10 @@ pub fn load_accounts() -> Result<AccountsStore> {
     let content = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read accounts file: {}", path.display()))?;
 
-    let store: AccountsStore = serde_json::from_str(&content)
+    let mut store: AccountsStore = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse accounts file: {}", path.display()))?;
+
+    migrate_store(&mut store);
 
     Ok(store)
 }
@@ -39,6 +41,8 @@ pub fn load_accounts() -> Result<AccountsStore> {
 /// Save the accounts store to disk
 pub fn save_accounts(store: &AccountsStore) -> Result<()> {
     let path = get_accounts_file()?;
+    let mut normalized = store.clone();
+    migrate_store(&mut normalized);
 
     // Ensure the config directory exists
     if let Some(parent) = path.parent() {
@@ -46,8 +50,8 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
 
-    let content =
-        serde_json::to_string_pretty(store).context("Failed to serialize accounts store")?;
+    let content = serde_json::to_string_pretty(&normalized)
+        .context("Failed to serialize accounts store")?;
 
     fs::write(&path, content)
         .with_context(|| format!("Failed to write accounts file: {}", path.display()))?;
@@ -61,6 +65,12 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn migrate_store(store: &mut AccountsStore) {
+    if store.version < ACCOUNTS_STORE_VERSION {
+        store.version = ACCOUNTS_STORE_VERSION;
+    }
 }
 
 /// Add a new account to the store
@@ -248,6 +258,28 @@ pub fn update_account_chatgpt_tokens(
     let updated = account.clone();
     save_accounts(&store)?;
     Ok(updated)
+}
+
+/// Persist the last successful usage snapshot for an account.
+pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result<StoredAccount> {
+    let mut store = load_accounts()?;
+
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == account_id)
+        .context("Account not found")?;
+
+    let should_update = account.cached_usage.as_ref() != Some(usage);
+    if should_update {
+        account.cached_usage = Some(usage.clone());
+        account.cached_usage_updated_at = Some(Utc::now());
+        let updated = account.clone();
+        save_accounts(&store)?;
+        return Ok(updated);
+    }
+
+    Ok(account.clone())
 }
 
 /// Get the list of masked account IDs

@@ -8,6 +8,14 @@ import type {
 } from "../types";
 import { invokeBackend, type FileSource } from "../lib/platform";
 
+function hydrateAccountUsage(account: AccountInfo): AccountWithUsage {
+  return {
+    ...account,
+    usage: account.cached_usage ?? undefined,
+    usageLoading: false,
+  };
+}
+
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,14 +78,18 @@ export function useAccounts() {
           const usageMap = new Map(
             prev.map((a) => [a.id, { usage: a.usage, usageLoading: a.usageLoading }])
           );
-          return accountList.map((a) => ({
-            ...a,
-            usage: usageMap.get(a.id)?.usage,
-            usageLoading: usageMap.get(a.id)?.usageLoading,
-          }));
+          return accountList.map((a) => {
+            const hydrated = hydrateAccountUsage(a);
+            const preserved = usageMap.get(a.id);
+            return {
+              ...hydrated,
+              usage: preserved?.usage ?? hydrated.usage,
+              usageLoading: preserved?.usageLoading ?? hydrated.usageLoading,
+            };
+          });
         });
       } else {
-        setAccounts(accountList.map((a) => ({ ...a, usageLoading: false })));
+        setAccounts(accountList.map(hydrateAccountUsage));
       }
       return accountList;
     } catch (err) {
@@ -135,11 +147,13 @@ export function useAccounts() {
               usageResults.set(account.id, usage);
             } catch (err) {
               console.error("Failed to refresh usage:", err);
-              const message = err instanceof Error ? err.message : String(err);
-              usageResults.set(
-                account.id,
-                buildUsageError(account.id, message, account.plan_type ?? null)
-              );
+              if (!("usage" in account) || !account.usage) {
+                const message = err instanceof Error ? err.message : String(err);
+                usageResults.set(
+                  account.id,
+                  buildUsageError(account.id, message, account.plan_type ?? null)
+                );
+              }
             }
           },
           maxConcurrentUsageRequests
@@ -151,6 +165,8 @@ export function useAccounts() {
             if (!usage) return account;
             return {
               ...account,
+              cached_usage: usage,
+              cached_usage_updated_at: new Date().toISOString(),
               usage,
               usageLoading: false,
             };
@@ -182,18 +198,31 @@ export function useAccounts() {
       const usage = await invokeBackend<UsageInfo>("get_usage", { accountId });
       setAccounts((prev) =>
         prev.map((a) =>
-          a.id === accountId ? { ...a, usage, usageLoading: false } : a
+          a.id === accountId
+            ? {
+                ...a,
+                cached_usage: usage,
+                cached_usage_updated_at: new Date().toISOString(),
+                usage,
+                usageLoading: false,
+              }
+            : a
         )
       );
     } catch (err) {
       console.error("Failed to refresh single usage:", err);
-      const message = err instanceof Error ? err.message : String(err);
       setAccounts((prev) =>
         prev.map((a) =>
           a.id === accountId
             ? {
                 ...a,
-                usage: buildUsageError(accountId, message, a.plan_type ?? null),
+                usage:
+                  a.usage ??
+                  buildUsageError(
+                    accountId,
+                    err instanceof Error ? err.message : String(err),
+                    a.plan_type ?? null
+                  ),
                 usageLoading: false,
               }
             : a

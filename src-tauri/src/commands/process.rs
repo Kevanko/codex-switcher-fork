@@ -22,9 +22,16 @@ struct WindowsCodexProcess {
     process_id: u32,
     parent_process_id: u32,
     #[serde(default)]
+    executable_path: String,
+    #[serde(default)]
     command_line: String,
     #[serde(default)]
     main_window_title: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodexRestartTarget {
+    pub executable_path: Option<String>,
 }
 
 /// Information about running Codex processes
@@ -149,53 +156,197 @@ fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
     Ok((Vec::new(), 0))
 }
 
-#[cfg(windows)]
-fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
-    // tasklist counts every Electron helper (`--type=gpu-process`, crashpad, renderer, etc.),
-    // which inflates the badge and incorrectly blocks switching. Use PowerShell so we can inspect
-    // the command line and only count live top-level app instances.
-    const POWERSHELL_SCRIPT: &str = r#"
-$windowTitles = @{}
-Get-Process -Name Codex -ErrorAction SilentlyContinue | ForEach-Object {
-  $windowTitles[[uint32]$_.Id] = $_.MainWindowTitle
+pub fn snapshot_restart_target() -> anyhow::Result<(Vec<u32>, Option<CodexRestartTarget>)> {
+    #[cfg(unix)]
+    {
+        let output = Command::new("ps")
+            .args(["-axo", "pid=,tty=,command="])
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut active_pids = Vec::new();
+        let mut restart_target = None;
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut parts = line.split_whitespace();
+            let Some(pid_str) = parts.next() else {
+                continue;
+            };
+            let Some(tty) = parts.next() else {
+                continue;
+            };
+            let command = parts.collect::<Vec<_>>().join(" ");
+            let lowercase_command = command.to_ascii_lowercase();
+            if lowercase_command.contains("codex-switcher") {
+                continue;
+            }
+
+            let first_token = command.split_whitespace().next().unwrap_or("");
+            let is_codex_cli = first_token == "codex" || first_token.ends_with("/codex");
+            let is_codex_desktop = command.contains(".app/Contents/MacOS/Codex")
+                && !command.contains("Codex Helper")
+                && !command.contains("CodexBar");
+            if !is_codex_cli && !is_codex_desktop {
+                continue;
+            }
+
+            let Ok(pid) = pid_str.parse::<u32>() else {
+                continue;
+            };
+            if pid == std::process::id() {
+                continue;
+            }
+
+            let is_ide_plugin = is_ide_plugin_process(&lowercase_command);
+            let is_app_server = lowercase_command.contains("codex app-server");
+            let has_tty = tty != "??" && tty != "?";
+
+            if is_ide_plugin || is_app_server {
+                continue;
+            }
+
+            if is_codex_desktop || has_tty {
+                active_pids.push(pid);
+                if restart_target.is_none() {
+                    restart_target = Some(CodexRestartTarget {
+                        executable_path: Some(first_token.to_string()),
+                    });
+                }
+            }
+        }
+
+        active_pids.sort_unstable();
+        active_pids.dedup();
+        return Ok((active_pids, restart_target));
+    }
+
+    #[cfg(windows)]
+    {
+        let processes = query_windows_codex_processes()?;
+        let mut active_roots = processes
+            .iter()
+            .filter(|process| is_windows_codex_root_process(process))
+            .filter(|process| {
+                let command = process.command_line.to_ascii_lowercase();
+                if is_ide_plugin_process(&command) {
+                    return false;
+                }
+
+                let has_window = !process.main_window_title.trim().is_empty();
+                let has_renderer =
+                    windows_has_descendant_matching(process.process_id, &processes, |child| {
+                        child
+                            .command_line
+                            .to_ascii_lowercase()
+                            .contains("--type=renderer")
+                    });
+                let has_app_server =
+                    windows_has_descendant_matching(process.process_id, &processes, |child| {
+                        let command = child.command_line.to_ascii_lowercase();
+                        command.contains("resources\\codex.exe") && command.contains("app-server")
+                    });
+
+                has_window || has_renderer || has_app_server
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        active_roots.sort_by_key(|process| process.process_id);
+        let restart_target = active_roots.first().map(|process| CodexRestartTarget {
+            executable_path: (!process.executable_path.trim().is_empty())
+                .then(|| process.executable_path.clone()),
+        });
+        let mut active_pids = active_roots
+            .into_iter()
+            .map(|process| process.process_id)
+            .collect::<Vec<_>>();
+        active_pids.sort_unstable();
+        active_pids.dedup();
+        return Ok((active_pids, restart_target));
+    }
+
+    #[allow(unreachable_code)]
+    Ok((Vec::new(), None))
 }
 
-Get-CimInstance Win32_Process |
-  Where-Object { $_.Name -ieq 'Codex.exe' -or $_.Name -ieq 'codex.exe' } |
-  ForEach-Object {
-    [PSCustomObject]@{
-      Name = $_.Name
-      ProcessId = [uint32]$_.ProcessId
-      ParentProcessId = [uint32]$_.ParentProcessId
-      CommandLine = if ($_.CommandLine) { $_.CommandLine } else { '' }
-      MainWindowTitle = if ($windowTitles.ContainsKey([uint32]$_.ProcessId)) {
-        [string]$windowTitles[[uint32]$_.ProcessId]
-      } else {
-        ''
-      }
-    }
-  } |
-  ConvertTo-Json -Compress
-"#;
+pub fn terminate_codex_processes(pids: &[u32]) -> anyhow::Result<()> {
+    for pid in pids {
+        #[cfg(unix)]
+        {
+            let status = Command::new("kill").args(["-9", &pid.to_string()]).status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to terminate Codex process {pid}");
+            }
+        }
 
-    let output = Command::new("powershell.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            POWERSHELL_SCRIPT,
-        ])
-        .output()
-        .context("failed to query Windows process list")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("PowerShell process query failed: {}", stderr.trim());
+        #[cfg(windows)]
+        {
+            let status = Command::new("taskkill")
+                .creation_flags(CREATE_NO_WINDOW)
+                .args(["/F", "/PID", &pid.to_string()])
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to terminate Codex process {pid}");
+            }
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let processes = parse_windows_codex_processes(&stdout)?;
+    Ok(())
+}
+
+pub fn restart_codex_process(target: Option<&CodexRestartTarget>) -> anyhow::Result<bool> {
+    #[cfg(unix)]
+    {
+        let executable = target
+            .and_then(|target| target.executable_path.as_ref())
+            .filter(|path| !path.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "codex".to_string());
+        Command::new(executable).spawn()?;
+        return Ok(true);
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(executable) = target
+            .and_then(|target| target.executable_path.as_ref())
+            .filter(|path| !path.trim().is_empty())
+        {
+            Command::new("powershell.exe")
+                .creation_flags(CREATE_NO_WINDOW)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &format!("Start-Process -FilePath '{}'", executable.replace("'", "''")),
+                ])
+                .spawn()?;
+            return Ok(true);
+        }
+
+        if Command::new("cmd")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/c", "start", "", "codex"])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(true);
+        }
+
+        return Ok(false);
+    }
+
+    #[allow(unreachable_code)]
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
+    let processes = query_windows_codex_processes()?;
 
     let mut active_pids = Vec::new();
     let mut ignored_count = 0;
@@ -239,7 +390,54 @@ Get-CimInstance Win32_Process |
 }
 
 #[cfg(windows)]
-fn parse_windows_codex_processes(stdout: &str) -> anyhow::Result<Vec<WindowsCodexProcess>> {
+fn query_windows_codex_processes() -> anyhow::Result<Vec<WindowsCodexProcess>> {
+    const POWERSHELL_SCRIPT: &str = r#"
+$windowTitles = @{}
+Get-Process -Name Codex -ErrorAction SilentlyContinue | ForEach-Object {
+  $windowTitles[[uint32]$_.Id] = $_.MainWindowTitle
+}
+
+Get-CimInstance Win32_Process |
+  Where-Object { $_.Name -ieq 'Codex.exe' -or $_.Name -ieq 'codex.exe' } |
+  ForEach-Object {
+    [PSCustomObject]@{
+      Name = $_.Name
+      ProcessId = [uint32]$_.ProcessId
+      ParentProcessId = [uint32]$_.ParentProcessId
+      ExecutablePath = if ($_.ExecutablePath) { $_.ExecutablePath } else { '' }
+      CommandLine = if ($_.CommandLine) { $_.CommandLine } else { '' }
+      MainWindowTitle = if ($windowTitles.ContainsKey([uint32]$_.ProcessId)) {
+        [string]$windowTitles[[uint32]$_.ProcessId]
+      } else {
+        ''
+      }
+    }
+  } |
+  ConvertTo-Json -Compress
+"#;
+
+    let output = Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            POWERSHELL_SCRIPT,
+        ])
+        .output()
+        .context("failed to query Windows process list")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("PowerShell process query failed: {}", stderr.trim());
+    }
+
+    query_windows_codex_processes_from_output(&output.stdout)
+}
+
+#[cfg(windows)]
+fn query_windows_codex_processes_from_output(stdout: &[u8]) -> anyhow::Result<Vec<WindowsCodexProcess>> {
+    let stdout = String::from_utf8_lossy(stdout);
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());

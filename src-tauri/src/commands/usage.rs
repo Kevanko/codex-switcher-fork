@@ -4,7 +4,10 @@ use crate::api::usage::{
     fetch_chatgpt_account_metadata, get_account_usage, refresh_all_usage,
     warmup_account as send_warmup,
 };
-use crate::auth::{get_account, load_accounts, refresh_chatgpt_tokens, update_account_metadata};
+use crate::auth::{
+    get_account, load_accounts, refresh_chatgpt_tokens, update_account_metadata,
+    update_account_usage_cache,
+};
 use crate::types::{AccountInfo, AuthData, UsageInfo, WarmupSummary};
 use futures::{stream, StreamExt};
 
@@ -15,7 +18,11 @@ pub async fn get_usage(account_id: String) -> Result<UsageInfo, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    get_account_usage(&account).await.map_err(|e| e.to_string())
+    let usage = get_account_usage(&account).await.map_err(|e| e.to_string())?;
+    if usage.error.is_none() {
+        let _ = update_account_usage_cache(&account_id, &usage);
+    }
+    Ok(usage)
 }
 
 /// Force-refresh account metadata for a specific account.
@@ -57,7 +64,13 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
 #[tauri::command]
 pub async fn refresh_all_accounts_usage() -> Result<Vec<UsageInfo>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    Ok(refresh_all_usage(&store.accounts).await)
+    let usage_list = refresh_all_usage(&store.accounts).await;
+    for usage in &usage_list {
+        if usage.error.is_none() {
+            let _ = update_account_usage_cache(&usage.account_id, usage);
+        }
+    }
+    Ok(usage_list)
 }
 
 /// Send a minimal warm-up request for one account
