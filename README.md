@@ -5,16 +5,27 @@
 <h1 align="center">Codex Switcher</h1>
 
 <p align="center">
-  A Desktop Application for Managing Multiple OpenAI <a href="https://github.com/openai/codex">Codex CLI</a> Accounts<br>
-  Easily switch between accounts, monitor usage limits, and stay in control of your quota
+  A desktop application for managing multiple OpenAI <a href="https://github.com/openai/codex">Codex CLI</a> accounts<br>
+  Switch between accounts, monitor usage limits, and keep quota rotation under control.
 </p>
 
 ## Features
 
-- **Multi-Account Management** – Add and manage multiple Codex accounts in one place
-- **Quick Switching** – Switch between accounts with a single click
-- **Usage Monitoring** – View real-time usage for both 5-hour and weekly limits
-- **Dual Login Mode** – OAuth authentication or import existing `auth.json` files
+- **Multi-Account Management** - Add and manage multiple Codex accounts in one place
+- **Quick Switching** - Switch between accounts with confirmation and clear account states
+- **Usage Monitoring** - View usage for both 5-hour and weekly limits
+- **Matte-Tech Interface** - Compact sidebar, accent presets, light/dark themes, and density controls
+- **Dual Login Mode** - OAuth authentication or import existing `auth.json` files
+
+## Design Preview
+
+<p align="center">
+  <img src="docs/screenshots/codex-switcher-expanded.png" alt="Codex Switcher expanded matte-tech dashboard" width="860">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/codex-switcher-collapsed.png" alt="Codex Switcher collapsed sidebar view" width="860">
+</p>
 
 ## Installation
 
