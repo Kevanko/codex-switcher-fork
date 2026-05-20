@@ -32,6 +32,7 @@ struct WindowsCodexProcess {
 #[derive(Debug, Clone)]
 pub struct CodexRestartTarget {
     pub executable_path: Option<String>,
+    pub app_user_model_id: Option<String>,
 }
 
 /// Information about running Codex processes
@@ -214,6 +215,7 @@ pub fn snapshot_restart_target() -> anyhow::Result<(Vec<u32>, Option<CodexRestar
                 if restart_target.is_none() {
                     restart_target = Some(CodexRestartTarget {
                         executable_path: Some(first_token.to_string()),
+                        app_user_model_id: None,
                     });
                 }
             }
@@ -259,6 +261,7 @@ pub fn snapshot_restart_target() -> anyhow::Result<(Vec<u32>, Option<CodexRestar
         let restart_target = active_roots.first().map(|process| CodexRestartTarget {
             executable_path: (!process.executable_path.trim().is_empty())
                 .then(|| process.executable_path.clone()),
+            app_user_model_id: get_windows_codex_app_user_model_id(process),
         });
         let mut active_pids = active_roots
             .into_iter()
@@ -312,6 +315,19 @@ pub fn restart_codex_process(target: Option<&CodexRestartTarget>) -> anyhow::Res
 
     #[cfg(windows)]
     {
+        if let Some(app_id) = target
+            .and_then(|target| target.app_user_model_id.as_ref())
+            .filter(|app_id| !app_id.trim().is_empty())
+        {
+            if Command::new("explorer.exe")
+                .arg(format!("shell:AppsFolder\\{app_id}"))
+                .spawn()
+                .is_ok()
+            {
+                return Ok(true);
+            }
+        }
+
         if let Some(executable) = target
             .and_then(|target| target.executable_path.as_ref())
             .filter(|path| !path.trim().is_empty())
@@ -326,6 +342,16 @@ pub fn restart_codex_process(target: Option<&CodexRestartTarget>) -> anyhow::Res
                 ])
                 .spawn()?;
             return Ok(true);
+        }
+
+        if let Some(app_id) = find_windows_codex_app_user_model_id()? {
+            if Command::new("explorer.exe")
+                .arg(format!("shell:AppsFolder\\{app_id}"))
+                .spawn()
+                .is_ok()
+            {
+                return Ok(true);
+            }
         }
 
         if Command::new("cmd")
@@ -468,6 +494,55 @@ fn is_windows_codex_root_process(process: &WindowsCodexProcess) -> bool {
         && !command.contains("codex-switcher")
         && !command.contains("--type=")
         && !command.contains("resources\\codex.exe")
+}
+
+#[cfg(windows)]
+fn get_windows_codex_app_user_model_id(process: &WindowsCodexProcess) -> Option<String> {
+    let executable = process.executable_path.to_ascii_lowercase();
+    let marker = "\\windowsapps\\";
+    let marker_index = executable.find(marker)?;
+    let after_marker = &process.executable_path[marker_index + marker.len()..];
+    let package_full_name = after_marker.split('\\').next()?.trim();
+    if package_full_name.is_empty() {
+        return None;
+    }
+
+    if let Some((package_name_and_version, publisher_id)) = package_full_name.split_once("__") {
+        if let Some(package_name) = package_name_and_version.split('_').next() {
+            if !package_name.is_empty() && !publisher_id.is_empty() {
+                return Some(format!("{package_name}_{publisher_id}!App"));
+            }
+        }
+    }
+
+    Some(format!("{package_full_name}!App"))
+}
+
+#[cfg(windows)]
+fn find_windows_codex_app_user_model_id() -> anyhow::Result<Option<String>> {
+    const POWERSHELL_SCRIPT: &str = r#"
+Get-StartApps |
+  Where-Object { $_.Name -ieq 'Codex' -or $_.Name -like '*Codex*' } |
+  Select-Object -First 1 -ExpandProperty AppID
+"#;
+
+    let output = Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            POWERSHELL_SCRIPT,
+        ])
+        .output()
+        .context("failed to query Codex Start app")?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let app_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!app_id.is_empty()).then_some(app_id))
 }
 
 #[cfg(any(unix, windows))]

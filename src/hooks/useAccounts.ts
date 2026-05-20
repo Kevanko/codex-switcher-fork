@@ -265,8 +265,14 @@ export function useAccounts() {
   const deleteAccount = useCallback(
     async (accountId: string) => {
       try {
+        const removedAccount = accountsRef.current.find((account) => account.id === accountId);
         await invokeBackend("delete_account", { accountId });
-        await loadAccounts();
+
+        setAccounts((prev) => prev.filter((account) => account.id !== accountId));
+
+        if (removedAccount?.is_active) {
+          await loadAccounts(true);
+        }
       } catch (err) {
         throw err;
       }
