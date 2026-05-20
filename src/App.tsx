@@ -12,6 +12,7 @@ import {
 import "./App.css";
 
 const THEME_STORAGE_KEY = "codex-switcher-theme";
+const OTHER_ACCOUNTS_SORT_STORAGE_KEY = "codex-switcher-other-accounts-sort";
 type ThemeMode = "light" | "dark";
 const appWindow = getCurrentWindow();
 const isMacOs =
@@ -72,7 +73,25 @@ function App() {
     | "remaining_asc"
     | "subscription_asc"
     | "subscription_desc"
-  >("deadline_asc");
+  >(() => {
+    if (typeof window === "undefined") return "deadline_asc";
+    try {
+      const saved = window.localStorage.getItem(OTHER_ACCOUNTS_SORT_STORAGE_KEY);
+      switch (saved) {
+        case "deadline_desc":
+        case "remaining_desc":
+        case "remaining_asc":
+        case "subscription_asc":
+        case "subscription_desc":
+        case "deadline_asc":
+          return saved;
+        default:
+          return "deadline_asc";
+      }
+    } catch {
+      return "deadline_asc";
+    }
+  });
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -188,6 +207,14 @@ function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(OTHER_ACCOUNTS_SORT_STORAGE_KEY, otherAccountsSort);
+    } catch {
+      // Ignore storage write failures; session state still works.
+    }
+  }, [otherAccountsSort]);
+
+  useEffect(() => {
     if (!isTauriRuntime() || isMacOs) return;
 
     let unlisten: (() => void) | undefined;
@@ -219,15 +246,10 @@ function App() {
   }, []);
 
   const handleSwitch = async (accountId: string) => {
-    // Check processes before switching
-    const latestProcessInfo = await checkProcesses();
-    if (latestProcessInfo && !latestProcessInfo.can_switch) {
-      return;
-    }
-
     try {
       setSwitchingId(accountId);
       await switchAccount(accountId);
+      await checkProcesses();
     } catch (err) {
       console.error("Failed to switch account:", err);
     } finally {
@@ -753,7 +775,6 @@ function App() {
                   }
                   onRename={(newName) => renameAccount(activeAccount.id, newName)}
                   switching={switchingId === activeAccount.id}
-                  switchDisabled={hasRunningProcesses ?? false}
                   warmingUp={isWarmingAll || warmingUpId === activeAccount.id}
                   masked={maskedAccounts.has(activeAccount.id)}
                   onToggleMask={() => toggleMask(activeAccount.id)}
@@ -831,7 +852,6 @@ function App() {
                       }
                       onRename={(newName) => renameAccount(account.id, newName)}
                       switching={switchingId === account.id}
-                      switchDisabled={hasRunningProcesses ?? false}
                       warmingUp={isWarmingAll || warmingUpId === account.id}
                       masked={maskedAccounts.has(account.id)}
                       onToggleMask={() => toggleMask(account.id)}

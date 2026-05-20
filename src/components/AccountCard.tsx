@@ -10,7 +10,6 @@ interface AccountCardProps {
   onRefresh: () => Promise<void>;
   onRename: (newName: string) => Promise<void>;
   switching?: boolean;
-  switchDisabled?: boolean;
   warmingUp?: boolean;
   masked?: boolean;
   onToggleMask?: () => void;
@@ -92,14 +91,13 @@ export function AccountCard({
   onRefresh,
   onRename,
   switching,
-  switchDisabled,
   warmingUp,
   masked = false,
   onToggleMask,
 }: AccountCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(
-    account.usage && !account.usage.error ? new Date() : null
+    account.cached_usage_updated_at ? new Date(account.cached_usage_updated_at) : null
   );
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
@@ -111,6 +109,14 @@ export function AccountCard({
       inputRef.current.select();
     }
   }, [isEditing]);
+
+  useEffect(() => {
+    if (account.cached_usage_updated_at) {
+      setLastRefresh(new Date(account.cached_usage_updated_at));
+    } else if (!account.usage || account.usage.error) {
+      setLastRefresh(null);
+    }
+  }, [account.cached_usage_updated_at, account.usage]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -273,15 +279,10 @@ export function AccountCard({
         ) : (
           <button
             onClick={onSwitch}
-            disabled={switching || switchDisabled}
-            className={`flex-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 ${
-              switchDisabled
-                ? "bg-gray-200 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed"
-                : "bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 text-white dark:text-gray-900"
-            }`}
-            title={switchDisabled ? "Close all Codex processes first" : undefined}
+            disabled={switching}
+            className="flex-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 text-white dark:text-gray-900"
           >
-            {switching ? "Switching..." : switchDisabled ? "Codex Running" : "Switch"}
+            {switching ? "Switching..." : "Switch"}
           </button>
         )}
         <button

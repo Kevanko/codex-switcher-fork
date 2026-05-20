@@ -2,8 +2,12 @@
 
 use crate::auth::{
     add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    import_from_auth_json, import_from_auth_json_contents, load_accounts, remove_account,
-    save_accounts, set_active_account, switch_to_account, touch_account,
+    import_from_auth_json, import_from_auth_json_contents, load_accounts,
+    reconcile_active_account_with_current_auth, remove_account, save_accounts,
+    set_active_account, switch_to_account, touch_account,
+};
+use crate::commands::process::{
+    restart_codex_process, snapshot_restart_target, terminate_codex_processes,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -69,6 +73,7 @@ struct SlimAccountPayload {
 /// List all accounts with their info
 #[tauri::command]
 pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
+    let _ = reconcile_active_account_with_current_auth();
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
 
@@ -84,6 +89,7 @@ pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
 /// Get the currently active account
 #[tauri::command]
 pub async fn get_active_account_info() -> Result<Option<AccountInfo>, String> {
+    let _ = reconcile_active_account_with_current_auth();
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
 
@@ -102,6 +108,7 @@ pub async fn add_account_from_file(path: String, name: String) -> Result<Account
 
     // Add to storage
     let stored = add_account(account).map_err(|e| e.to_string())?;
+    finalize_added_account_state(&stored).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -116,6 +123,7 @@ pub async fn add_account_from_auth_json_text(
 ) -> Result<AccountInfo, String> {
     let account = import_from_auth_json_contents(&contents, name).map_err(|e| e.to_string())?;
     let stored = add_account(account).map_err(|e| e.to_string())?;
+    finalize_added_account_state(&stored).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -134,6 +142,11 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         .iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    let (running_pids, restart_target) = snapshot_restart_target().map_err(|e| e.to_string())?;
+    if !running_pids.is_empty() {
+        terminate_codex_processes(&running_pids).map_err(|e| e.to_string())?;
+    }
 
     // Write to ~/.codex/auth.json
     switch_to_account(account).map_err(|e| e.to_string())?;
@@ -163,6 +176,12 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
             }
         }
     }
+
+    if !running_pids.is_empty() {
+        let _ = restart_codex_process(restart_target.as_ref()).map_err(|e| e.to_string())?;
+    }
+
+    let _ = reconcile_active_account_with_current_auth();
 
     Ok(())
 }
@@ -369,6 +388,23 @@ fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<Strin
         "{SLIM_EXPORT_PREFIX}{}",
         URL_SAFE_NO_PAD.encode(compressed)
     ))
+}
+
+pub(crate) fn finalize_added_account_state(added_account: &StoredAccount) -> anyhow::Result<()> {
+    let matched_active_id = reconcile_active_account_with_current_auth()?;
+    if matched_active_id.is_some() {
+        return Ok(());
+    }
+
+    let store = load_accounts()?;
+    if store.accounts.len() != 1 {
+        return Ok(());
+    }
+
+    set_active_account(&added_account.id)?;
+    switch_to_account(added_account)?;
+    touch_account(&added_account.id)?;
+    Ok(())
 }
 
 fn decode_slim_payload(payload: &str) -> anyhow::Result<SlimPayload> {
