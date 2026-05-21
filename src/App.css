@@ -227,6 +227,7 @@ textarea:focus-visible {
   -webkit-backdrop-filter: blur(14px) saturate(118%);
   -webkit-app-region: drag;
   user-select: none;
+  cursor: default;
   border-radius: 2.1rem;
 }
 
@@ -242,7 +243,7 @@ textarea:focus-visible {
 }
 
 .resize-handle {
-  position: absolute;
+  position: fixed;
   z-index: 240;
   -webkit-app-region: no-drag;
   pointer-events: auto;
@@ -251,9 +252,9 @@ textarea:focus-visible {
 
 .resize-handle.is-n,
 .resize-handle.is-s {
-  left: 20px;
-  right: 20px;
-  height: 12px;
+  left: 12px;
+  right: 12px;
+  height: 7px;
   cursor: ns-resize;
 }
 
@@ -267,9 +268,9 @@ textarea:focus-visible {
 
 .resize-handle.is-e,
 .resize-handle.is-w {
-  top: 42px;
-  bottom: 42px;
-  width: 18px;
+  top: 12px;
+  bottom: 12px;
+  width: 7px;
   cursor: ew-resize;
 }
 
@@ -285,8 +286,8 @@ textarea:focus-visible {
 .resize-handle.is-nw,
 .resize-handle.is-se,
 .resize-handle.is-sw {
-  width: 42px;
-  height: 42px;
+  width: 18px;
+  height: 18px;
 }
 
 .resize-handle.is-ne {
@@ -317,8 +318,8 @@ textarea:focus-visible {
 .resize-handle.is-nw,
 .resize-handle.is-se,
 .resize-handle.is-sw {
-  width: 42px;
-  height: 42px;
+  width: 18px;
+  height: 18px;
 }
 
 .app-frame {
@@ -497,6 +498,9 @@ textarea:focus-visible {
   justify-content: center;
   width: 42px;
   height: 42px;
+  min-width: 42px;
+  min-height: 42px;
+  flex: 0 0 42px;
   border-radius: 14px;
 }
 
@@ -1297,13 +1301,17 @@ textarea:focus-visible {
 
 .active-account-mini-rail {
   display: grid;
-  grid-template-columns: repeat(2, max-content);
+  grid-template-columns: repeat(2, minmax(58px, max-content));
   justify-items: end;
   gap: 12px;
   padding-left: 18px;
   border-left: 1px solid var(--border-soft);
   color: var(--text-tertiary);
   font-size: 0.7rem;
+}
+
+.active-account-mini-rail.is-single {
+  grid-template-columns: minmax(64px, max-content);
 }
 
 .active-account-mini-rail div {
@@ -1332,6 +1340,7 @@ textarea:focus-visible {
 
 .account-card {
   display: grid;
+  grid-template-rows: auto auto minmax(118px, 1fr) auto auto;
   gap: 14px;
   padding: 18px;
   border-radius: 1.6rem;
@@ -1341,6 +1350,7 @@ textarea:focus-visible {
     var(--surface-3);
   box-shadow: var(--shadow-soft), var(--shadow-inner);
   min-width: 0;
+  min-height: 414px;
   overflow: hidden;
 }
 
@@ -1384,7 +1394,9 @@ textarea:focus-visible {
 }
 
 .account-status-row {
-  margin-top: -2px;
+  margin-top: 0;
+  min-height: 30px;
+  align-content: start;
 }
 
 .account-active-chip,
@@ -1531,6 +1543,7 @@ textarea:focus-visible {
   font-size: 0.78rem;
   gap: 8px 16px;
   min-width: 0;
+  margin-top: auto;
 }
 
 .account-footnotes > * {
@@ -1582,11 +1595,17 @@ textarea:focus-visible {
 .usage-shell {
   display: grid;
   gap: 10px;
+  align-content: start;
+  min-height: 118px;
 }
 
 .usage-block {
   display: grid;
   gap: 8px;
+}
+
+.usage-block + .usage-block {
+  padding-top: 2px;
 }
 
 .usage-meta {
@@ -1786,7 +1805,8 @@ textarea:focus-visible {
 }
 
 .density-compact .account-card {
-  min-height: 300px;
+  grid-template-rows: auto auto minmax(104px, 1fr) auto auto;
+  min-height: 382px;
   padding: 14px;
   gap: 10px;
   border-radius: 1.3rem;
@@ -1823,6 +1843,7 @@ textarea:focus-visible {
 
 .density-compact .usage-shell {
   gap: 8px;
+  min-height: 104px;
 }
 
 .density-compact .usage-meta {
@@ -1834,7 +1855,7 @@ textarea:focus-visible {
 }
 
 .density-comfortable .account-card {
-  min-height: 360px;
+  min-height: 430px;
 }
 
 .density-detailed .accounts-grid {
@@ -1919,11 +1940,21 @@ textarea:focus-visible {
 
 .settings-header,
 .config-header {
+  position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 22px 22px 0;
+  padding: 24px 24px 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 100%),
+    color-mix(in srgb, var(--surface-strong) 84%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-soft) 76%, transparent);
+}
+
+.settings-header::after,
+.config-header::after {
+  content: none;
 }
 
 .settings-header h2,
@@ -1943,14 +1974,25 @@ textarea:focus-visible {
 
 .settings-body,
 .config-body {
-  padding: 20px 22px 22px;
+  padding: 22px 24px 24px;
   display: grid;
-  gap: 18px;
+  gap: 0;
 }
 
 .settings-section {
+  position: relative;
   display: grid;
-  gap: 12px;
+  gap: 14px;
+  padding: 0 0 22px;
+}
+
+.settings-section + .settings-section {
+  padding-top: 22px;
+  border-top: 1px solid color-mix(in srgb, var(--border-soft) 72%, transparent);
+}
+
+.settings-section + .settings-section::before {
+  content: none;
 }
 
 .settings-section h3 {
@@ -1969,7 +2011,7 @@ textarea:focus-visible {
 .swatch-grid,
 .settings-actions-grid {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .segment-row {
@@ -1980,11 +2022,78 @@ textarea:focus-visible {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.segment-row.is-triple {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.theme-choice-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+  padding: 5px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 78%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 72%, rgba(255, 255, 255, 0.05)), var(--surface-3));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+}
+
 .ui-segment-button {
   min-height: 44px;
   border-radius: 14px;
   padding: 0 12px;
   font-weight: 500;
+}
+
+.theme-choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 10px;
+  border-color: transparent;
+  color: var(--text-secondary);
+  background: transparent;
+  box-shadow: none;
+  isolation: isolate;
+  overflow: hidden;
+  text-align: center;
+}
+
+.theme-choice.is-light {
+  color: color-mix(in srgb, var(--text-secondary) 92%, #ffffff);
+  border-color: transparent;
+}
+
+.theme-choice.is-dark {
+  border-color: transparent;
+}
+
+.theme-choice.is-system {
+  border-color: transparent;
+}
+
+.theme-choice span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-choice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 9px;
+  color: color-mix(in srgb, var(--text-secondary) 88%, var(--accent));
+  background: color-mix(in srgb, var(--surface-1) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-soft) 65%, transparent);
 }
 
 .add-account-tabs {
@@ -2022,6 +2131,23 @@ textarea:focus-visible {
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.08);
 }
 
+.theme-choice.is-selected {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--border-strong) 76%, transparent);
+  background:
+    radial-gradient(circle at 50% -20%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 58%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-overlay) 92%, rgba(255, 255, 255, 0.06)), var(--surface-2));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 10px 24px rgba(0, 0, 0, 0.16);
+}
+
+.theme-choice.is-selected .theme-choice-icon {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
 .swatch-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -2047,6 +2173,7 @@ textarea:focus-visible {
 }
 
 .settings-note {
+  margin-top: 22px;
   padding: 14px 16px;
   border-radius: 16px;
   color: var(--text-secondary);

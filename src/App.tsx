@@ -26,12 +26,14 @@ import {
   FolderInput,
   LayoutPanelLeft,
   Monitor,
+  Moon,
   Palette,
   PanelLeftOpen,
   RefreshCcw,
   Search,
   Settings2,
   ShieldCheck,
+  Sun,
   Upload,
   UserRound,
   X,
@@ -46,16 +48,26 @@ import {
   isTauriRuntime,
 } from "./lib/platform";
 import { getPlanVisual } from "./lib/accountVisuals";
+import {
+  getSystemLocale,
+  getSystemTheme,
+  translations,
+  type AppText,
+  type LanguagePreference,
+  type Locale,
+  type ThemeMode,
+  type ThemePreference,
+} from "./i18n";
 import "./App.css";
 
 const THEME_STORAGE_KEY = "codex-switcher-theme";
+const LANGUAGE_STORAGE_KEY = "codex-switcher-language";
 const ACCENT_STORAGE_KEY = "codex-switcher-accent";
 const SIDEBAR_STORAGE_KEY = "codex-switcher-sidebar-expanded";
 const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
 const OTHER_ACCOUNTS_SORT_STORAGE_KEY = "codex-switcher-other-accounts-sort";
 const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
 
-type ThemeMode = "light" | "dark";
 type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose";
 type SortMode =
   | "deadline_asc"
@@ -152,6 +164,82 @@ const narrowButtonStyle = {
   minWidth: 0,
 };
 
+function readThemePreference(): ThemePreference {
+  if (typeof window === "undefined") return "system";
+  try {
+    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function readLanguagePreference(): LanguagePreference {
+  if (typeof window === "undefined") return "system";
+  try {
+    const saved = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    return saved === "en" || saved === "ru" || saved === "system" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function resolveThemePreference(preference: ThemePreference): ThemeMode {
+  return preference === "system" ? getSystemTheme() : preference;
+}
+
+function resolveLanguagePreference(preference: LanguagePreference): Locale {
+  return preference === "system" ? getSystemLocale() : preference;
+}
+
+function formatResetWindowLabel(minutes: number | null | undefined, fallback: string): string {
+  if (!minutes) return fallback;
+  if (minutes === 300) return fallback;
+  if (minutes < 60) return `${minutes}m reset`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h reset`;
+  return `${Math.floor(hours / 24)}d reset`;
+}
+
+function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
+  const t = translations[locale];
+  const planVisual = getPlanVisual(account);
+  const isPremiumPlan = planVisual.premium;
+  const items: Array<{
+    key: string;
+    label: string;
+    resetsAt: number;
+    remaining: number | null;
+  }> = [];
+
+  if (isPremiumPlan && account.usage?.primary_resets_at) {
+    items.push({
+      key: "primary",
+      label: formatResetWindowLabel(account.usage.primary_window_minutes, t.account.reset5h),
+      resetsAt: account.usage.primary_resets_at,
+      remaining: getUsageRemaining(account.usage.primary_used_percent),
+    });
+  }
+
+  if (account.usage?.secondary_resets_at) {
+    items.push({
+      key: "weekly",
+      label: t.account.reset7d,
+      resetsAt: account.usage.secondary_resets_at,
+      remaining: getUsageRemaining(account.usage.secondary_used_percent),
+    });
+  } else if (!isPremiumPlan && account.usage?.primary_resets_at) {
+    items.push({
+      key: "weekly-primary",
+      label: t.account.reset7d,
+      resetsAt: account.usage.primary_resets_at,
+      remaining: getUsageRemaining(account.usage.primary_used_percent),
+    });
+  }
+
+  return items;
+}
+
 function getRemainingPercent(account: AccountWithUsage) {
   if (account.usage?.primary_used_percent === null || account.usage?.primary_used_percent === undefined) {
     return null;
@@ -173,11 +261,12 @@ function getResetProgressPercent(account: AccountWithUsage) {
   return Math.round(Math.max(0, Math.min(100, elapsedRatio * 100)));
 }
 
-function formatResetCountdown(resetAt: number | null | undefined): string {
-  if (!resetAt) return "Unknown";
+function formatResetCountdown(resetAt: number | null | undefined, locale: Locale): string {
+  const t = translations[locale];
+  if (!resetAt) return t.common.unknown;
 
   const diff = resetAt - Math.floor(Date.now() / 1000);
-  if (diff <= 0) return "Now";
+  if (diff <= 0) return t.common.now;
   if (diff < 60) return `${diff}s`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`;
@@ -198,7 +287,7 @@ function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" 
   if (account.usage?.error) return "danger";
   const remaining = getRemainingPercent(account);
   if (remaining === null) return "muted";
-  if (remaining <= 10) return "danger";
+  if (remaining <= 0) return "danger";
   if (remaining <= 30) return "warning";
   return "success";
 }
@@ -266,6 +355,7 @@ function SidebarAccountButton({
   switching,
   onConfirmSwitch,
   onCancelSwitch,
+  locale,
 }: {
   account: AccountWithUsage;
   expanded: boolean;
@@ -274,12 +364,14 @@ function SidebarAccountButton({
   switching: boolean;
   onConfirmSwitch: () => void;
   onCancelSwitch: () => void;
+  locale: Locale;
 }) {
+  const t = translations[locale];
   const tone = getAccountHealthTone(account);
   const remaining = getRemainingPercent(account);
   const resetProgress = getResetProgressPercent(account);
   const planVisual = getPlanVisual(account);
-  const isWaitingForReset = tone === "danger" && remaining !== null && remaining <= 10;
+  const isWaitingForReset = tone === "danger" && remaining !== null && remaining <= 0;
   const isPremiumLimit = planVisual.premium && isWaitingForReset;
   const ringPercent = isWaitingForReset ? (resetProgress ?? 12) : (remaining ?? 0);
   const compactStatus = isWaitingForReset
@@ -290,15 +382,15 @@ function SidebarAccountButton({
   const statusText =
     tone === "danger"
       ? account.usage?.error
-        ? "Usage error"
-        : "Critical limit"
+        ? t.account.usageError
+        : t.account.criticalLimit
       : tone === "warning"
-        ? "Near limit"
+        ? t.toolbar.nearLimit
         : tone === "success"
           ? remaining !== null
-            ? `${remaining.toFixed(0)}% left`
-            : "Healthy"
-          : "Waiting";
+            ? `${remaining.toFixed(0)}% ${t.account.left}`
+            : t.account.healthyCapacity
+          : t.account.waitingUsage;
 
   return (
     <div className={`sidebar-account-wrap ${pending ? "has-confirm" : ""}`}>
@@ -334,22 +426,22 @@ function SidebarAccountButton({
 
       {pending && (
         <div className={`sidebar-switch-confirm ${expanded ? "" : "is-compact"}`}>
-          {expanded && <span>Switch to {account.name}?</span>}
+          {expanded && <span>{t.sidebar.switchTo} {account.name}?</span>}
           <button
             type="button"
             className="ui-action-button is-primary"
             onClick={onConfirmSwitch}
             disabled={switching}
-            title={`Switch to ${account.name}`}
+            title={`${t.sidebar.switchTo} ${account.name}`}
           >
             <ShieldCheck size={14} />
-            {expanded && (switching ? "Switching" : "Switch")}
+            {expanded && (switching ? t.sidebar.switching : t.sidebar.switch)}
           </button>
           <button
             type="button"
             className="ui-icon-button"
             onClick={onCancelSwitch}
-            title="Cancel switch"
+            title={t.sidebar.cancelSwitch}
           >
             <X size={14} />
           </button>
@@ -360,13 +452,16 @@ function SidebarAccountButton({
 }
 
 function SettingsPanel({
-  themeMode,
+  themePreference,
+  languagePreference,
+  t,
   accentPreset,
   cardDensity,
   isExportingFull,
   isImportingFull,
   hasAccounts,
   onThemeChange,
+  onLanguageChange,
   onAccentChange,
   onCardDensityChange,
   onClose,
@@ -375,13 +470,16 @@ function SettingsPanel({
   onImportFull,
   onExportFull,
 }: {
-  themeMode: ThemeMode;
+  themePreference: ThemePreference;
+  languagePreference: LanguagePreference;
+  t: AppText;
   accentPreset: AccentPreset;
   cardDensity: CardDensity;
   isExportingFull: boolean;
   isImportingFull: boolean;
   hasAccounts: boolean;
-  onThemeChange: (theme: ThemeMode) => void;
+  onThemeChange: (theme: ThemePreference) => void;
+  onLanguageChange: (language: LanguagePreference) => void;
   onAccentChange: (preset: AccentPreset) => void;
   onCardDensityChange: (density: CardDensity) => void;
   onClose: () => void;
@@ -400,10 +498,10 @@ function SettingsPanel({
       <aside className="settings-panel fade-up" onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-header">
           <div>
-            <h2>Settings</h2>
-            <p>Fine-tune the shell, colors, and account management tools.</p>
+            <h2>{t.settings.title}</h2>
+            <p>{t.settings.subtitle}</p>
           </div>
-          <button type="button" className="ui-icon-button" onClick={onClose} title="Close settings">
+          <button type="button" className="ui-icon-button" onClick={onClose} title={t.common.close}>
             <X size={16} />
           </button>
         </div>
@@ -411,31 +509,64 @@ function SettingsPanel({
         <div className="settings-body">
           <section className="settings-section">
             <div>
-              <h3>Theme</h3>
-              <p>Keep the interface balanced for both light and dark modes.</p>
+              <h3>{t.settings.language}</h3>
+              <p>{t.settings.languageHint}</p>
             </div>
-            <div className="segment-row">
+            <div className="segment-row is-triple">
+              {([
+                ["system", t.common.auto],
+                ["ru", t.settings.russian],
+                ["en", t.settings.english],
+              ] as [LanguagePreference, string][]).map(([language, label]) => (
+                <button
+                  key={language}
+                  type="button"
+                  className={`ui-segment-button ${languagePreference === language ? "is-selected" : ""}`}
+                  onClick={() => onLanguageChange(language)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <div>
+              <h3>{t.settings.theme}</h3>
+              <p>{t.settings.themeHint}</p>
+            </div>
+            <div className="theme-choice-row">
               <button
                 type="button"
-                className={`ui-segment-button ${themeMode === "light" ? "is-selected" : ""}`}
-                onClick={() => onThemeChange("light")}
+                className={`ui-segment-button theme-choice is-system ${themePreference === "system" ? "is-selected" : ""}`}
+                onClick={() => onThemeChange("system")}
               >
-                Light
+                <span className="theme-choice-icon"><Monitor size={16} /></span>
+                <span>{t.common.auto}</span>
               </button>
               <button
                 type="button"
-                className={`ui-segment-button ${themeMode === "dark" ? "is-selected" : ""}`}
+                className={`ui-segment-button theme-choice is-light ${themePreference === "light" ? "is-selected" : ""}`}
+                onClick={() => onThemeChange("light")}
+              >
+                <span className="theme-choice-icon"><Sun size={16} /></span>
+                <span>{t.common.light}</span>
+              </button>
+              <button
+                type="button"
+                className={`ui-segment-button theme-choice is-dark ${themePreference === "dark" ? "is-selected" : ""}`}
                 onClick={() => onThemeChange("dark")}
               >
-                Dark
+                <span className="theme-choice-icon"><Moon size={16} /></span>
+                <span>{t.common.dark}</span>
               </button>
             </div>
           </section>
 
           <section className="settings-section">
             <div>
-              <h3>Accent color</h3>
-              <p>Used for active states, summary visuals, and usage highlights.</p>
+              <h3>{t.settings.accent}</h3>
+              <p>{t.settings.accentHint}</p>
             </div>
             <div className="swatch-grid">
               {(Object.entries(accentPresets) as [AccentPreset, (typeof accentPresets)[AccentPreset]][]).map(
@@ -456,18 +587,18 @@ function SettingsPanel({
 
           <section className="settings-section">
             <div>
-              <h3>Card density</h3>
-              <p>Controls account card size without changing account data.</p>
+              <h3>{t.settings.density}</h3>
+              <p>{t.settings.densityHint}</p>
             </div>
             <div className="segment-row is-density">
-              {(Object.entries(cardDensityLabels) as [CardDensity, string][]).map(([density, label]) => (
+              {(Object.keys(cardDensityLabels) as CardDensity[]).map((density) => (
                 <button
                   key={density}
                   type="button"
                   className={`ui-segment-button ${cardDensity === density ? "is-selected" : ""}`}
                   onClick={() => onCardDensityChange(density)}
                 >
-                  {label}
+                  {t.density[density]}
                 </button>
               ))}
             </div>
@@ -475,8 +606,8 @@ function SettingsPanel({
 
           <section className="settings-section">
             <div>
-              <h3>Account management</h3>
-              <p>Secondary import and backup tools live here instead of the top toolbar.</p>
+              <h3>{t.settings.accountManagement}</h3>
+              <p>{t.settings.accountHint}</p>
             </div>
             <div className="settings-actions-grid">
               <button
@@ -486,11 +617,11 @@ function SettingsPanel({
                 disabled={!hasAccounts}
               >
                 <Download size={16} />
-                Export slim text
+                {t.settings.exportSlim}
               </button>
               <button type="button" className="ui-action-button" onClick={onOpenImportSlim}>
                 <Upload size={16} />
-                Import slim text
+                {t.settings.importSlim}
               </button>
               <button
                 type="button"
@@ -499,7 +630,7 @@ function SettingsPanel({
                 disabled={isExportingFull || !hasAccounts}
               >
                 <Database size={16} />
-                {isExportingFull ? "Exporting backup" : "Export full backup"}
+                {isExportingFull ? t.settings.exportingBackup : t.settings.exportBackup}
               </button>
               <button
                 type="button"
@@ -508,13 +639,13 @@ function SettingsPanel({
                 disabled={isImportingFull}
               >
                 <FolderInput size={16} />
-                {isImportingFull ? "Importing backup" : "Import full backup"}
+                {isImportingFull ? t.settings.importingBackup : t.settings.importBackup}
               </button>
             </div>
           </section>
 
           <div className="settings-note">
-            The interface theme and accent are stored locally for this desktop profile only.
+            {t.settings.note}
           </div>
         </div>
       </aside>
@@ -528,6 +659,7 @@ function ConfigModal({
   error,
   loading,
   copied,
+  t,
   onClose,
   onPayloadChange,
   onSubmit,
@@ -538,6 +670,7 @@ function ConfigModal({
   error: string | null;
   loading: boolean;
   copied: boolean;
+  t: AppText;
   onClose: () => void;
   onPayloadChange: (value: string) => void;
   onSubmit: () => void;
@@ -555,14 +688,14 @@ function ConfigModal({
       <div className="config-panel fade-up" onMouseDown={(event) => event.stopPropagation()}>
         <div className="config-header">
           <div>
-            <h2>{isExport ? "Export slim text" : "Import slim text"}</h2>
+            <h2>{isExport ? t.config.exportTitle : t.config.importTitle}</h2>
             <p>
               {isExport
-                ? "This payload contains account secrets. Keep it private."
-                : "Existing accounts stay in place. Only missing accounts are imported."}
+                ? t.config.exportHint
+                : t.config.importHint}
             </p>
           </div>
-          <button type="button" className="ui-icon-button" onClick={onClose} title="Close">
+          <button type="button" className="ui-icon-button" onClick={onClose} title={t.common.close}>
             <X size={16} />
           </button>
         </div>
@@ -571,7 +704,7 @@ function ConfigModal({
           {!isExport && (
             <div className="inline-alert is-warning">
               <AlertTriangle size={16} />
-              Existing accounts stay intact. Missing accounts from the payload are added.
+              {t.config.importWarning}
             </div>
           )}
 
@@ -579,7 +712,7 @@ function ConfigModal({
             value={payload}
             onChange={(event) => onPayloadChange(event.target.value)}
             readOnly={isExport}
-            placeholder={isExport ? (loading ? "Generating payload..." : "Export payload") : "Paste config string here"}
+            placeholder={isExport ? (loading ? t.config.generating : t.config.exportPayload) : t.config.pastePayload}
             className="config-textarea"
           />
 
@@ -592,7 +725,7 @@ function ConfigModal({
 
           <div className="modal-footer">
             <button type="button" className="ui-action-button is-ghost" onClick={onClose}>
-              Close
+              {t.common.close}
             </button>
             {isExport ? (
               <button
@@ -601,11 +734,11 @@ function ConfigModal({
                 onClick={onCopy}
                 disabled={!payload || loading}
               >
-                {copied ? "Copied" : "Copy payload"}
+                {copied ? t.common.copied : t.config.copyPayload}
               </button>
             ) : (
               <button type="button" className="ui-action-button is-primary" onClick={onSubmit} disabled={loading}>
-                {loading ? "Importing" : "Import missing accounts"}
+                {loading ? t.config.importing : t.config.importMissing}
               </button>
             )}
           </div>
@@ -661,14 +794,12 @@ function App() {
     isError: boolean;
   } | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-    if (typeof window === "undefined") return "light";
-    try {
-      return window.localStorage.getItem(THEME_STORAGE_KEY) === "dark" ? "dark" : "light";
-    } catch {
-      return "light";
-    }
-  });
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => resolveThemePreference(readThemePreference()));
+  const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(readLanguagePreference);
+  const [resolvedLanguage, setResolvedLanguage] = useState<Locale>(() =>
+    resolveLanguagePreference(readLanguagePreference())
+  );
   const [accentPreset, setAccentPreset] = useState<AccentPreset>(() => {
     if (typeof window === "undefined") return "green";
     try {
@@ -711,6 +842,7 @@ function App() {
   const accountRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const accentTheme = accentPresets[accentPreset];
+  const t = translations[resolvedLanguage];
 
   const handleTitlebarDrag = useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (!isTauriRuntime() || event.button !== 0 || !currentWindow) return;
@@ -767,14 +899,45 @@ function App() {
   }, [loadMaskedAccountIds]);
 
   useEffect(() => {
-    const isDark = themeMode === "dark";
-    document.documentElement.classList.toggle("dark", isDark);
+    const syncTheme = () => setThemeMode(resolveThemePreference(themePreference));
+    syncTheme();
+
     try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+      window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
     } catch {
       // Ignore storage errors for this session.
     }
-  }, [themeMode]);
+
+    if (themePreference !== "system" || typeof window === "undefined") return;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    query.addEventListener("change", syncTheme);
+    return () => query.removeEventListener("change", syncTheme);
+  }, [themePreference]);
+
+  useEffect(() => {
+    const isDark = themeMode === "dark";
+    document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.dataset.themePreference = themePreference;
+  }, [themeMode, themePreference]);
+
+  useEffect(() => {
+    const syncLanguage = () => setResolvedLanguage(resolveLanguagePreference(languagePreference));
+    syncLanguage();
+
+    try {
+      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, languagePreference);
+    } catch {
+      // Ignore storage errors for this session.
+    }
+
+    if (languagePreference !== "system" || typeof window === "undefined") return;
+    window.addEventListener("languagechange", syncLanguage);
+    return () => window.removeEventListener("languagechange", syncLanguage);
+  }, [languagePreference]);
+
+  useEffect(() => {
+    document.documentElement.lang = resolvedLanguage;
+  }, [resolvedLanguage]);
 
   useEffect(() => {
     try {
@@ -952,13 +1115,13 @@ function App() {
   };
 
   const formatWarmupError = (err: unknown) => {
-    if (!err) return "Unknown error";
+    if (!err) return t.toast.unknownError;
     if (err instanceof Error && err.message) return err.message;
     if (typeof err === "string") return err;
     try {
       return JSON.stringify(err);
     } catch {
-      return "Unknown error";
+      return t.toast.unknownError;
     }
   };
 
@@ -966,10 +1129,10 @@ function App() {
     try {
       setWarmingUpId(accountId);
       await warmupAccount(accountId);
-      showWarmupToast(`Warm-up request sent for ${accountName}`);
+      showWarmupToast(`${t.toast.warmupSent} ${accountName}`);
     } catch (err) {
       console.error("Failed to warm up account:", err);
-      showWarmupToast(`Warm-up failed for ${accountName}: ${formatWarmupError(err)}`, true);
+      showWarmupToast(`${t.toast.warmupFailed} ${accountName}: ${formatWarmupError(err)}`, true);
     } finally {
       setWarmingUpId(null);
     }
@@ -980,21 +1143,21 @@ function App() {
       setIsWarmingAll(true);
       const summary = await warmupAllAccounts();
       if (summary.total_accounts === 0) {
-        showWarmupToast("No accounts available for warm-up", true);
+        showWarmupToast(t.toast.noWarmupAccounts, true);
         return;
       }
 
       if (summary.failed_account_ids.length === 0) {
-        showWarmupToast(`Warm-up sent for ${summary.warmed_accounts} account${summary.warmed_accounts === 1 ? "" : "s"}`);
+        showWarmupToast(`${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}`);
       } else {
         showWarmupToast(
-          `Warmed ${summary.warmed_accounts}/${summary.total_accounts}. Failed: ${summary.failed_account_ids.length}`,
+          `${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}. ${t.toast.failed}: ${summary.failed_account_ids.length}`,
           true
         );
       }
     } catch (err) {
       console.error("Failed to warm up all accounts:", err);
-      showWarmupToast(`Warm-up all failed: ${formatWarmupError(err)}`, true);
+      showWarmupToast(`${t.toast.warmupAllFailed}: ${formatWarmupError(err)}`, true);
     } finally {
       setIsWarmingAll(false);
     }
@@ -1011,12 +1174,12 @@ function App() {
       setIsExportingSlim(true);
       const payload = await exportAccountsSlimText();
       setConfigPayload(payload);
-      showWarmupToast(`Slim text exported for ${accounts.length} account${accounts.length === 1 ? "" : "s"}.`);
+      showWarmupToast(`${t.settings.exportSlim}: ${accounts.length}`);
     } catch (err) {
       console.error("Failed to export slim text:", err);
       const message = err instanceof Error ? err.message : String(err);
       setConfigModalError(message);
-      showWarmupToast("Slim export failed", true);
+      showWarmupToast(t.toast.slimExportFailed, true);
     } finally {
       setIsExportingSlim(false);
     }
@@ -1032,7 +1195,7 @@ function App() {
 
   const handleImportSlimText = async () => {
     if (!configPayload.trim()) {
-      setConfigModalError("Paste the slim text payload first.");
+      setConfigModalError(t.toast.pasteSlimFirst);
       return;
     }
 
@@ -1043,13 +1206,13 @@ function App() {
       setMaskedAccounts(new Set());
       setIsConfigModalOpen(false);
       showWarmupToast(
-        `Imported ${summary.imported_count}, skipped ${summary.skipped_count}, total ${summary.total_in_payload}`
+        `${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}, ${t.toast.total} ${summary.total_in_payload}`
       );
     } catch (err) {
       console.error("Failed to import slim text:", err);
       const message = err instanceof Error ? err.message : String(err);
       setConfigModalError(message);
-      showWarmupToast("Slim import failed", true);
+      showWarmupToast(t.toast.slimImportFailed, true);
     } finally {
       setIsImportingSlim(false);
     }
@@ -1060,10 +1223,10 @@ function App() {
       setIsExportingFull(true);
       const exported = await exportFullBackupFile();
       if (!exported) return;
-      showWarmupToast("Encrypted backup exported.");
+      showWarmupToast(t.toast.fullExportOk);
     } catch (err) {
       console.error("Failed to export full encrypted file:", err);
-      showWarmupToast("Full export failed", true);
+      showWarmupToast(t.toast.fullExportFailed, true);
     } finally {
       setIsExportingFull(false);
     }
@@ -1079,11 +1242,11 @@ function App() {
       const maskedIds = await loadMaskedAccountIds();
       setMaskedAccounts(new Set(maskedIds));
       showWarmupToast(
-        `Imported ${summary.imported_count}, skipped ${summary.skipped_count}, total ${summary.total_in_payload}`
+        `${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}, ${t.toast.total} ${summary.total_in_payload}`
       );
     } catch (err) {
       console.error("Failed to import full encrypted file:", err);
-      showWarmupToast("Full import failed", true);
+      showWarmupToast(t.toast.fullImportFailed, true);
     } finally {
       setIsImportingFull(false);
     }
@@ -1171,8 +1334,8 @@ function App() {
   };
 
   const topToolbarInfo = hasRunningProcesses
-    ? `${processInfo?.count ?? 0} running Codex process${processInfo?.count === 1 ? "" : "es"}`
-    : "Ready to switch";
+    ? `${processInfo?.count ?? 0} ${processInfo?.count === 1 ? t.common.process : t.common.processes}`
+    : t.common.readyToSwitch;
 
   return (
     <div
@@ -1219,7 +1382,7 @@ function App() {
                   </div>
                   <div className="brand-copy">
                     <div className="brand-title">Codex Switcher</div>
-                    <div className="brand-subtitle">Account control surface</div>
+                    <div className="brand-subtitle">{t.sidebar.subtitle}</div>
                   </div>
                 </>
               )}
@@ -1228,7 +1391,7 @@ function App() {
                 className={`ui-icon-button ${isSidebarExpanded ? "" : "sidebar-expand-button"}`}
                 style={{ marginLeft: "auto" }}
                 onClick={() => setIsSidebarExpanded((prev) => !prev)}
-                title={isSidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
+                title={isSidebarExpanded ? t.sidebar.collapse : t.sidebar.expand}
               >
                 {isSidebarExpanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
               </button>
@@ -1246,8 +1409,8 @@ function App() {
                       setAccountSearchQuery(nextValue);
                     });
                   }}
-                  placeholder="Find account"
-                  aria-label="Find account"
+                  placeholder={t.sidebar.search}
+                  aria-label={t.sidebar.search}
                 />
               )}
             </div>
@@ -1261,20 +1424,20 @@ function App() {
                   setIsAddModalOpen(true);
                 }}
                 style={isSidebarExpanded ? undefined : narrowButtonStyle}
-                title="Add account"
+                title={t.sidebar.addAccount}
               >
                 <BadgePlus size={16} />
-                {isSidebarExpanded && "Add account"}
+                {isSidebarExpanded && t.sidebar.addAccount}
               </button>
               <button
                 type="button"
                 className="ui-action-button"
                 onClick={() => setIsSettingsOpen(true)}
                 style={isSidebarExpanded ? undefined : narrowButtonStyle}
-                title="Open settings"
+                title={t.sidebar.openSettings}
               >
                 <Settings2 size={16} />
-                {isSidebarExpanded && "Settings"}
+                {isSidebarExpanded && t.sidebar.settings}
               </button>
             </div>
           </div>
@@ -1292,6 +1455,7 @@ function App() {
                     onSelect={() => handleSidebarSelect(account.id)}
                     pending={pendingSidebarSwitchId === account.id}
                     switching={switchingId === account.id}
+                    locale={resolvedLanguage}
                     onConfirmSwitch={() => {
                       void handleSwitch(account.id);
                     }}
@@ -1307,12 +1471,12 @@ function App() {
                 {isSidebarExpanded && (
                   <>
                     <h2 style={{ fontSize: "1rem" }}>
-                      {accounts.length === 0 ? "No accounts yet" : "No matching accounts"}
+                      {accounts.length === 0 ? t.sidebar.noAccounts : t.sidebar.noMatches}
                     </h2>
                     <p>
                       {accounts.length === 0
-                        ? "Add an account to populate the quick rail."
-                        : "Try a different name, email, or plan filter."}
+                        ? t.sidebar.noAccountsHint
+                        : t.sidebar.noMatchesHint}
                     </p>
                   </>
                 )}
@@ -1356,7 +1520,7 @@ function App() {
                   onClick={() => {
                     void currentWindow.minimize();
                   }}
-                  title="Minimize"
+                  title={t.common.close === "Закрыть" ? "Свернуть" : "Minimize"}
                 >
                   <ChevronDown size={16} />
                 </button>
@@ -1366,7 +1530,7 @@ function App() {
                   onClick={() => {
                     void currentWindow.toggleMaximize();
                   }}
-                  title={isWindowMaximized ? "Restore" : "Maximize"}
+                  title={isWindowMaximized ? (resolvedLanguage === "ru" ? "Восстановить" : "Restore") : (resolvedLanguage === "ru" ? "Развернуть" : "Maximize")}
                 >
                   {isWindowMaximized ? <PanelLeftOpen size={16} /> : <Monitor size={16} />}
                 </button>
@@ -1376,7 +1540,7 @@ function App() {
                   onClick={() => {
                     void currentWindow.close();
                   }}
-                  title="Close"
+                  title={t.common.close}
                 >
                   <X size={16} />
                 </button>
@@ -1387,29 +1551,29 @@ function App() {
           <main className="window-main">
             <div className="toolbar">
               <div className="toolbar-copy">
-                <h1>Strict control, calmer surface.</h1>
-                <p>Fast account control with live capacity signals.</p>
+                <h1>{t.toolbar.title}</h1>
+                <p>{t.toolbar.subtitle}</p>
               </div>
 
-              <section className="toolbar-stats-row" aria-label="Account summary">
+              <section className="toolbar-stats-row" aria-label={t.toolbar.summaryLabel}>
                 <span className="toolbar-stat">
                   <UserRound size={14} />
-                  <span>Accounts</span>
+                  <span>{t.toolbar.accounts}</span>
                   <strong>{summary.total}</strong>
                 </span>
                 <span className="toolbar-stat">
                   <ShieldCheck size={14} />
-                  <span>Available</span>
+                  <span>{t.toolbar.available}</span>
                   <strong>{summary.availableCount}</strong>
                 </span>
                 <span className="toolbar-stat">
                   <CircleOff size={14} />
-                  <span>Near limit</span>
+                  <span>{t.toolbar.nearLimit}</span>
                   <strong>{summary.nearLimitCount}</strong>
                 </span>
                 <span className="toolbar-stat">
                   <AlertTriangle size={14} />
-                  <span>Errors</span>
+                  <span>{t.toolbar.errors}</span>
                   <strong>{summary.errorCount}</strong>
                 </span>
               </section>
@@ -1420,14 +1584,14 @@ function App() {
                   className="ui-action-button"
                   onClick={toggleAllMasks}
                   disabled={accounts.length === 0}
-                  title={allAccountsMasked ? "Show all account emails" : "Hide all account emails"}
+                  title={allAccountsMasked ? t.toolbar.showEmailsTitle : t.toolbar.hideEmailsTitle}
                 >
                   {allAccountsMasked ? <EyeOff size={16} /> : <Eye size={16} />}
-                  {allAccountsMasked ? "Show emails" : "Hide emails"}
+                  {allAccountsMasked ? t.toolbar.showEmails : t.toolbar.hideEmails}
                 </button>
                 <button type="button" className="ui-action-button" onClick={() => setIsSettingsOpen(true)}>
                   <Palette size={16} />
-                  Appearance
+                  {t.toolbar.appearance}
                 </button>
                 <button
                   type="button"
@@ -1438,7 +1602,7 @@ function App() {
                   disabled={isWarmingAll || accounts.length === 0}
                 >
                   <Activity size={16} className={isWarmingAll ? "pulse-soft" : undefined} />
-                  Warm up all
+                  {t.toolbar.warmAll}
                 </button>
                 <button
                   type="button"
@@ -1449,7 +1613,7 @@ function App() {
                   disabled={isRefreshing}
                 >
                   <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
-                  Refresh
+                  {t.toolbar.refresh}
                 </button>
               </div>
             </div>
@@ -1462,8 +1626,8 @@ function App() {
                       <div className="loading-state-icon">
                         <RefreshCcw size={24} className="spin" />
                       </div>
-                      <h2>Loading accounts</h2>
-                      <p>Pulling account list and cached usage data into the new shell.</p>
+                      <h2>{t.states.loadingAccounts}</h2>
+                      <p>{t.states.loadingHint}</p>
                     </div>
                   </div>
                 ) : error ? (
@@ -1472,10 +1636,10 @@ function App() {
                       <div className="error-state-icon">
                         <AlertTriangle size={24} />
                       </div>
-                      <h2>{isBackendUnavailable ? "Backend is not connected" : "Failed to load accounts"}</h2>
+                      <h2>{isBackendUnavailable ? t.states.backendDisconnected : t.states.failedAccounts}</h2>
                       <p>
                         {isBackendUnavailable
-                          ? "The static preview does not include the account API. Run the Tauri app or `pnpm lan` once Rust is available to inspect the live dashboard."
+                          ? t.states.backendHint
                           : error}
                       </p>
                     </div>
@@ -1486,15 +1650,15 @@ function App() {
                       <div className="empty-state-icon">
                         <UserRound size={24} />
                       </div>
-                      <h2>No accounts yet</h2>
-                      <p>Add your first Codex account to start switching, tracking limits, and organizing access.</p>
+                      <h2>{t.sidebar.noAccounts}</h2>
+                      <p>{t.states.noAccountsHint}</p>
                       <button
                         type="button"
                         className="ui-action-button is-primary"
                         onClick={() => setIsAddModalOpen(true)}
                       >
                         <BadgePlus size={16} />
-                        Add account
+                        {t.sidebar.addAccount}
                       </button>
                     </div>
                   </div>
@@ -1504,14 +1668,14 @@ function App() {
                       <div className="empty-state-icon">
                         <Search size={24} />
                       </div>
-                      <h2>No results</h2>
-                      <p>Nothing matches the current search. Clear the filter or try a different keyword.</p>
+                      <h2>{t.states.noResults}</h2>
+                      <p>{t.states.noResultsHint}</p>
                       <button
                         type="button"
                         className="ui-action-button"
                         onClick={() => setAccountSearchQuery("")}
                       >
-                        Clear search
+                        {t.states.clearSearch}
                       </button>
                     </div>
                   </div>
@@ -1524,7 +1688,7 @@ function App() {
                             {(() => {
                               const planVisual = getPlanVisual(filteredActiveAccount);
                               const primaryRemaining = getUsageRemaining(filteredActiveAccount.usage?.primary_used_percent);
-                              const weeklyRemaining = getUsageRemaining(filteredActiveAccount.usage?.secondary_used_percent);
+                              const resetItems = getActiveResetItems(filteredActiveAccount, resolvedLanguage);
                               const isMasked = maskedAccounts.has(filteredActiveAccount.id);
 
                               return (
@@ -1542,30 +1706,29 @@ function App() {
                               <div className="active-account-mini-tags">
                                 <span className="account-active-chip">
                                   <ShieldCheck size={13} />
-                                  Active
+                                  {t.account.active}
                                 </span>
                                 <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
                                   {planVisual.label}
                                 </span>
                                 {primaryRemaining !== null && (
                                   <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
-                                    {primaryRemaining.toFixed(0)}% left
+                                    {primaryRemaining.toFixed(0)}% {t.account.left}
                                   </span>
                                 )}
                               </div>
                             </div>
-                            <div className="active-account-mini-rail">
-                              <div>
-                                <span>5h reset</span>
-                                <strong>{formatResetCountdown(filteredActiveAccount.usage?.primary_resets_at)}</strong>
-                                {primaryRemaining !== null && <em>{primaryRemaining.toFixed(0)}%</em>}
-                              </div>
-                              <div>
-                                <span>7d reset</span>
-                                <strong>{formatResetCountdown(filteredActiveAccount.usage?.secondary_resets_at)}</strong>
-                                {weeklyRemaining !== null && <em>{weeklyRemaining.toFixed(0)}%</em>}
-                              </div>
+                            {resetItems.length > 0 && (
+                            <div className={`active-account-mini-rail ${resetItems.length === 1 ? "is-single" : ""}`}>
+                              {resetItems.map((item) => (
+                                <div key={item.key}>
+                                  <span>{item.label}</span>
+                                  <strong>{formatResetCountdown(item.resetsAt, resolvedLanguage)}</strong>
+                                  {item.remaining !== null && <em>{item.remaining.toFixed(0)}%</em>}
+                                </div>
+                              ))}
                             </div>
+                            )}
                                 </>
                               );
                             })()}
@@ -1580,8 +1743,8 @@ function App() {
                           <div className="surface-panel-title">
                             <LayoutPanelLeft size={18} />
                             <div>
-                              <h2>Account pool</h2>
-                              <p>Jump between standby accounts with cleaner states and calmer hierarchy.</p>
+                              <h2>{t.pool.title}</h2>
+                              <p>{t.pool.subtitle}</p>
                             </div>
                           </div>
 
@@ -1592,9 +1755,9 @@ function App() {
                                 onChange={(event) => setOtherAccountsSort(event.target.value as SortMode)}
                                 className="ui-select"
                               >
-                                {Object.entries(sortLabels).map(([value, label]) => (
+                                {(Object.keys(sortLabels) as SortMode[]).map((value) => (
                                   <option key={value} value={value}>
-                                    {label}
+                                    {t.sort[value]}
                                   </option>
                                 ))}
                               </select>
@@ -1620,6 +1783,7 @@ function App() {
                                   warmingUp={isWarmingAll || warmingUpId === account.id}
                                   masked={maskedAccounts.has(account.id)}
                                   onToggleMask={() => toggleMask(account.id)}
+                                  locale={resolvedLanguage}
                                 />
                               </div>
                             ))}
@@ -1637,13 +1801,16 @@ function App() {
 
       {isSettingsOpen && (
         <SettingsPanel
-          themeMode={themeMode}
+          themePreference={themePreference}
+          languagePreference={languagePreference}
+          t={t}
           accentPreset={accentPreset}
           cardDensity={cardDensity}
           isExportingFull={isExportingFull}
           isImportingFull={isImportingFull}
           hasAccounts={accounts.length > 0}
-          onThemeChange={setThemeMode}
+          onThemeChange={setThemePreference}
+          onLanguageChange={setLanguagePreference}
           onAccentChange={setAccentPreset}
           onCardDensityChange={setCardDensity}
           onClose={() => setIsSettingsOpen(false)}
@@ -1673,6 +1840,7 @@ function App() {
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
+        locale={resolvedLanguage}
       />
 
       {isConfigModalOpen && (
@@ -1682,6 +1850,7 @@ function App() {
           error={configModalError}
           loading={configModalMode === "slim_export" ? isExportingSlim : isImportingSlim}
           copied={configCopied}
+          t={t}
           onClose={() => setIsConfigModalOpen(false)}
           onPayloadChange={setConfigPayload}
           onSubmit={() => {
@@ -1696,7 +1865,11 @@ function App() {
                 setTimeout(() => setConfigCopied(false), 1500);
               })
               .catch(() => {
-                setConfigModalError("Clipboard unavailable. Copy the payload manually.");
+                setConfigModalError(
+                  resolvedLanguage === "ru"
+                    ? "Буфер обмена недоступен. Скопируй payload вручную."
+                    : "Clipboard unavailable. Copy the payload manually."
+                );
               });
           }}
         />
