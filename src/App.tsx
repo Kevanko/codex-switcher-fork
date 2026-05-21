@@ -7,7 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Activity,
@@ -20,6 +21,8 @@ import {
   Crown,
   Database,
   Download,
+  Eye,
+  EyeOff,
   FolderInput,
   LayoutPanelLeft,
   Monitor,
@@ -48,6 +51,7 @@ import "./App.css";
 const THEME_STORAGE_KEY = "codex-switcher-theme";
 const ACCENT_STORAGE_KEY = "codex-switcher-accent";
 const SIDEBAR_STORAGE_KEY = "codex-switcher-sidebar-expanded";
+const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
 const OTHER_ACCOUNTS_SORT_STORAGE_KEY = "codex-switcher-other-accounts-sort";
 const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
 
@@ -67,6 +71,8 @@ const currentWindow = isTauriRuntime() ? getCurrentWindow() : null;
 const isMacOs =
   typeof navigator !== "undefined" &&
   /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent);
+
+type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
 const accentPresets: Record<
   AccentPreset,
@@ -152,6 +158,35 @@ function getRemainingPercent(account: AccountWithUsage) {
   }
 
   return Math.max(0, 100 - account.usage.primary_used_percent);
+}
+
+function getResetProgressPercent(account: AccountWithUsage) {
+  const resetsAt = account.usage?.primary_resets_at;
+  const windowMinutes = account.usage?.primary_window_minutes;
+  if (!resetsAt || !windowMinutes) return null;
+
+  const nowSeconds = Date.now() / 1000;
+  const windowSeconds = windowMinutes * 60;
+  const remainingSeconds = Math.max(0, resetsAt - nowSeconds);
+  const elapsedRatio = 1 - Math.min(1, remainingSeconds / windowSeconds);
+
+  return Math.round(Math.max(0, Math.min(100, elapsedRatio * 100)));
+}
+
+function formatResetCountdown(resetAt: number | null | undefined): string {
+  if (!resetAt) return "Unknown";
+
+  const diff = resetAt - Math.floor(Date.now() / 1000);
+  if (diff <= 0) return "Now";
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`;
+  return `${Math.floor(diff / 86400)}d`;
+}
+
+function getUsageRemaining(usedPercent: number | null | undefined) {
+  if (usedPercent === null || usedPercent === undefined) return null;
+  return Math.max(0, 100 - usedPercent);
 }
 
 function isAccountNearLimit(account: AccountWithUsage) {
@@ -242,8 +277,16 @@ function SidebarAccountButton({
 }) {
   const tone = getAccountHealthTone(account);
   const remaining = getRemainingPercent(account);
+  const resetProgress = getResetProgressPercent(account);
   const planVisual = getPlanVisual(account);
-  const compactStatus = remaining !== null ? `${remaining.toFixed(0)}%` : planVisual.shortLabel;
+  const isWaitingForReset = tone === "danger" && remaining !== null && remaining <= 10;
+  const isPremiumLimit = planVisual.premium && isWaitingForReset;
+  const ringPercent = isWaitingForReset ? (resetProgress ?? 12) : (remaining ?? 0);
+  const compactStatus = isWaitingForReset
+    ? `${Math.round(ringPercent)}%`
+    : remaining !== null
+      ? `${remaining.toFixed(0)}%`
+      : planVisual.shortLabel;
   const statusText =
     tone === "danger"
       ? account.usage?.error
@@ -265,9 +308,13 @@ function SidebarAccountButton({
         onClick={onSelect}
         title={expanded ? undefined : `${account.name} - ${planVisual.label} - ${statusText}`}
       >
-        <span className={`sidebar-account-badge is-${tone} is-plan-${planVisual.tone}`}>
+        <span
+          className={`sidebar-account-badge is-${tone} is-plan-${planVisual.tone} ${isPremiumLimit ? "is-premium-limit" : ""}`}
+          style={{ "--sidebar-ring-percent": `${ringPercent}%` } as CSSProperties}
+        >
+          {!expanded && <span className="sidebar-usage-ring" aria-hidden="true" />}
           {planVisual.premium && <Crown className="sidebar-plan-crown" size={11} />}
-          <UserRound size={18} />
+          <UserRound className="sidebar-user-icon" size={22} />
           {!expanded && <span className="sidebar-compact-percent">{compactStatus}</span>}
         </span>
         {expanded && (
@@ -308,27 +355,6 @@ function SidebarAccountButton({
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-function SummaryCard({
-  icon,
-  label,
-  value,
-  note,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  note: string;
-}) {
-  return (
-    <div className="summary-card">
-      <div className="summary-icon">{icon}</div>
-      <div className="summary-label">{label}</div>
-      <div className="summary-value">{value}</div>
-      <div className="summary-note">{note}</div>
     </div>
   );
 }
@@ -696,6 +722,11 @@ function App() {
     void currentWindow.toggleMaximize();
   }, []);
 
+  const handleResizeDrag = useCallback((direction: ResizeDirection) => {
+    if (!isTauriRuntime() || !currentWindow) return;
+    void currentWindow.startResizeDragging(direction);
+  }, []);
+
   const checkProcesses = useCallback(async () => {
     try {
       const info = await invokeBackend<CodexProcessInfo>("check_codex_processes");
@@ -801,6 +832,7 @@ function App() {
     if (!isTauriRuntime() || isMacOs || !currentWindow) return;
 
     let unlisten: (() => void) | undefined;
+    let saveTimer: number | undefined;
 
     const syncMaximizedState = async () => {
       try {
@@ -810,11 +842,39 @@ function App() {
       }
     };
 
+    const restoreSavedWindowSize = async () => {
+      try {
+        const saved = window.localStorage.getItem(WINDOW_SIZE_STORAGE_KEY);
+        if (!saved) return;
+
+        const parsed = JSON.parse(saved) as { width?: number; height?: number };
+        const width = Math.min(2200, Math.max(720, Math.round(parsed.width ?? 0)));
+        const height = Math.min(1400, Math.max(540, Math.round(parsed.height ?? 0)));
+        if (width && height) {
+          await currentWindow.setSize(new LogicalSize(width, height));
+        }
+      } catch (err) {
+        console.error("Failed to restore window size:", err);
+      }
+    };
+
     void syncMaximizedState();
+    void restoreSavedWindowSize();
 
     currentWindow
       .onResized(() => {
         void syncMaximizedState();
+        if (saveTimer) window.clearTimeout(saveTimer);
+        saveTimer = window.setTimeout(() => {
+          try {
+            window.localStorage.setItem(
+              WINDOW_SIZE_STORAGE_KEY,
+              JSON.stringify({ width: window.innerWidth, height: window.innerHeight })
+            );
+          } catch {
+            // Ignore storage errors for window geometry.
+          }
+        }, 180);
       })
       .then((fn) => {
         unlisten = fn;
@@ -824,6 +884,7 @@ function App() {
       });
 
     return () => {
+      if (saveTimer) window.clearTimeout(saveTimer);
       unlisten?.();
     };
   }, []);
@@ -836,6 +897,17 @@ function App() {
       } else {
         next.add(accountId);
       }
+      void saveMaskedAccountIds(Array.from(next));
+      return next;
+    });
+  };
+
+  const allAccountsMasked = accounts.length > 0 && accounts.every((account) => maskedAccounts.has(account.id));
+
+  const toggleAllMasks = () => {
+    setMaskedAccounts((prev) => {
+      const shouldRevealAll = accounts.length > 0 && accounts.every((account) => prev.has(account.id));
+      const next = shouldRevealAll ? new Set<string>() : new Set(accounts.map((account) => account.id));
       void saveMaskedAccountIds(Array.from(next));
       return next;
     });
@@ -1058,9 +1130,11 @@ function App() {
     const total = accounts.length;
     const errorCount = accounts.filter((account) => Boolean(account.usage?.error)).length;
     const nearLimitCount = accounts.filter((account) => isAccountNearLimit(account)).length;
-    const activeCount = activeAccount ? 1 : 0;
-    return { total, errorCount, nearLimitCount, activeCount };
-  }, [accounts, activeAccount]);
+    const availableCount = accounts.filter(
+      (account) => !account.usage?.error && !isAccountNearLimit(account)
+    ).length;
+    return { total, errorCount, nearLimitCount, availableCount };
+  }, [accounts]);
 
   const hasRunningProcesses = processInfo && processInfo.count > 0;
   const isBackendUnavailable =
@@ -1093,7 +1167,7 @@ function App() {
 
     setPendingSidebarSwitchId(null);
     const target = activeAccount?.id === accountId ? activeSectionRef.current : accountRefs.current[accountId];
-    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
 
   const topToolbarInfo = hasRunningProcesses
@@ -1101,21 +1175,57 @@ function App() {
     : "Ready to switch";
 
   return (
-    <div className={`app-shell density-${cardDensity}`} style={shellStyle}>
-      <div className="app-frame">
-        <aside className={`app-sidebar ${isSidebarExpanded ? "is-expanded" : ""}`}>
+    <div
+      className={`app-shell density-${cardDensity}`}
+      style={shellStyle}
+      onMouseDown={handleTitlebarDrag}
+      onDragStart={(event) => event.preventDefault()}
+      data-tauri-drag-region
+    >
+      {([
+        ["North", "resize-handle is-n"],
+        ["South", "resize-handle is-s"],
+        ["West", "resize-handle is-w"],
+        ["East", "resize-handle is-e"],
+        ["NorthWest", "resize-handle is-nw"],
+        ["NorthEast", "resize-handle is-ne"],
+        ["SouthWest", "resize-handle is-sw"],
+        ["SouthEast", "resize-handle is-se"],
+      ] as [ResizeDirection, string][]).map(([direction, className]) => (
+        <div
+          key={direction}
+          className={className}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            handleResizeDrag(direction);
+          }}
+          aria-hidden="true"
+        />
+      ))}
+      <div
+        className="app-frame"
+        onMouseDown={handleTitlebarDrag}
+        onDragStart={(event) => event.preventDefault()}
+        data-tauri-drag-region
+      >
+        <aside className={`app-sidebar ${isSidebarExpanded ? "is-expanded" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
           <div className="sidebar-section">
             <div className="sidebar-top">
-              <div className="brand-mark">
-                <LayoutPanelLeft size={20} />
-              </div>
-              <div className="brand-copy">
-                <div className="brand-title">Codex Switcher</div>
-                <div className="brand-subtitle">Account control surface</div>
-              </div>
+              {isSidebarExpanded && (
+                <>
+                  <div className="brand-mark">
+                    <LayoutPanelLeft size={20} />
+                  </div>
+                  <div className="brand-copy">
+                    <div className="brand-title">Codex Switcher</div>
+                    <div className="brand-subtitle">Account control surface</div>
+                  </div>
+                </>
+              )}
               <button
                 type="button"
-                className="ui-icon-button"
+                className={`ui-icon-button ${isSidebarExpanded ? "" : "sidebar-expand-button"}`}
                 style={{ marginLeft: "auto" }}
                 onClick={() => setIsSidebarExpanded((prev) => !prev)}
                 title={isSidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
@@ -1218,7 +1328,16 @@ function App() {
           </div>
         </aside>
 
-        <div className="main-shell">
+        <div
+          className="main-shell"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              handleTitlebarDrag(event);
+              return;
+            }
+            event.stopPropagation();
+          }}
+        >
           <header
             className="window-bar"
             onMouseDown={handleTitlebarDrag}
@@ -1269,17 +1388,43 @@ function App() {
             <div className="toolbar">
               <div className="toolbar-copy">
                 <h1>Strict control, calmer surface.</h1>
-                <p>
-                  Track active capacity, jump between accounts quickly, and keep all management
-                  actions in one restrained matte-tech shell.
-                </p>
+                <p>Fast account control with live capacity signals.</p>
               </div>
 
+              <section className="toolbar-stats-row" aria-label="Account summary">
+                <span className="toolbar-stat">
+                  <UserRound size={14} />
+                  <span>Accounts</span>
+                  <strong>{summary.total}</strong>
+                </span>
+                <span className="toolbar-stat">
+                  <ShieldCheck size={14} />
+                  <span>Available</span>
+                  <strong>{summary.availableCount}</strong>
+                </span>
+                <span className="toolbar-stat">
+                  <CircleOff size={14} />
+                  <span>Near limit</span>
+                  <strong>{summary.nearLimitCount}</strong>
+                </span>
+                <span className="toolbar-stat">
+                  <AlertTriangle size={14} />
+                  <span>Errors</span>
+                  <strong>{summary.errorCount}</strong>
+                </span>
+              </section>
+
               <div className="toolbar-actions">
-                <div className="toolbar-pill">
-                  <span className={`status-dot is-${hasRunningProcesses ? "warning" : "success"}`} />
-                  {topToolbarInfo}
-                </div>
+                <button
+                  type="button"
+                  className="ui-action-button"
+                  onClick={toggleAllMasks}
+                  disabled={accounts.length === 0}
+                  title={allAccountsMasked ? "Show all account emails" : "Hide all account emails"}
+                >
+                  {allAccountsMasked ? <EyeOff size={16} /> : <Eye size={16} />}
+                  {allAccountsMasked ? "Show emails" : "Hide emails"}
+                </button>
                 <button type="button" className="ui-action-button" onClick={() => setIsSettingsOpen(true)}>
                   <Palette size={16} />
                   Appearance
@@ -1310,33 +1455,6 @@ function App() {
             </div>
 
             <div className="dashboard-grid">
-              <section className="summary-grid">
-                <SummaryCard
-                  icon={<UserRound size={18} />}
-                  label="Accounts"
-                  value={String(summary.total)}
-                  note={`${summary.total === 0 ? "No accounts yet" : `${summary.total} profiles available`}`}
-                />
-                <SummaryCard
-                  icon={<ShieldCheck size={18} />}
-                  label="Active"
-                  value={String(summary.activeCount)}
-                  note={activeAccount ? activeAccount.name : "No active account"}
-                />
-                <SummaryCard
-                  icon={<CircleOff size={18} />}
-                  label="Near limit"
-                  value={String(summary.nearLimitCount)}
-                  note={summary.nearLimitCount > 0 ? "Needs rotation soon" : "No accounts under pressure"}
-                />
-                <SummaryCard
-                  icon={<AlertTriangle size={18} />}
-                  label="Errors"
-                  value={String(summary.errorCount)}
-                  note={summary.errorCount > 0 ? "Review failed usage fetches" : "No usage errors detected"}
-                />
-              </section>
-
               <div className="content-stack">
                 {loading && accounts.length === 0 ? (
                   <div className="surface-panel">
@@ -1400,34 +1518,57 @@ function App() {
                 ) : (
                   <>
                     {filteredActiveAccount && (
-                      <section className="surface-panel" ref={activeSectionRef}>
-                        <div className="surface-panel-header">
-                          <div className="surface-panel-title">
-                            <ShieldCheck size={18} />
-                            <div>
-                              <h2>Active account</h2>
-                              <p>Primary account stays isolated with the strongest visual priority.</p>
-                            </div>
-                          </div>
-                        </div>
+                      <section className="surface-panel active-account-panel" ref={activeSectionRef}>
                         <div className="panel-body">
-                          <div ref={registerAccountRef(filteredActiveAccount.id)}>
-                            <AccountCard
-                              account={filteredActiveAccount}
-                              onSwitch={() => {}}
-                              onWarmup={() =>
-                                handleWarmupAccount(filteredActiveAccount.id, filteredActiveAccount.name)
-                              }
-                              onDelete={() => handleDelete(filteredActiveAccount.id)}
-                              onRefresh={() =>
-                                refreshSingleUsage(filteredActiveAccount.id, { refreshMetadata: true })
-                              }
-                              onRename={(newName) => renameAccount(filteredActiveAccount.id, newName)}
-                              switching={switchingId === filteredActiveAccount.id}
-                              warmingUp={isWarmingAll || warmingUpId === filteredActiveAccount.id}
-                              masked={maskedAccounts.has(filteredActiveAccount.id)}
-                              onToggleMask={() => toggleMask(filteredActiveAccount.id)}
-                            />
+                          <div className="active-account-mini" ref={registerAccountRef(filteredActiveAccount.id)}>
+                            {(() => {
+                              const planVisual = getPlanVisual(filteredActiveAccount);
+                              const primaryRemaining = getUsageRemaining(filteredActiveAccount.usage?.primary_used_percent);
+                              const weeklyRemaining = getUsageRemaining(filteredActiveAccount.usage?.secondary_used_percent);
+                              const isMasked = maskedAccounts.has(filteredActiveAccount.id);
+
+                              return (
+                                <>
+                            <div className="active-account-mini-icon">
+                              <ShieldCheck size={17} />
+                            </div>
+                            <div className="active-account-mini-copy">
+                              <div className="active-account-mini-name">{filteredActiveAccount.name}</div>
+                              {filteredActiveAccount.email && (
+                                <div className="active-account-mini-email">
+                                  <span className={isMasked ? "masked-text" : ""}>{filteredActiveAccount.email}</span>
+                                </div>
+                              )}
+                              <div className="active-account-mini-tags">
+                                <span className="account-active-chip">
+                                  <ShieldCheck size={13} />
+                                  Active
+                                </span>
+                                <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
+                                  {planVisual.label}
+                                </span>
+                                {primaryRemaining !== null && (
+                                  <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
+                                    {primaryRemaining.toFixed(0)}% left
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="active-account-mini-rail">
+                              <div>
+                                <span>5h reset</span>
+                                <strong>{formatResetCountdown(filteredActiveAccount.usage?.primary_resets_at)}</strong>
+                                {primaryRemaining !== null && <em>{primaryRemaining.toFixed(0)}%</em>}
+                              </div>
+                              <div>
+                                <span>7d reset</span>
+                                <strong>{formatResetCountdown(filteredActiveAccount.usage?.secondary_resets_at)}</strong>
+                                {weeklyRemaining !== null && <em>{weeklyRemaining.toFixed(0)}%</em>}
+                              </div>
+                            </div>
+                                </>
+                              );
+                            })()}
                           </div>
                         </div>
                       </section>

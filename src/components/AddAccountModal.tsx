@@ -125,8 +125,7 @@ export function AddAccountModal({
       }}
     >
       <div
-        className="config-panel fade-up"
-        style={{ maxWidth: 620 }}
+        className="config-panel add-account-panel fade-up"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="config-header">
@@ -140,10 +139,10 @@ export function AddAccountModal({
         </div>
 
         <div className="config-body">
-          <div className="segment-row">
+          <div className="add-account-tabs">
             <button
               type="button"
-              className={`ui-segment-button ${activeTab === "oauth" ? "is-selected" : ""}`}
+              className={`ui-segment-button add-account-tab ${activeTab === "oauth" ? "is-selected" : ""}`}
               onClick={() => {
                 if (oauthPending) {
                   void onCancelOAuth().catch((err) => {
@@ -161,7 +160,7 @@ export function AddAccountModal({
             </button>
             <button
               type="button"
-              className={`ui-segment-button ${activeTab === "import" ? "is-selected" : ""}`}
+              className={`ui-segment-button add-account-tab ${activeTab === "import" ? "is-selected" : ""}`}
               onClick={() => {
                 if (oauthPending) {
                   void onCancelOAuth().catch((err) => {
