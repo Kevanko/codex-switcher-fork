@@ -30,8 +30,32 @@ pub fn load_accounts() -> Result<AccountsStore> {
     let content = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read accounts file: {}", path.display()))?;
 
-    let mut store: AccountsStore = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse accounts file: {}", path.display()))?;
+    let mut store: AccountsStore = match serde_json::from_str(&content) {
+        Ok(store) => store,
+        Err(parse_error) => {
+            if let Some(repaired) = repair_known_trailing_json_corruption(&content) {
+                let backup_path = path.with_file_name(format!(
+                    "accounts.json.broken-{}",
+                    Utc::now().format("%Y%m%d-%H%M%S")
+                ));
+                fs::write(&backup_path, &content).with_context(|| {
+                    format!("Failed to backup broken accounts file: {}", backup_path.display())
+                })?;
+                let store: AccountsStore = serde_json::from_str(&repaired).with_context(|| {
+                    format!(
+                        "Failed to parse repaired accounts file after backing up {}",
+                        backup_path.display()
+                    )
+                })?;
+                fs::write(&path, repaired)
+                    .with_context(|| format!("Failed to write repaired accounts file: {}", path.display()))?;
+                store
+            } else {
+                return Err(parse_error)
+                    .with_context(|| format!("Failed to parse accounts file: {}", path.display()));
+            }
+        }
+    };
 
     migrate_store(&mut store);
 
@@ -53,8 +77,28 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
     let content = serde_json::to_string_pretty(&normalized)
         .context("Failed to serialize accounts store")?;
 
-    fs::write(&path, content)
-        .with_context(|| format!("Failed to write accounts file: {}", path.display()))?;
+    let temp_path = path.with_file_name(format!(
+        ".accounts.json.tmp-{}",
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000)
+    ));
+
+    fs::write(&temp_path, content)
+        .with_context(|| format!("Failed to write temporary accounts file: {}", temp_path.display()))?;
+
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("Failed to replace accounts file: {}", path.display()))?;
+    }
+
+    fs::rename(&temp_path, &path).with_context(|| {
+        format!(
+            "Failed to move temporary accounts file {} to {}",
+            temp_path.display(),
+            path.display()
+        )
+    })?;
 
     // Set restrictive permissions on Unix
     #[cfg(unix)]
@@ -65,6 +109,28 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn repair_known_trailing_json_corruption(content: &str) -> Option<String> {
+    let trimmed = content.trim_end();
+    if !trimmed.ends_with("}]\n}") && !trimmed.ends_with("}]\r\n}") {
+        return None;
+    }
+
+    let mut repaired = trimmed.to_string();
+    let marker = "}]\n}";
+    if let Some(index) = repaired.rfind(marker) {
+        repaired.replace_range(index.., "}");
+        return Some(repaired);
+    }
+
+    let marker = "}]\r\n}";
+    if let Some(index) = repaired.rfind(marker) {
+        repaired.replace_range(index.., "}");
+        return Some(repaired);
+    }
+
+    None
 }
 
 fn migrate_store(store: &mut AccountsStore) {

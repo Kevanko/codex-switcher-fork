@@ -13,13 +13,15 @@
     "windows": [
       {
         "title": "Codex Switcher",
-        "width": 900,
-        "height": 700,
-        "minWidth": 600,
-        "minHeight": 500,
+        "width": 1120,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 540,
+        "resizable": true,
         "transparent": true,
         "decorations": false,
-        "shadow": true
+        "shadow": false,
+        "backgroundColor": "#00000000"
       }
     ],
     "security": {

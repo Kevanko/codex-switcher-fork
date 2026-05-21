@@ -28,7 +28,16 @@ export function getPlanVisual(account: AccountWithUsage): {
     };
   }
 
-  if (normalized.includes("plus") || normalized.includes("pro")) {
+  if (normalized.includes("pro")) {
+    return {
+      label: "Pro",
+      shortLabel: "PR",
+      tone: "plus",
+      premium: true,
+    };
+  }
+
+  if (normalized.includes("plus")) {
     return {
       label: "Plus",
       shortLabel: "P+",
