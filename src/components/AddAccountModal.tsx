@@ -15,6 +15,7 @@ import {
   pickAuthJsonFile,
   type FileSource,
 } from "../lib/platform";
+import { translations, type Locale } from "../i18n";
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -23,6 +24,7 @@ interface AddAccountModalProps {
   onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
   onCompleteOAuth: () => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;
+  locale?: Locale;
 }
 
 type Tab = "oauth" | "import";
@@ -34,6 +36,7 @@ export function AddAccountModal({
   onStartOAuth,
   onCompleteOAuth,
   onCancelOAuth,
+  locale = "en",
 }: AddAccountModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>("oauth");
   const [name, setName] = useState("");
@@ -44,6 +47,7 @@ export function AddAccountModal({
   const [authUrl, setAuthUrl] = useState("");
   const [copied, setCopied] = useState(false);
   const tauriRuntime = isTauriRuntime();
+  const t = translations[locale];
 
   const resetForm = () => {
     setName("");
@@ -65,7 +69,7 @@ export function AddAccountModal({
 
   const handleOAuthLogin = async () => {
     if (!name.trim()) {
-      setError("Enter an account name first.");
+      setError(t.addAccount.enterName);
       return;
     }
 
@@ -96,11 +100,11 @@ export function AddAccountModal({
 
   const handleImportFile = async () => {
     if (!name.trim()) {
-      setError("Enter an account name first.");
+      setError(t.addAccount.enterName);
       return;
     }
     if (!fileSource) {
-      setError("Select an auth.json file.");
+      setError(t.addAccount.selectFile);
       return;
     }
 
@@ -130,10 +134,10 @@ export function AddAccountModal({
       >
         <div className="config-header">
           <div>
-            <h2>Add account</h2>
-            <p>Use a clean login flow or import an existing `auth.json` file.</p>
+            <h2>{t.addAccount.title}</h2>
+            <p>{t.addAccount.subtitle}</p>
           </div>
-          <button type="button" className="ui-icon-button" onClick={handleClose} title="Close">
+          <button type="button" className="ui-icon-button" onClick={handleClose} title={t.common.close}>
             <X size={16} />
           </button>
         </div>
@@ -156,7 +160,7 @@ export function AddAccountModal({
               }}
             >
               <ShieldCheck size={16} />
-              ChatGPT login
+              <span>{t.addAccount.oauthTab}</span>
             </button>
             <button
               type="button"
@@ -174,20 +178,20 @@ export function AddAccountModal({
               }}
             >
               <ArrowUpFromLine size={16} />
-              Import file
+              <span>{t.addAccount.importTab}</span>
             </button>
           </div>
 
           <label className="settings-section">
             <div>
-              <h3>Account name</h3>
-              <p>This label is used in the sidebar and account switcher.</p>
+              <h3>{t.addAccount.name}</h3>
+              <p>{t.addAccount.nameHint}</p>
             </div>
             <input
               type="text"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Work account"
+              placeholder={t.addAccount.namePlaceholder}
               className="ui-input"
             />
           </label>
@@ -195,18 +199,18 @@ export function AddAccountModal({
           {activeTab === "oauth" ? (
             <div className="settings-section">
               <div>
-                <h3>Secure login</h3>
-                <p>Generate a login link and finish the sign-in in your browser.</p>
+                <h3>{t.addAccount.secureLogin}</h3>
+                <p>{t.addAccount.secureHint}</p>
               </div>
 
               {oauthPending ? (
                 <>
                   <div className="inline-alert">
                     <KeyRound size={16} />
-                    Waiting for browser login to complete.
+                    {t.addAccount.waiting}
                   </div>
                   <div className="sidebar-search" style={{ height: "auto", minHeight: 56 }}>
-                    <input type="text" readOnly value={authUrl} aria-label="Authentication URL" />
+                    <input type="text" readOnly value={authUrl} aria-label={t.addAccount.authUrl} />
                     <button
                       type="button"
                       className="ui-icon-button"
@@ -218,10 +222,10 @@ export function AddAccountModal({
                             setTimeout(() => setCopied(false), 1800);
                           })
                           .catch(() => {
-                            setError("Clipboard unavailable. Copy the link manually.");
+                            setError(t.addAccount.clipboardUnavailable);
                           });
                       }}
-                      title={copied ? "Copied" : "Copy login link"}
+                      title={copied ? t.addAccount.copiedLink : t.addAccount.copyLink}
                     >
                       <Copy size={16} />
                     </button>
@@ -231,7 +235,7 @@ export function AddAccountModal({
                       onClick={() => {
                         void openExternalUrl(authUrl);
                       }}
-                      title="Open login link"
+                      title={t.addAccount.openLink}
                     >
                       <ExternalLink size={16} />
                     </button>
@@ -239,29 +243,29 @@ export function AddAccountModal({
                   {!tauriRuntime && (
                     <div className="inline-alert is-warning">
                       <KeyRound size={16} />
-                      OAuth must finish on the same host because the callback uses `localhost`.
+                      {t.addAccount.oauthHostWarning}
                     </div>
                   )}
                 </>
               ) : (
                 <div className="inline-alert">
                   <ShieldCheck size={16} />
-                  The app will create a login URL for the selected account name.
+                  {t.addAccount.willCreateUrl}
                 </div>
               )}
             </div>
           ) : (
             <div className="settings-section">
               <div>
-                <h3>Import existing credentials</h3>
-                <p>Choose an `auth.json` file from an existing Codex profile.</p>
+                <h3>{t.addAccount.importExisting}</h3>
+                <p>{t.addAccount.importHint}</p>
               </div>
               <div className="sidebar-search" style={{ height: "auto", minHeight: 56 }}>
                 <input
                   type="text"
                   readOnly
                   value={describeFileSource(fileSource)}
-                  aria-label="Selected auth.json file"
+                  aria-label={t.addAccount.selectedFile}
                 />
                 <button
                   type="button"
@@ -271,7 +275,7 @@ export function AddAccountModal({
                   }}
                 >
                   <FolderOpen size={16} />
-                  Browse
+                  {t.addAccount.browse}
                 </button>
               </div>
             </div>
@@ -286,7 +290,7 @@ export function AddAccountModal({
 
           <div className="modal-footer">
             <button type="button" className="ui-action-button is-ghost" onClick={handleClose}>
-              Cancel
+              {t.common.cancel}
             </button>
             <button
               type="button"
@@ -296,7 +300,7 @@ export function AddAccountModal({
               }}
               disabled={loading || (activeTab === "oauth" && oauthPending)}
             >
-              {loading ? "Working" : activeTab === "oauth" ? "Generate link" : "Import account"}
+              {loading ? t.common.working : activeTab === "oauth" ? t.addAccount.generateLink : t.addAccount.importAccount}
             </button>
           </div>
         </div>

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { AccountWithUsage } from "../types";
 import { getPlanVisual } from "../lib/accountVisuals";
+import { getDateLocale, translations, type Locale } from "../i18n";
 import { UsageBar } from "./UsageBar";
 
 interface AccountCardProps {
@@ -25,70 +26,74 @@ interface AccountCardProps {
   warmingUp?: boolean;
   masked?: boolean;
   onToggleMask?: () => void;
+  locale?: Locale;
 }
 
-function formatLastRefresh(date: Date | null): string {
-  if (!date) return "No cached usage";
+function formatLastRefresh(date: Date | null, locale: Locale): string {
+  const t = translations[locale];
+  if (!date) return t.account.noCachedUsage;
 
   const diff = Math.floor((Date.now() - date.getTime()) / 1000);
-  if (diff < 5) return "Just now";
+  if (diff < 5) return t.account.justNow;
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(getDateLocale(locale), {
     month: "short",
     day: "numeric",
   }).format(date);
 }
 
-function getSubscriptionStatus(timestamp: string | null | undefined) {
+function getSubscriptionStatus(timestamp: string | null | undefined, locale: Locale) {
+  const t = translations[locale];
   if (!timestamp) {
     return {
-      label: "Expiry unavailable",
+      label: t.account.expiryUnavailable,
       tone: "muted",
     } as const;
   }
 
   const expiryDate = new Date(timestamp);
   const remainingMs = expiryDate.getTime() - Date.now();
-  const formattedDate = new Intl.DateTimeFormat(undefined, {
+  const formattedDate = new Intl.DateTimeFormat(getDateLocale(locale), {
     month: "short",
     day: "numeric",
     year: "numeric",
   }).format(expiryDate);
 
   if (remainingMs <= 0) {
-    return { label: `Expired ${formattedDate}`, tone: "danger" } as const;
+    return { label: `${t.account.expired} ${formattedDate}`, tone: "danger" } as const;
   }
 
   if (remainingMs <= 3 * 24 * 60 * 60 * 1000) {
-    return { label: `Ends ${formattedDate}`, tone: "danger" } as const;
+    return { label: `${t.account.ends} ${formattedDate}`, tone: "danger" } as const;
   }
 
   if (remainingMs <= 7 * 24 * 60 * 60 * 1000) {
-    return { label: `Ends ${formattedDate}`, tone: "warning" } as const;
+    return { label: `${t.account.ends} ${formattedDate}`, tone: "warning" } as const;
   }
 
-  return { label: `Ends ${formattedDate}`, tone: "muted" } as const;
+  return { label: `${t.account.ends} ${formattedDate}`, tone: "muted" } as const;
 }
 
-function getUsageState(account: AccountWithUsage): {
+function getUsageState(account: AccountWithUsage, locale: Locale): {
   label: string;
   tone: "success" | "warning" | "danger" | "muted";
 } {
+  const t = translations[locale];
   if (account.usage?.error) {
-    return { label: "Usage error", tone: "danger" };
+    return { label: t.account.usageError, tone: "danger" };
   }
 
   const primaryUsed = account.usage?.primary_used_percent;
   if (primaryUsed === null || primaryUsed === undefined) {
-    return { label: "Waiting for usage", tone: "muted" };
+    return { label: t.account.waitingUsage, tone: "muted" };
   }
 
   const remaining = Math.max(0, 100 - primaryUsed);
-  if (remaining <= 10) return { label: "Critical limit", tone: "danger" };
-  if (remaining <= 30) return { label: "Approaching limit", tone: "warning" };
-  return { label: "Healthy capacity", tone: "success" };
+  if (remaining <= 0) return { label: t.account.criticalLimit, tone: "danger" };
+  if (remaining <= 30) return { label: t.account.approachingLimit, tone: "warning" };
+  return { label: t.account.healthyCapacity, tone: "success" };
 }
 
 function BlurredText({ children, blur }: { children: ReactNode; blur: boolean }) {
@@ -106,6 +111,7 @@ export function AccountCard({
   warmingUp,
   masked = false,
   onToggleMask,
+  locale = "en",
 }: AccountCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(
@@ -165,9 +171,10 @@ export function AccountCard({
     }
   };
 
+  const t = translations[locale];
   const planVisual = getPlanVisual(account);
-  const usageState = getUsageState(account);
-  const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at);
+  const usageState = getUsageState(account, locale);
+  const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at, locale);
 
   return (
     <article className={`account-card fade-up ${account.is_active ? "is-active" : ""}`}>
@@ -177,7 +184,7 @@ export function AccountCard({
             {account.is_active && (
               <span className="account-active-chip">
                 <ShieldCheck size={14} />
-                Active
+                {t.account.active}
               </span>
             )}
             <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
@@ -207,7 +214,7 @@ export function AccountCard({
                   if (masked) return;
                   setIsEditing(true);
                 }}
-                title={masked ? "Reveal account details to rename" : "Rename account"}
+                title={masked ? t.account.revealToRename : t.account.rename}
               >
                 <span className="account-name">
                   <BlurredText blur={masked}>{account.name}</BlurredText>
@@ -230,7 +237,7 @@ export function AccountCard({
               type="button"
               onClick={onToggleMask}
               className="ui-icon-button"
-              title={masked ? "Show account details" : "Hide account details"}
+              title={masked ? t.account.showDetails : t.account.hideDetails}
             >
               {masked ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
@@ -247,19 +254,19 @@ export function AccountCard({
         )}
       </div>
 
-      <UsageBar usage={account.usage} loading={isRefreshing || account.usageLoading} />
+      <UsageBar usage={account.usage} loading={isRefreshing || account.usageLoading} locale={locale} />
 
       <div className="account-footnotes">
-        <div>Last updated {formatLastRefresh(lastRefresh)}</div>
-        <div>{account.auth_mode === "api_key" ? "Imported key" : "ChatGPT login"}</div>
+        <div>{t.account.lastUpdated} {formatLastRefresh(lastRefresh, locale)}</div>
+        <div>{account.auth_mode === "api_key" ? t.account.importedKey : t.account.chatgptLogin}</div>
       </div>
 
       {confirmingDelete && (
         <div className="account-delete-confirm fade-up">
-          <span>Delete this account?</span>
+          <span>{t.account.deleteQuestion}</span>
           <div className="account-delete-actions">
             <button type="button" className="ui-action-button is-ghost" onClick={() => setConfirmingDelete(false)}>
-              Cancel
+              {t.common.cancel}
             </button>
             <button
               type="button"
@@ -269,7 +276,7 @@ export function AccountCard({
                 onDelete();
               }}
             >
-              Delete
+              {t.account.delete}
             </button>
           </div>
         </div>
@@ -279,7 +286,7 @@ export function AccountCard({
         {account.is_active ? (
           <button type="button" disabled className="ui-action-button">
             <ShieldCheck size={16} />
-            Current account
+            {t.account.currentAccount}
           </button>
         ) : (
           <button
@@ -289,7 +296,7 @@ export function AccountCard({
             className="ui-action-button is-primary"
           >
             <ShieldCheck size={16} />
-            {switching ? "Switching" : "Switch"}
+            {switching ? t.sidebar.switching : t.sidebar.switch}
           </button>
         )}
 
@@ -300,7 +307,7 @@ export function AccountCard({
           }}
           disabled={warmingUp}
           className="ui-icon-button"
-          title={warmingUp ? "Sending warm-up request" : "Send warm-up request"}
+          title={warmingUp ? t.account.sendingWarmup : t.account.sendWarmup}
         >
           <Activity size={16} className={warmingUp ? "pulse-soft" : undefined} />
         </button>
@@ -312,7 +319,7 @@ export function AccountCard({
           }}
           disabled={isRefreshing}
           className="ui-icon-button"
-          title="Refresh usage"
+          title={t.account.refreshUsage}
         >
           <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
         </button>
@@ -321,7 +328,7 @@ export function AccountCard({
           type="button"
           onClick={() => setConfirmingDelete(true)}
           className="ui-icon-button is-danger"
-          title="Delete account"
+          title={t.account.delete}
         >
           <Trash2 size={16} />
         </button>

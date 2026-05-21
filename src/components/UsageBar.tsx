@@ -1,27 +1,29 @@
 import { AlertCircle, Clock3, Coins } from "lucide-react";
 import type { UsageInfo } from "../types";
+import { getDateLocale, translations, type Locale } from "../i18n";
 
 interface UsageBarProps {
   usage?: UsageInfo;
   loading?: boolean;
+  locale?: Locale;
 }
 
-function formatResetTime(resetAt: number | null | undefined): string {
-  if (!resetAt) return "Unknown";
+function formatResetTime(resetAt: number | null | undefined, locale: Locale): string {
+  if (!resetAt) return translations[locale].common.unknown;
 
   const now = Math.floor(Date.now() / 1000);
   const diff = resetAt - now;
-  if (diff <= 0) return "Now";
+  if (diff <= 0) return translations[locale].common.now;
   if (diff < 60) return `${diff}s`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`;
   return `${Math.floor(diff / 86400)}d`;
 }
 
-function formatExactResetTime(resetAt: number | null | undefined): string {
-  if (!resetAt) return "No reset time";
+function formatExactResetTime(resetAt: number | null | undefined, locale: Locale): string {
+  if (!resetAt) return translations[locale].account.noResetTime;
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(getDateLocale(locale), {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -29,16 +31,17 @@ function formatExactResetTime(resetAt: number | null | undefined): string {
   }).format(new Date(resetAt * 1000));
 }
 
-function formatWindowDuration(minutes: number | null | undefined): string {
+function formatWindowDuration(minutes: number | null | undefined, locale: Locale): string {
   if (!minutes) return "";
-  if (minutes < 60) return `${minutes}m window`;
+  const windowLabel = translations[locale].account.window;
+  if (minutes < 60) return `${minutes}m ${windowLabel}`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h window`;
-  return `${Math.floor(hours / 24)}d window`;
+  if (hours < 24) return `${hours}h ${windowLabel}`;
+  return `${Math.floor(hours / 24)}d ${windowLabel}`;
 }
 
 function getToneClass(remainingPercent: number) {
-  if (remainingPercent <= 10) return "is-danger";
+  if (remainingPercent <= 0) return "is-danger";
   if (remainingPercent <= 30) return "is-warning";
   return "is-accent";
 }
@@ -48,15 +51,18 @@ function RateLimitBar({
   usedPercent,
   windowMinutes,
   resetsAt,
+  locale,
 }: {
   label: string;
   usedPercent: number;
   windowMinutes?: number | null;
   resetsAt?: number | null;
+  locale: Locale;
 }) {
   const remainingPercent = Math.max(0, 100 - usedPercent);
   const toneClass = getToneClass(remainingPercent);
-  const duration = formatWindowDuration(windowMinutes);
+  const t = translations[locale];
+  const duration = formatWindowDuration(windowMinutes, locale);
 
   return (
     <div className="usage-block">
@@ -65,14 +71,14 @@ function RateLimitBar({
           <div className="usage-label">{label}</div>
           <div className="usage-note">
             {duration ? `${duration} - ` : ""}
-            Resets in {formatResetTime(resetsAt)}
+            {t.account.resetsIn} {formatResetTime(resetsAt, locale)}
           </div>
         </div>
         <div className="usage-values">
-          <span className={`usage-percent ${toneClass}`}>{remainingPercent.toFixed(0)}% left</span>
-          <span title={formatExactResetTime(resetsAt)} className="usage-clock">
+          <span className={`usage-percent ${toneClass}`}>{remainingPercent.toFixed(0)}% {t.account.left}</span>
+          <span title={formatExactResetTime(resetsAt, locale)} className="usage-clock">
             <Clock3 size={13} />
-            {formatExactResetTime(resetsAt)}
+            {formatExactResetTime(resetsAt, locale)}
           </span>
         </div>
       </div>
@@ -87,7 +93,9 @@ function RateLimitBar({
   );
 }
 
-export function UsageBar({ usage, loading }: UsageBarProps) {
+export function UsageBar({ usage, loading, locale = "en" }: UsageBarProps) {
+  const t = translations[locale];
+
   if (loading && !usage) {
     return (
       <div className="usage-shell">
@@ -101,7 +109,7 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
     return (
       <div className="usage-empty">
         <AlertCircle size={14} />
-        Fetching usage data
+        {t.account.fetchingUsage}
       </div>
     );
   }
@@ -123,7 +131,7 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
     return (
       <div className="usage-empty">
         <AlertCircle size={14} />
-        No rate limit data
+        {t.account.noRateLimit}
       </div>
     );
   }
@@ -132,26 +140,28 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
     <div className="usage-shell">
       {hasPrimary && (
         <RateLimitBar
-          label="Primary window"
+          label={t.account.primaryWindow}
           usedPercent={usage.primary_used_percent!}
           windowMinutes={usage.primary_window_minutes}
           resetsAt={usage.primary_resets_at}
+          locale={locale}
         />
       )}
 
       {hasSecondary && (
         <RateLimitBar
-          label="Weekly window"
+          label={t.account.weeklyWindow}
           usedPercent={usage.secondary_used_percent!}
           windowMinutes={usage.secondary_window_minutes}
           resetsAt={usage.secondary_resets_at}
+          locale={locale}
         />
       )}
 
       {usage.credits_balance && (
         <div className="usage-credits">
           <Coins size={14} />
-          Credits balance: {usage.credits_balance}
+          {t.account.creditsBalance}: {usage.credits_balance}
         </div>
       )}
     </div>
