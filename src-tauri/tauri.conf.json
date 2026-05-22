@@ -44,7 +44,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI0MUQ4MjE5MjMxNkMxRjgKUldUNHdSWWpHWUlkdFBvWENvQ0d4aG1BdVVueUlTWXAxQmprMFBCOEsxT2NmakhQY0FxbjNsb3cK",
       "endpoints": [
-        "https://github.com/Lampese/codex-switcher/releases/latest/download/latest.json"
+        "https://github.com/Kevanko/codex-switcher-fork/releases/latest/download/latest.json"
       ]
     }
   }
