@@ -10,6 +10,7 @@ use tauri::{
 
 use crate::auth::load_accounts;
 use crate::commands::account::switch_account;
+use crate::types::{StoredAccount, UsageInfo};
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_OPEN_ID: &str = "tray-open";
@@ -35,7 +36,7 @@ pub fn setup_tray(app: &App) -> tauri::Result<()> {
     let menu = build_tray_menu(app.handle())?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(false)
         .tooltip("Codex Switcher")
         .on_menu_event(|app, event| {
             handle_tray_menu_event(app, event.id().as_ref());
@@ -78,8 +79,8 @@ pub fn setup_tray(app: &App) -> tauri::Result<()> {
 
 fn build_tray_menu<R: Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu<R>> {
     let mut builder = MenuBuilder::new(manager)
-        .text(TRAY_OPEN_ID, "Open Codex Switcher")
-        .text(TRAY_REFRESH_ID, "Refresh accounts")
+        .text(TRAY_OPEN_ID, "Открыть Codex Switcher")
+        .text(TRAY_REFRESH_ID, "Обновить аккаунты")
         .separator();
 
     let store = load_accounts().ok();
@@ -90,34 +91,42 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu
         .map(|account_store| account_store.accounts)
         .unwrap_or_default();
 
-    accounts.sort_by(|a, b| {
+    let mut visible_accounts: Vec<_> = accounts
+        .drain(..)
+        .filter_map(|account| {
+            let remaining = effective_remaining_percent(&account)?;
+            (remaining > 0).then_some((account, remaining))
+        })
+        .collect();
+
+    visible_accounts.sort_by(|(a, a_remaining), (b, b_remaining)| {
         let a_active = active_id.as_deref() == Some(a.id.as_str());
         let b_active = active_id.as_deref() == Some(b.id.as_str());
         b_active
             .cmp(&a_active)
+            .then_with(|| b_remaining.cmp(a_remaining))
             .then_with(|| b.last_used_at.cmp(&a.last_used_at))
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    if accounts.is_empty() {
+    if visible_accounts.is_empty() {
         builder = builder.item(&MenuItem::with_id(
             manager,
             "tray-empty",
-            "No accounts found",
+            "Нет аккаунтов с лимитом",
             false,
             None::<&str>,
         )?);
     } else {
-        for account in accounts.into_iter().take(5) {
+        for (account, remaining) in visible_accounts.into_iter().take(5) {
             let is_active = active_id.as_deref() == Some(account.id.as_str());
-            let plan = account.plan_type.unwrap_or_else(|| "Free".to_string());
             let marker = if is_active { "* " } else { "" };
-            let label = format!("{marker}{} - {plan}", account.name);
+            let label = format!("{marker}{} - {remaining}%", account.name);
             builder = builder.text(format!("{TRAY_SWITCH_PREFIX}{}", account.id), label);
         }
     }
 
-    builder.separator().text(TRAY_QUIT_ID, "Quit").build()
+    builder.separator().text(TRAY_QUIT_ID, "Выход").build()
 }
 
 fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
@@ -147,6 +156,7 @@ fn handle_tray_menu_event(app: &AppHandle, id: &str) {
                 if switch_account(account_id).await.is_ok() {
                     let _ = rebuild_tray_menu(&app);
                     let _ = app.emit("accounts-changed", ());
+                    let _ = show_main_window(&app);
                 }
             });
         }
@@ -161,4 +171,43 @@ fn show_main_window(app: &AppHandle) -> tauri::Result<()> {
         window.set_focus()?;
     }
     Ok(())
+}
+
+fn effective_remaining_percent(account: &StoredAccount) -> Option<i64> {
+    let usage = account.cached_usage.as_ref()?;
+    if usage.error.is_some() || has_no_credits(usage) {
+        return None;
+    }
+
+    let mut remaining_windows = Vec::new();
+    let is_premium = is_premium_plan(account.plan_type.as_deref().or(usage.plan_type.as_deref()));
+
+    if is_premium {
+        if let Some(used) = usage.primary_used_percent {
+            remaining_windows.push(remaining_from_used(used));
+        }
+    }
+
+    if let Some(used) = usage.secondary_used_percent {
+        remaining_windows.push(remaining_from_used(used));
+    } else if !is_premium {
+        if let Some(used) = usage.primary_used_percent {
+            remaining_windows.push(remaining_from_used(used));
+        }
+    }
+
+    remaining_windows.into_iter().min()
+}
+
+fn remaining_from_used(used_percent: f64) -> i64 {
+    (100.0 - used_percent).clamp(0.0, 100.0).round() as i64
+}
+
+fn has_no_credits(usage: &UsageInfo) -> bool {
+    usage.has_credits == Some(false) && usage.unlimited_credits != Some(true)
+}
+
+fn is_premium_plan(plan: Option<&str>) -> bool {
+    let normalized = plan.unwrap_or_default().trim().to_lowercase();
+    normalized.contains("plus") || normalized.contains("pro") || normalized.contains("team")
 }
