@@ -1,8 +1,10 @@
 import { AlertCircle, Clock3, Coins } from "lucide-react";
-import type { UsageInfo } from "../types";
+import type { AccountWithUsage, UsageInfo } from "../types";
+import { getVisibleLimitWindows } from "../lib/usageModel";
 import { getDateLocale, translations, type Locale } from "../i18n";
 
 interface UsageBarProps {
+  account: AccountWithUsage;
   usage?: UsageInfo;
   loading?: boolean;
   locale?: Locale;
@@ -93,7 +95,7 @@ function RateLimitBar({
   );
 }
 
-export function UsageBar({ usage, loading, locale = "en" }: UsageBarProps) {
+export function UsageBar({ account, usage, loading, locale = "en" }: UsageBarProps) {
   const t = translations[locale];
 
   if (loading && !usage) {
@@ -123,11 +125,9 @@ export function UsageBar({ usage, loading, locale = "en" }: UsageBarProps) {
     );
   }
 
-  const hasPrimary = usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
-  const hasSecondary =
-    usage.secondary_used_percent !== null && usage.secondary_used_percent !== undefined;
+  const visibleWindows = getVisibleLimitWindows(account);
 
-  if (!hasPrimary && !hasSecondary) {
+  if (visibleWindows.length === 0) {
     return (
       <div className="usage-empty">
         <AlertCircle size={14} />
@@ -138,25 +138,16 @@ export function UsageBar({ usage, loading, locale = "en" }: UsageBarProps) {
 
   return (
     <div className="usage-shell">
-      {hasPrimary && (
+      {visibleWindows.map((window) => (
         <RateLimitBar
-          label={t.account.primaryWindow}
-          usedPercent={usage.primary_used_percent!}
-          windowMinutes={usage.primary_window_minutes}
-          resetsAt={usage.primary_resets_at}
+          key={window.key}
+          label={window.kind === "primary" ? t.account.primaryWindow : t.account.weeklyWindow}
+          usedPercent={window.usedPercent}
+          windowMinutes={window.windowMinutes}
+          resetsAt={window.resetsAt}
           locale={locale}
         />
-      )}
-
-      {hasSecondary && (
-        <RateLimitBar
-          label={t.account.weeklyWindow}
-          usedPercent={usage.secondary_used_percent!}
-          windowMinutes={usage.secondary_window_minutes}
-          resetsAt={usage.secondary_resets_at}
-          locale={locale}
-        />
-      )}
+      ))}
 
       {usage.credits_balance && (
         <div className="usage-credits">

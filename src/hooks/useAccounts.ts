@@ -336,6 +336,17 @@ export function useAccounts() {
     }
   }, [loadAccounts, refreshUsage]);
 
+  const completeOAuthReauth = useCallback(async (accountId: string) => {
+    try {
+      const account = await invokeBackend<AccountInfo>("complete_reauth_login", { accountId });
+      const accountList = await loadAccounts();
+      await refreshUsage(accountList);
+      return account;
+    } catch (err) {
+      throw err;
+    }
+  }, [loadAccounts, refreshUsage]);
+
   const exportAccountsSlimText = useCallback(async () => {
     try {
       return await invokeBackend<string>("export_accounts_slim_text");
@@ -443,6 +454,7 @@ export function useAccounts() {
     importAccountsFullEncryptedFile,
     startOAuthLogin,
     completeOAuthLogin,
+    completeOAuthReauth,
     cancelOAuthLogin,
     loadMaskedAccountIds,
     saveMaskedAccountIds,

@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Activity,
+  Copy,
   Crown,
   Eye,
   EyeOff,
+  KeyRound,
   PencilLine,
   RefreshCcw,
   ShieldCheck,
@@ -12,6 +14,7 @@ import {
 } from "lucide-react";
 import type { AccountWithUsage } from "../types";
 import { getPlanVisual } from "../lib/accountVisuals";
+import { getEffectiveRemainingPercent, hasRecoverableAuthError } from "../lib/usageModel";
 import { getDateLocale, translations, type Locale } from "../i18n";
 import { UsageBar } from "./UsageBar";
 
@@ -22,6 +25,7 @@ interface AccountCardProps {
   onDelete: () => void;
   onRefresh: () => Promise<void>;
   onRename: (newName: string) => Promise<void>;
+  onReauthorize?: () => void;
   switching?: boolean;
   warmingUp?: boolean;
   masked?: boolean;
@@ -85,12 +89,11 @@ function getUsageState(account: AccountWithUsage, locale: Locale): {
     return { label: t.account.usageError, tone: "danger" };
   }
 
-  const primaryUsed = account.usage?.primary_used_percent;
-  if (primaryUsed === null || primaryUsed === undefined) {
+  const remaining = getEffectiveRemainingPercent(account);
+  if (remaining === null) {
     return { label: t.account.waitingUsage, tone: "muted" };
   }
 
-  const remaining = Math.max(0, 100 - primaryUsed);
   if (remaining <= 0) return { label: t.account.criticalLimit, tone: "danger" };
   if (remaining <= 30) return { label: t.account.approachingLimit, tone: "warning" };
   return { label: t.account.healthyCapacity, tone: "success" };
@@ -107,6 +110,7 @@ export function AccountCard({
   onDelete,
   onRefresh,
   onRename,
+  onReauthorize,
   switching,
   warmingUp,
   masked = false,
@@ -120,6 +124,7 @@ export function AccountCard({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -175,6 +180,19 @@ export function AccountCard({
   const planVisual = getPlanVisual(account);
   const usageState = getUsageState(account, locale);
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at, locale);
+  const needsReauth =
+    account.auth_mode === "chat_g_p_t" && hasRecoverableAuthError(account.usage);
+
+  const copyEmail = () => {
+    if (!account.email || masked) return;
+    void navigator.clipboard
+      .writeText(account.email)
+      .then(() => {
+        setEmailCopied(true);
+        setTimeout(() => setEmailCopied(false), 1600);
+      })
+      .catch(() => {});
+  };
 
   return (
     <article className={`account-card fade-up ${account.is_active ? "is-active" : ""}`}>
@@ -225,9 +243,21 @@ export function AccountCard({
           </div>
 
           {account.email && (
-            <p className="account-email">
-              <BlurredText blur={masked}>{account.email}</BlurredText>
-            </p>
+            <div className="account-email-row">
+              <p className="account-email">
+                <BlurredText blur={masked}>{account.email}</BlurredText>
+              </p>
+              {!masked && (
+                <button
+                  type="button"
+                  className="account-copy-email"
+                  onClick={copyEmail}
+                  title={emailCopied ? t.account.emailCopied : t.account.copyEmail}
+                >
+                  <Copy size={13} />
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -247,6 +277,12 @@ export function AccountCard({
 
       <div className="account-status-row">
         <span className={`account-status-pill is-${usageState.tone}`}>{usageState.label}</span>
+        {needsReauth && (
+          <span className="account-status-pill is-warning">
+            <KeyRound size={13} />
+            {t.account.authNeedsRefresh}
+          </span>
+        )}
         {account.auth_mode === "chat_g_p_t" && (
           <span className={`account-status-pill is-${subscriptionStatus.tone}`}>
             {subscriptionStatus.label}
@@ -254,7 +290,12 @@ export function AccountCard({
         )}
       </div>
 
-      <UsageBar usage={account.usage} loading={isRefreshing || account.usageLoading} locale={locale} />
+      <UsageBar
+        account={account}
+        usage={account.usage}
+        loading={isRefreshing || account.usageLoading}
+        locale={locale}
+      />
 
       <div className="account-footnotes">
         <div>{t.account.lastUpdated} {formatLastRefresh(lastRefresh, locale)}</div>
@@ -283,7 +324,12 @@ export function AccountCard({
       )}
 
       <div className="account-actions">
-        {account.is_active ? (
+        {needsReauth && onReauthorize ? (
+          <button type="button" onClick={onReauthorize} className="ui-action-button is-primary">
+            <KeyRound size={16} />
+            {t.account.refreshLogin}
+          </button>
+        ) : account.is_active ? (
           <button type="button" disabled className="ui-action-button">
             <ShieldCheck size={16} />
             {t.account.currentAccount}

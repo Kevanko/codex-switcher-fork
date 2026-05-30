@@ -6,7 +6,10 @@ use tokio::sync::oneshot;
 
 use super::account::finalize_added_account_state;
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
-use crate::auth::{add_account, load_accounts, reconcile_active_account_with_current_auth};
+use crate::auth::{
+    add_account, load_accounts, reconcile_active_account_with_current_auth, switch_to_account,
+    update_account_chatgpt_tokens,
+};
 use crate::types::{AccountInfo, OAuthLoginInfo};
 
 struct PendingOAuth {
@@ -64,6 +67,69 @@ pub async fn complete_login() -> Result<AccountInfo, String> {
     let active_id = store.active_account_id.as_deref();
 
     Ok(AccountInfo::from_stored(&stored, active_id))
+}
+
+/// Wait for the OAuth login to complete and update an existing ChatGPT account.
+#[tauri::command]
+pub async fn complete_reauth_login(account_id: String) -> Result<AccountInfo, String> {
+    let pending = {
+        let mut pending = PENDING_OAUTH.lock().unwrap();
+        pending
+            .take()
+            .ok_or_else(|| "No pending OAuth login".to_string())?
+    };
+
+    let account = wait_for_oauth_login(pending.rx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let (
+        id_token,
+        access_token,
+        refresh_token,
+        chatgpt_account_id,
+        email,
+        plan_type,
+        subscription_expires_at,
+    ) = match account.auth_data {
+        crate::types::AuthData::ChatGPT {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+        } => (
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+            account.email,
+            account.plan_type,
+            account.subscription_expires_at,
+        ),
+        crate::types::AuthData::ApiKey { .. } => {
+            return Err("OAuth login did not return ChatGPT credentials".to_string());
+        }
+    };
+
+    let updated = update_account_chatgpt_tokens(
+        &account_id,
+        id_token,
+        access_token,
+        refresh_token,
+        chatgpt_account_id,
+        email,
+        plan_type,
+        subscription_expires_at,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let active_id = store.active_account_id.as_deref();
+    if active_id == Some(account_id.as_str()) {
+        switch_to_account(&updated).map_err(|e| e.to_string())?;
+    }
+
+    Ok(AccountInfo::from_stored(&updated, active_id))
 }
 
 /// Cancel a pending OAuth login
