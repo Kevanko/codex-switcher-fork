@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { ArrowUpCircle, Download, RefreshCcw, X } from "lucide-react";
 import { isTauriRuntime } from "../lib/platform";
+import { translations, type Locale } from "../i18n";
 
 type UpdateStatus =
   | { kind: "idle" }
@@ -17,9 +18,10 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function UpdateChecker() {
+export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
   const [status, setStatus] = useState<UpdateStatus>({ kind: "idle" });
   const [dismissed, setDismissed] = useState(false);
+  const t = translations[locale].update;
 
   const checkForUpdate = useCallback(async () => {
     if (!isTauriRuntime()) return;
@@ -32,13 +34,18 @@ export function UpdateChecker() {
       setStatus(update ? { kind: "available", update } : { kind: "idle" });
     } catch (err) {
       console.error("Update check failed:", err);
-      setStatus({ kind: "idle" });
+      const message = err instanceof Error ? err.message : String(err);
+      setStatus({ kind: "error", message });
     }
   }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
     void checkForUpdate();
+    const interval = window.setInterval(() => {
+      void checkForUpdate();
+    }, 30 * 60 * 1000);
+    return () => window.clearInterval(interval);
   }, [checkForUpdate]);
 
   const handleDownloadAndInstall = async () => {
@@ -91,7 +98,7 @@ export function UpdateChecker() {
           <>
             <ArrowUpCircle size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>Update available: v{status.update.version}</div>
+              <div style={{ fontWeight: 600 }}>{t.available}: v{status.update.version}</div>
               {status.update.body && (
                 <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
                   {status.update.body}
@@ -99,11 +106,11 @@ export function UpdateChecker() {
               )}
             </div>
             <button type="button" className="ui-action-button is-ghost" onClick={() => setDismissed(true)}>
-              Later
+              {t.later}
             </button>
             <button type="button" className="ui-action-button is-primary" onClick={handleDownloadAndInstall}>
               <Download size={16} />
-              Update
+              {t.install}
             </button>
           </>
         )}
@@ -112,7 +119,7 @@ export function UpdateChecker() {
           <>
             <Download size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>Downloading update</div>
+              <div style={{ fontWeight: 600 }}>{t.downloading}</div>
               <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
                 {formatBytes(status.downloaded)}
                 {status.total ? ` / ${formatBytes(status.total)}` : ""}
@@ -136,16 +143,16 @@ export function UpdateChecker() {
           <>
             <RefreshCcw size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>Update ready</div>
+              <div style={{ fontWeight: 600 }}>{t.ready}</div>
               <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
-                Restart the app to apply the new build.
+                {t.restartHint}
               </div>
             </div>
             <button type="button" className="ui-action-button is-ghost" onClick={() => setDismissed(true)}>
-              Later
+              {t.later}
             </button>
             <button type="button" className="ui-action-button is-primary" onClick={handleRelaunch}>
-              Restart
+              {t.restart}
             </button>
           </>
         )}
@@ -154,13 +161,13 @@ export function UpdateChecker() {
           <>
             <X size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>Update failed</div>
+              <div style={{ fontWeight: 600 }}>{t.failed}</div>
               <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
                 {status.message}
               </div>
             </div>
             <button type="button" className="ui-action-button is-ghost" onClick={() => setDismissed(true)}>
-              Dismiss
+              {t.dismiss}
             </button>
           </>
         )}

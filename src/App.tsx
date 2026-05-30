@@ -18,12 +18,14 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleOff,
+  Copy,
   Crown,
   Database,
   Download,
   Eye,
   EyeOff,
   FolderInput,
+  KeyRound,
   LayoutPanelLeft,
   Monitor,
   Moon,
@@ -48,6 +50,14 @@ import {
   isTauriRuntime,
 } from "./lib/platform";
 import { getPlanVisual } from "./lib/accountVisuals";
+import {
+  getEffectiveRemainingPercent,
+  getMostLimitedResetWindow,
+  getResetProgressPercentForWindow,
+  getUsageRemaining,
+  getVisibleLimitWindows,
+  hasRecoverableAuthError,
+} from "./lib/usageModel";
 import {
   getSystemLocale,
   getSystemTheme,
@@ -203,62 +213,23 @@ function formatResetWindowLabel(minutes: number | null | undefined, fallback: st
 
 function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
   const t = translations[locale];
-  const planVisual = getPlanVisual(account);
-  const isPremiumPlan = planVisual.premium;
-  const items: Array<{
-    key: string;
-    label: string;
-    resetsAt: number;
-    remaining: number | null;
-  }> = [];
-
-  if (isPremiumPlan && account.usage?.primary_resets_at) {
-    items.push({
-      key: "primary",
-      label: formatResetWindowLabel(account.usage.primary_window_minutes, t.account.reset5h),
-      resetsAt: account.usage.primary_resets_at,
-      remaining: getUsageRemaining(account.usage.primary_used_percent),
-    });
-  }
-
-  if (account.usage?.secondary_resets_at) {
-    items.push({
-      key: "weekly",
-      label: t.account.reset7d,
-      resetsAt: account.usage.secondary_resets_at,
-      remaining: getUsageRemaining(account.usage.secondary_used_percent),
-    });
-  } else if (!isPremiumPlan && account.usage?.primary_resets_at) {
-    items.push({
-      key: "weekly-primary",
-      label: t.account.reset7d,
-      resetsAt: account.usage.primary_resets_at,
-      remaining: getUsageRemaining(account.usage.primary_used_percent),
-    });
-  }
-
-  return items;
+  return getVisibleLimitWindows(account).map((window) => ({
+    key: window.key,
+    label:
+      window.kind === "primary"
+        ? formatResetWindowLabel(window.windowMinutes, t.account.reset5h)
+        : t.account.reset7d,
+    resetsAt: window.resetsAt,
+    remaining: getUsageRemaining(window.usedPercent),
+  }));
 }
 
 function getRemainingPercent(account: AccountWithUsage) {
-  if (account.usage?.primary_used_percent === null || account.usage?.primary_used_percent === undefined) {
-    return null;
-  }
-
-  return Math.max(0, 100 - account.usage.primary_used_percent);
+  return getEffectiveRemainingPercent(account);
 }
 
 function getResetProgressPercent(account: AccountWithUsage) {
-  const resetsAt = account.usage?.primary_resets_at;
-  const windowMinutes = account.usage?.primary_window_minutes;
-  if (!resetsAt || !windowMinutes) return null;
-
-  const nowSeconds = Date.now() / 1000;
-  const windowSeconds = windowMinutes * 60;
-  const remainingSeconds = Math.max(0, resetsAt - nowSeconds);
-  const elapsedRatio = 1 - Math.min(1, remainingSeconds / windowSeconds);
-
-  return Math.round(Math.max(0, Math.min(100, elapsedRatio * 100)));
+  return getResetProgressPercentForWindow(getMostLimitedResetWindow(account));
 }
 
 function formatResetCountdown(resetAt: number | null | undefined, locale: Locale): string {
@@ -271,11 +242,6 @@ function formatResetCountdown(resetAt: number | null | undefined, locale: Locale
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`;
   return `${Math.floor(diff / 86400)}d`;
-}
-
-function getUsageRemaining(usedPercent: number | null | undefined) {
-  if (usedPercent === null || usedPercent === undefined) return null;
-  return Math.max(0, 100 - usedPercent);
 }
 
 function isAccountNearLimit(account: AccountWithUsage) {
@@ -325,7 +291,8 @@ function sortAccounts(accounts: AccountWithUsage[], sortMode: SortMode) {
 
     if (sortMode === "deadline_asc" || sortMode === "deadline_desc") {
       const deadlineDiff =
-        getResetDeadline(a.usage?.primary_resets_at) - getResetDeadline(b.usage?.primary_resets_at);
+        getResetDeadline(getMostLimitedResetWindow(a)?.resetsAt) -
+        getResetDeadline(getMostLimitedResetWindow(b)?.resetsAt);
       if (deadlineDiff !== 0) {
         return sortMode === "deadline_asc" ? deadlineDiff : -deadlineDiff;
       }
@@ -340,7 +307,8 @@ function sortAccounts(accounts: AccountWithUsage[], sortMode: SortMode) {
     }
 
     const fallbackDeadline =
-      getResetDeadline(a.usage?.primary_resets_at) - getResetDeadline(b.usage?.primary_resets_at);
+      getResetDeadline(getMostLimitedResetWindow(a)?.resetsAt) -
+      getResetDeadline(getMostLimitedResetWindow(b)?.resetsAt);
     if (fallbackDeadline !== 0) return fallbackDeadline;
 
     return a.name.localeCompare(b.name);
@@ -766,12 +734,14 @@ function App() {
     importAccountsSlimText,
     startOAuthLogin,
     completeOAuthLogin,
+    completeOAuthReauth,
     cancelOAuthLogin,
     loadMaskedAccountIds,
     saveMaskedAccountIds,
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [reauthAccount, setReauthAccount] = useState<AccountWithUsage | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [configModalMode, setConfigModalMode] = useState<ConfigModalMode>("slim_export");
@@ -793,6 +763,7 @@ function App() {
     message: string;
     isError: boolean;
   } | null>(null);
+  const [copiedEmailAccountId, setCopiedEmailAccountId] = useState<string | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => resolveThemePreference(readThemePreference()));
@@ -843,6 +814,17 @@ function App() {
 
   const accentTheme = accentPresets[accentPreset];
   const t = translations[resolvedLanguage];
+
+  const copyAccountEmail = useCallback((account: AccountWithUsage) => {
+    if (!account.email) return;
+    void navigator.clipboard
+      .writeText(account.email)
+      .then(() => {
+        setCopiedEmailAccountId(account.id);
+        setTimeout(() => setCopiedEmailAccountId(null), 1600);
+      })
+      .catch(() => {});
+  }, []);
 
   const handleTitlebarDrag = useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (!isTauriRuntime() || event.button !== 0 || !currentWindow) return;
@@ -1293,9 +1275,11 @@ function App() {
     const total = accounts.length;
     const errorCount = accounts.filter((account) => Boolean(account.usage?.error)).length;
     const nearLimitCount = accounts.filter((account) => isAccountNearLimit(account)).length;
-    const availableCount = accounts.filter(
-      (account) => !account.usage?.error && !isAccountNearLimit(account)
-    ).length;
+    const availableCount = accounts.filter((account) => {
+      if (account.usage?.error) return false;
+      const remaining = getRemainingPercent(account);
+      return remaining === null || remaining > 0;
+    }).length;
     return { total, errorCount, nearLimitCount, availableCount };
   }, [accounts]);
 
@@ -1687,9 +1671,12 @@ function App() {
                           <div className="active-account-mini" ref={registerAccountRef(filteredActiveAccount.id)}>
                             {(() => {
                               const planVisual = getPlanVisual(filteredActiveAccount);
-                              const primaryRemaining = getUsageRemaining(filteredActiveAccount.usage?.primary_used_percent);
                               const resetItems = getActiveResetItems(filteredActiveAccount, resolvedLanguage);
                               const isMasked = maskedAccounts.has(filteredActiveAccount.id);
+                              const needsReauth =
+                                filteredActiveAccount.auth_mode === "chat_g_p_t" &&
+                                hasRecoverableAuthError(filteredActiveAccount.usage);
+                              const effectiveRemaining = getRemainingPercent(filteredActiveAccount);
 
                               return (
                                 <>
@@ -1701,6 +1688,20 @@ function App() {
                               {filteredActiveAccount.email && (
                                 <div className="active-account-mini-email">
                                   <span className={isMasked ? "masked-text" : ""}>{filteredActiveAccount.email}</span>
+                                  {!isMasked && (
+                                    <button
+                                      type="button"
+                                      className="account-copy-email"
+                                      onClick={() => copyAccountEmail(filteredActiveAccount)}
+                                      title={
+                                        copiedEmailAccountId === filteredActiveAccount.id
+                                          ? t.account.emailCopied
+                                          : t.account.copyEmail
+                                      }
+                                    >
+                                      <Copy size={13} />
+                                    </button>
+                                  )}
                                 </div>
                               )}
                               <div className="active-account-mini-tags">
@@ -1711,10 +1712,20 @@ function App() {
                                 <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
                                   {planVisual.label}
                                 </span>
-                                {primaryRemaining !== null && (
+                                {effectiveRemaining !== null && (
                                   <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
-                                    {primaryRemaining.toFixed(0)}% {t.account.left}
+                                    {effectiveRemaining.toFixed(0)}% {t.account.left}
                                   </span>
+                                )}
+                                {needsReauth && (
+                                  <button
+                                    type="button"
+                                    className="ui-action-button is-primary active-reauth-button"
+                                    onClick={() => setReauthAccount(filteredActiveAccount)}
+                                  >
+                                    <KeyRound size={14} />
+                                    {t.account.refreshLogin}
+                                  </button>
                                 )}
                               </div>
                             </div>
@@ -1779,6 +1790,7 @@ function App() {
                                   onDelete={() => handleDelete(account.id)}
                                   onRefresh={() => refreshSingleUsage(account.id, { refreshMetadata: true })}
                                   onRename={(newName) => renameAccount(account.id, newName)}
+                                  onReauthorize={() => setReauthAccount(account)}
                                   switching={switchingId === account.id}
                                   warmingUp={isWarmingAll || warmingUpId === account.id}
                                   masked={maskedAccounts.has(account.id)}
@@ -1843,6 +1855,21 @@ function App() {
         locale={resolvedLanguage}
       />
 
+      <AddAccountModal
+        isOpen={reauthAccount !== null}
+        mode="reauthorize"
+        lockedAccountName={reauthAccount?.name}
+        onClose={() => setReauthAccount(null)}
+        onImportFile={importFromFile}
+        onStartOAuth={startOAuthLogin}
+        onCompleteOAuth={() => {
+          if (!reauthAccount) return Promise.reject(new Error("No account selected"));
+          return completeOAuthReauth(reauthAccount.id);
+        }}
+        onCancelOAuth={cancelOAuthLogin}
+        locale={resolvedLanguage}
+      />
+
       {isConfigModalOpen && (
         <ConfigModal
           mode={configModalMode}
@@ -1892,7 +1919,7 @@ function App() {
 
       </div>
 
-      <UpdateChecker />
+      <UpdateChecker locale={resolvedLanguage} />
     </div>
   );
 }

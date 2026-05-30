@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowUpFromLine,
   Copy,
@@ -25,6 +25,8 @@ interface AddAccountModalProps {
   onCompleteOAuth: () => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;
   locale?: Locale;
+  mode?: "add" | "reauthorize";
+  lockedAccountName?: string;
 }
 
 type Tab = "oauth" | "import";
@@ -37,6 +39,8 @@ export function AddAccountModal({
   onCompleteOAuth,
   onCancelOAuth,
   locale = "en",
+  mode = "add",
+  lockedAccountName,
 }: AddAccountModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>("oauth");
   const [name, setName] = useState("");
@@ -48,9 +52,22 @@ export function AddAccountModal({
   const [copied, setCopied] = useState(false);
   const tauriRuntime = isTauriRuntime();
   const t = translations[locale];
+  const isReauthorize = mode === "reauthorize";
+
+  useEffect(() => {
+    if (isOpen && isReauthorize && lockedAccountName) {
+      setActiveTab("oauth");
+      setName(lockedAccountName);
+      setFileSource(null);
+      setError(null);
+      setAuthUrl("");
+      setOauthPending(false);
+      setCopied(false);
+    }
+  }, [isOpen, isReauthorize, lockedAccountName]);
 
   const resetForm = () => {
-    setName("");
+    setName(isReauthorize && lockedAccountName ? lockedAccountName : "");
     setFileSource(null);
     setError(null);
     setLoading(false);
@@ -68,7 +85,8 @@ export function AddAccountModal({
   };
 
   const handleOAuthLogin = async () => {
-    if (!name.trim()) {
+    const accountName = (isReauthorize && lockedAccountName ? lockedAccountName : name).trim();
+    if (!accountName) {
       setError(t.addAccount.enterName);
       return;
     }
@@ -76,7 +94,7 @@ export function AddAccountModal({
     try {
       setLoading(true);
       setError(null);
-      const info = await onStartOAuth(name.trim());
+      const info = await onStartOAuth(accountName);
       setAuthUrl(info.auth_url);
       setOauthPending(true);
       setLoading(false);
@@ -134,8 +152,8 @@ export function AddAccountModal({
       >
         <div className="config-header">
           <div>
-            <h2>{t.addAccount.title}</h2>
-            <p>{t.addAccount.subtitle}</p>
+            <h2>{isReauthorize ? t.addAccount.reauthTitle : t.addAccount.title}</h2>
+            <p>{isReauthorize ? t.addAccount.reauthSubtitle : t.addAccount.subtitle}</p>
           </div>
           <button type="button" className="ui-icon-button" onClick={handleClose} title={t.common.close}>
             <X size={16} />
@@ -143,6 +161,7 @@ export function AddAccountModal({
         </div>
 
         <div className="config-body">
+          {!isReauthorize && (
           <div className="add-account-tabs">
             <button
               type="button"
@@ -181,18 +200,20 @@ export function AddAccountModal({
               <span>{t.addAccount.importTab}</span>
             </button>
           </div>
+          )}
 
-          <label className="settings-section">
+          <label className={`settings-section ${isReauthorize ? "is-readonly-section" : ""}`}>
             <div>
-              <h3>{t.addAccount.name}</h3>
-              <p>{t.addAccount.nameHint}</p>
+              <h3>{isReauthorize ? t.addAccount.reauthAccount : t.addAccount.name}</h3>
+              <p>{isReauthorize ? t.addAccount.reauthHint : t.addAccount.nameHint}</p>
             </div>
             <input
               type="text"
-              value={name}
+              value={isReauthorize && lockedAccountName ? lockedAccountName : name}
               onChange={(event) => setName(event.target.value)}
               placeholder={t.addAccount.namePlaceholder}
               className="ui-input"
+              readOnly={isReauthorize}
             />
           </label>
 
@@ -250,7 +271,7 @@ export function AddAccountModal({
               ) : (
                 <div className="inline-alert">
                   <ShieldCheck size={16} />
-                  {t.addAccount.willCreateUrl}
+                  {isReauthorize ? t.addAccount.willRefreshLogin : t.addAccount.willCreateUrl}
                 </div>
               )}
             </div>
@@ -300,7 +321,13 @@ export function AddAccountModal({
               }}
               disabled={loading || (activeTab === "oauth" && oauthPending)}
             >
-              {loading ? t.common.working : activeTab === "oauth" ? t.addAccount.generateLink : t.addAccount.importAccount}
+              {loading
+                ? t.common.working
+                : activeTab === "oauth"
+                  ? isReauthorize
+                    ? t.addAccount.refreshLogin
+                    : t.addAccount.generateLink
+                  : t.addAccount.importAccount}
             </button>
           </div>
         </div>
