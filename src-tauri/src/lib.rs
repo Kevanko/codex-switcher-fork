@@ -12,7 +12,8 @@ use commands::{
     export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_usage,
     import_accounts_full_encrypted_file, import_accounts_slim_text, list_accounts,
     refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
-    start_login, switch_account, warmup_account, warmup_all_accounts,
+    refresh_tray_menu, set_tray_mode_enabled, setup_tray, start_login, switch_account,
+    warmup_account, warmup_all_accounts,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -22,6 +23,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            setup_tray(app)?;
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -42,6 +45,9 @@ pub fn run() {
             // Masked accounts
             get_masked_account_ids,
             set_masked_account_ids,
+            // Tray
+            set_tray_mode_enabled,
+            refresh_tray_menu,
             // OAuth
             start_login,
             complete_login,
