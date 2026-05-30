@@ -1228,48 +1228,69 @@ textarea:focus-visible {
 
 .active-account-mini {
   display: grid;
-  grid-template-columns: 40px minmax(170px, 1fr) auto;
-  align-items: center;
-  gap: 13px;
-  width: min(100%, 620px);
-  min-height: 86px;
-  padding: 14px 16px;
-  border: 1px solid var(--accent-border);
-  border-radius: 1.25rem;
+  grid-template-columns: 44px minmax(190px, 1fr) minmax(260px, 330px);
+  align-items: stretch;
+  gap: 15px;
+  width: min(100%, 760px);
+  min-height: 118px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-border) 86%, var(--border-soft));
+  border-radius: 1.45rem;
   background:
-    radial-gradient(circle at 0 0, var(--accent-soft), transparent 54%),
+    radial-gradient(circle at 0 0, var(--accent-soft), transparent 50%),
+    linear-gradient(135deg, color-mix(in srgb, var(--surface-3) 92%, var(--accent-soft)), var(--surface-3)),
     var(--surface-3);
-  box-shadow: inset 3px 0 0 var(--accent), var(--shadow-inner);
+  box-shadow:
+    0 18px 42px color-mix(in srgb, var(--accent) 12%, transparent),
+    inset 3px 0 0 var(--accent),
+    var(--shadow-inner);
 }
 
 .active-account-mini-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 13px;
+  width: 42px;
+  height: 42px;
+  align-self: center;
+  border-radius: 15px;
   color: var(--accent);
   border: 1px solid var(--accent-border);
   background: var(--accent-soft);
 }
 
+.active-account-mini-icon.is-warning {
+  color: var(--warning);
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+
+.active-account-mini-icon.is-danger {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
 .active-account-mini-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   min-width: 0;
 }
 
 .active-account-mini-kicker {
   color: var(--text-tertiary);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .active-account-mini-name {
   overflow: hidden;
+  margin-top: 4px;
   color: var(--text-primary);
-  font-size: 0.98rem;
-  font-weight: 650;
+  font-size: 1.08rem;
+  font-weight: 700;
   letter-spacing: -0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1305,7 +1326,7 @@ textarea:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .active-account-mini-tags .account-active-chip,
@@ -1318,41 +1339,104 @@ textarea:focus-visible {
 
 .active-account-mini-rail {
   display: grid;
-  grid-template-columns: repeat(2, minmax(58px, max-content));
-  justify-items: end;
-  gap: 12px;
-  padding-left: 18px;
+  grid-template-columns: 1fr;
+  align-content: center;
+  gap: 10px;
+  padding-left: 16px;
   border-left: 1px solid var(--border-soft);
-  color: var(--text-tertiary);
-  font-size: 0.7rem;
+  min-width: 0;
 }
 
 .active-account-mini-rail.is-single {
-  grid-template-columns: minmax(64px, max-content);
+  grid-template-columns: 1fr;
 }
 
-.active-account-mini-rail div {
+.active-limit-meter {
   display: grid;
-  justify-items: end;
-  gap: 2px;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 74%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
 }
 
-.active-account-mini-rail span {
+.active-limit-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.active-limit-meter-head span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
-.active-account-mini-rail strong {
+.active-limit-meter-head strong {
   color: var(--accent);
-  font-size: 0.92rem;
+  font-size: 1.18rem;
+  font-weight: 760;
+  letter-spacing: -0.04em;
   line-height: 1;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
-.active-account-mini-rail em {
+.active-limit-meter em {
   color: var(--text-secondary);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   font-style: normal;
   font-variant-numeric: tabular-nums;
+}
+
+.active-limit-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-soft) 48%, transparent);
+}
+
+.active-limit-track span {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 72%, white), var(--accent));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.active-limit-meter.is-warning .active-limit-meter-head strong {
+  color: var(--warning);
+}
+
+.active-limit-meter.is-warning .active-limit-track span {
+  background: linear-gradient(90deg, #ffd77a, var(--warning));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--warning) 36%, transparent);
+}
+
+.active-limit-meter.is-danger .active-limit-meter-head strong {
+  color: var(--danger);
+}
+
+.active-limit-meter.is-danger .active-limit-track span {
+  background: linear-gradient(90deg, #ff8fa3, var(--danger));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--danger) 38%, transparent);
+}
+
+.active-limit-meter.is-muted .active-limit-meter-head strong,
+.active-limit-meter.is-muted em {
+  color: var(--text-tertiary);
+}
+
+.active-limit-meter.is-muted .active-limit-track span {
+  background: var(--text-tertiary);
+  box-shadow: none;
 }
 
 .account-card {
@@ -2225,6 +2309,64 @@ textarea:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.settings-toggle-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 52px;
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  background: var(--surface-3);
+  color: var(--text-primary);
+  padding: 0 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-toggle-card > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 650;
+}
+
+.settings-toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 24%, transparent);
+  border: 1px solid var(--border-soft);
+}
+
+.settings-toggle-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 180ms var(--ease-smooth), background 180ms var(--ease-smooth);
+}
+
+.settings-toggle-card.is-selected {
+  border-color: var(--accent-border);
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface-3));
+}
+
+.settings-toggle-card.is-selected .settings-toggle-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-toggle-card.is-selected .settings-toggle-switch::after {
+  transform: translateX(20px);
+  background: var(--accent-contrast);
+}
+
 .settings-note {
   margin-top: 22px;
   padding: 14px 16px;
@@ -2444,12 +2586,15 @@ textarea:focus-visible {
 
 @media (max-width: 720px) {
   .active-account-mini {
-    grid-template-columns: 40px minmax(0, 1fr) auto;
+    grid-template-columns: 42px minmax(0, 1fr);
   }
 
   .active-account-mini-rail {
+    grid-column: 1 / -1;
     grid-template-columns: 1fr;
-    gap: 6px;
+    padding: 12px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--border-soft);
   }
 }
 

@@ -77,6 +77,7 @@ const SIDEBAR_STORAGE_KEY = "codex-switcher-sidebar-expanded";
 const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
 const OTHER_ACCOUNTS_SORT_STORAGE_KEY = "codex-switcher-other-accounts-sort";
 const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
+const TRAY_MODE_STORAGE_KEY = "codex-switcher-tray-mode";
 
 type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose";
 type SortMode =
@@ -221,11 +222,19 @@ function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
         : t.account.reset7d,
     resetsAt: window.resetsAt,
     remaining: getUsageRemaining(window.usedPercent),
+    tone: getLimitTone(getUsageRemaining(window.usedPercent)),
   }));
 }
 
 function getRemainingPercent(account: AccountWithUsage) {
   return getEffectiveRemainingPercent(account);
+}
+
+function getLimitTone(remaining: number | null): "success" | "warning" | "danger" | "muted" {
+  if (remaining === null) return "muted";
+  if (remaining <= 0) return "danger";
+  if (remaining <= 30) return "warning";
+  return "success";
 }
 
 function getResetProgressPercent(account: AccountWithUsage) {
@@ -425,6 +434,7 @@ function SettingsPanel({
   t,
   accentPreset,
   cardDensity,
+  trayModeEnabled,
   isExportingFull,
   isImportingFull,
   hasAccounts,
@@ -432,6 +442,7 @@ function SettingsPanel({
   onLanguageChange,
   onAccentChange,
   onCardDensityChange,
+  onTrayModeChange,
   onClose,
   onOpenImportSlim,
   onExportSlim,
@@ -443,6 +454,7 @@ function SettingsPanel({
   t: AppText;
   accentPreset: AccentPreset;
   cardDensity: CardDensity;
+  trayModeEnabled: boolean;
   isExportingFull: boolean;
   isImportingFull: boolean;
   hasAccounts: boolean;
@@ -450,6 +462,7 @@ function SettingsPanel({
   onLanguageChange: (language: LanguagePreference) => void;
   onAccentChange: (preset: AccentPreset) => void;
   onCardDensityChange: (density: CardDensity) => void;
+  onTrayModeChange: (enabled: boolean) => void;
   onClose: () => void;
   onOpenImportSlim: () => void;
   onExportSlim: () => void;
@@ -570,6 +583,24 @@ function SettingsPanel({
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="settings-section">
+            <div>
+              <h3>{t.settings.trayMode}</h3>
+              <p>{t.settings.trayModeHint}</p>
+            </div>
+            <button
+              type="button"
+              className={`settings-toggle-card ${trayModeEnabled ? "is-selected" : ""}`}
+              onClick={() => onTrayModeChange(!trayModeEnabled)}
+            >
+              <span>
+                <Monitor size={16} />
+                {t.settings.minimizeToTray}
+              </span>
+              <span className="settings-toggle-switch" aria-hidden="true" />
+            </button>
           </section>
 
           <section className="settings-section">
@@ -806,6 +837,14 @@ function App() {
       return "compact";
     }
   });
+  const [trayModeEnabled, setTrayModeEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(TRAY_MODE_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
   const [accountSearchQuery, setAccountSearchQuery] = useState("");
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const deferredSearchQuery = useDeferredValue(accountSearchQuery);
@@ -952,6 +991,23 @@ function App() {
       // Ignore storage errors for this session.
     }
   }, [cardDensity]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TRAY_MODE_STORAGE_KEY, String(trayModeEnabled));
+    } catch {
+      // Ignore storage errors for this session.
+    }
+
+    if (isTauriRuntime()) {
+      void invokeBackend("set_tray_mode_enabled", { enabled: trayModeEnabled });
+    }
+  }, [trayModeEnabled]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void invokeBackend("refresh_tray_menu");
+  }, [accounts]);
 
   useEffect(() => {
     if (!pendingSidebarSwitchId) return;
@@ -1502,6 +1558,10 @@ function App() {
                   type="button"
                   className="ui-icon-button"
                   onClick={() => {
+                    if (trayModeEnabled) {
+                      void currentWindow.hide();
+                      return;
+                    }
                     void currentWindow.minimize();
                   }}
                   title={t.common.close === "Закрыть" ? "Свернуть" : "Minimize"}
@@ -1680,10 +1740,11 @@ function App() {
 
                               return (
                                 <>
-                            <div className="active-account-mini-icon">
-                              <ShieldCheck size={17} />
+                            <div className={`active-account-mini-icon is-${getAccountHealthTone(filteredActiveAccount)}`}>
+                              <ShieldCheck size={18} />
                             </div>
                             <div className="active-account-mini-copy">
+                              <div className="active-account-mini-kicker">{t.account.currentAccount}</div>
                               <div className="active-account-mini-name">{filteredActiveAccount.name}</div>
                               {filteredActiveAccount.email && (
                                 <div className="active-account-mini-email">
@@ -1712,11 +1773,11 @@ function App() {
                                 <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
                                   {planVisual.label}
                                 </span>
-                                {effectiveRemaining !== null && (
-                                  <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
-                                    {effectiveRemaining.toFixed(0)}% {t.account.left}
-                                  </span>
-                                )}
+                                <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
+                                  {effectiveRemaining !== null
+                                    ? `${effectiveRemaining.toFixed(0)}% ${t.account.left}`
+                                    : t.account.waitingUsage}
+                                </span>
                                 {needsReauth && (
                                   <button
                                     type="button"
@@ -1729,17 +1790,32 @@ function App() {
                                 )}
                               </div>
                             </div>
-                            {resetItems.length > 0 && (
                             <div className={`active-account-mini-rail ${resetItems.length === 1 ? "is-single" : ""}`}>
-                              {resetItems.map((item) => (
-                                <div key={item.key}>
-                                  <span>{item.label}</span>
-                                  <strong>{formatResetCountdown(item.resetsAt, resolvedLanguage)}</strong>
-                                  {item.remaining !== null && <em>{item.remaining.toFixed(0)}%</em>}
+                              {resetItems.length > 0 ? (
+                                resetItems.map((item) => (
+                                  <div key={item.key} className={`active-limit-meter is-${item.tone}`}>
+                                    <div className="active-limit-meter-head">
+                                      <span>{item.label}</span>
+                                      {item.remaining !== null && <strong>{item.remaining.toFixed(0)}%</strong>}
+                                    </div>
+                                    <div className="active-limit-track" aria-hidden="true">
+                                      <span style={{ width: `${Math.max(0, Math.min(100, item.remaining ?? 0))}%` }} />
+                                    </div>
+                                    <em>{t.account.reset}: {formatResetCountdown(item.resetsAt, resolvedLanguage)}</em>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="active-limit-meter is-muted">
+                                  <div className="active-limit-meter-head">
+                                    <span>{t.account.noRateLimit}</span>
+                                  </div>
+                                  <div className="active-limit-track" aria-hidden="true">
+                                    <span style={{ width: "0%" }} />
+                                  </div>
+                                  <em>{t.account.waitingUsage}</em>
                                 </div>
-                              ))}
+                              )}
                             </div>
-                            )}
                                 </>
                               );
                             })()}
@@ -1818,6 +1894,7 @@ function App() {
           t={t}
           accentPreset={accentPreset}
           cardDensity={cardDensity}
+          trayModeEnabled={trayModeEnabled}
           isExportingFull={isExportingFull}
           isImportingFull={isImportingFull}
           hasAccounts={accounts.length > 0}
@@ -1825,6 +1902,7 @@ function App() {
           onLanguageChange={setLanguagePreference}
           onAccentChange={setAccentPreset}
           onCardDensityChange={setCardDensity}
+          onTrayModeChange={setTrayModeEnabled}
           onClose={() => setIsSettingsOpen(false)}
           onOpenImportSlim={() => {
             setIsSettingsOpen(false);
