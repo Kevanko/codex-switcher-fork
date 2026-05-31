@@ -1,7 +1,7 @@
 [package]
 name = "codex-switcher"
 version = "0.2.10"
-description = "A multi-account manager for Codex CLI"
+description = "Unofficial desktop fork for local Codex account switching and usage tracking"
 authors = ["lampese"]
 edition = "2021"
 default-run = "codex-switcher"

@@ -2,7 +2,7 @@
   "name": "codex-switcher",
   "private": true,
   "version": "0.2.10",
-  "description": "A multi-account manager for Codex CLI",
+  "description": "Unofficial desktop fork for local Codex account switching and usage tracking",
   "type": "module",
   "scripts": {
     "dev": "vite",

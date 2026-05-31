@@ -1,105 +1,76 @@
-<p align="center">
-  <img src="src-tauri/icons/logo.svg" alt="Codex Switcher" width="128" height="128">
-</p>
+# Codex Switcher
 
-<h1 align="center">Codex Switcher</h1>
+Unofficial desktop fork for switching between several local Codex/ChatGPT account profiles.
 
-<p align="center">
-  A desktop application for managing multiple OpenAI <a href="https://github.com/openai/codex">Codex CLI</a> accounts<br>
-  Switch between accounts, monitor usage limits, and keep quota rotation under control.
-</p>
+The app keeps account metadata and cached usage locally, writes the selected profile to the Codex auth file, and helps track the 5-hour and weekly usage windows where they are available. It is built as a Tauri desktop app for Windows, macOS, and Linux.
 
-## Features
+## What it does
 
-- **Multi-Account Management** - Add and manage multiple Codex accounts in one place
-- **Quick Switching** - Switch between accounts with confirmation and clear account states
-- **Usage Monitoring** - View usage for both 5-hour and weekly limits
-- **Matte-Tech Interface** - Compact sidebar, accent presets, light/dark themes, and density controls
-- **Dual Login Mode** - OAuth authentication or import existing `auth.json` files
+- Adds accounts through ChatGPT OAuth or by importing an existing `auth.json`.
+- Switches the active local Codex account and can restart active Codex processes after switching.
+- Shows cached limit usage for Free, Plus, Pro, and Team-style accounts.
+- Supports Russian/English UI, system/default theme selection, accent presets, and compact card density.
+- Checks GitHub releases for signed app updates.
+- Can minimize to the system tray and switch between available accounts from the tray menu.
 
-## Design Preview
+## What it is not
 
-<p align="center">
-  <img src="docs/screenshots/codex-switcher-expanded.png" alt="Codex Switcher expanded matte-tech dashboard" width="860">
-</p>
+- It is not an official OpenAI or Codex project.
+- It is not meant for account sharing, resale, pooling, or bypassing terms of service.
+- It does not create extra quota. It only displays locally cached usage data and switches between accounts you already own.
+- The optional browser/LAN server exists for development and local debugging. The maintained user-facing build is the desktop app.
 
-<p align="center">
-  <img src="docs/screenshots/codex-switcher-collapsed.png" alt="Codex Switcher collapsed sidebar view" width="860">
-</p>
+## Build from source
 
-## Installation
+Prerequisites:
 
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) (v18+)
-- [pnpm](https://pnpm.io/)
-- [Rust](https://rustup.rs/)
-
-### Build from Source
+- Node.js 20 or newer
+- pnpm
+- Rust stable
 
 ```bash
-# Clone the repository
-git clone https://github.com/Lampese/codex-switcher.git
-cd codex-switcher
+git clone https://github.com/Kevanko/codex-switcher-fork.git
+cd codex-switcher-fork
 
-# Install dependencies
 pnpm install
-
-# Run in development mode
 pnpm tauri dev
+```
 
-# Build for production
+Build installers:
+
+```bash
 pnpm tauri build
 ```
 
-The built application will be in `src-tauri/target/release/bundle/`.
+The built bundles are written under `src-tauri/target/release/bundle/`.
 
-### Run the Dashboard in a Browser
+## Release
 
-You can also serve the built dashboard over HTTP instead of opening the Tauri shell.
-
-```bash
-# Build the frontend and start the web server on 0.0.0.0:3210
-pnpm lan
-```
-
-Optional environment variables:
-
-- `CODEX_SWITCHER_WEB_HOST` to override the bind host
-- `CODEX_SWITCHER_WEB_PORT` to override the port
-
-The browser dashboard serves the same UI and backend actions through `/api/invoke/*`, which makes it usable over LAN, Tailscale, or a remote host tunnel when you expose the chosen port safely.
-
-## Disclaimer
-
-This tool is designed **exclusively for individuals who personally own multiple OpenAI/ChatGPT accounts**. It is intended to help users manage their own accounts more conveniently.
-
-**This tool is NOT intended for:**
-
-- Sharing accounts between multiple users
-- Circumventing OpenAI's terms of service
-- Any form of account pooling or credential sharing
-
-By using this software, you agree that you are the rightful owner of all accounts you add to the application. The authors are not responsible for any misuse or violations of OpenAI's terms of service.
-
-## Versioning
-
-Use the version bump helper to keep app versions in sync across Tauri, Cargo, and the frontend.
+The release helper keeps `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` on the same version.
 
 ```bash
-# Exact version
-pnpm version:bump 0.2.1
-
-# Semver bumps
 pnpm version:patch
 pnpm version:minor
 pnpm version:major
 
-# Prepare a release commit and tag
-# This automatically runs the version bump first.
-pnpm release patch
-
-# Prepare and push a release
-# This automatically runs the version bump first.
-pnpm release patch -- --push
+pnpm release:patch
+pnpm release:patch -- --push
 ```
+
+GitHub Actions builds the release assets from tags like `v0.2.10`. The updater reads:
+
+```text
+https://github.com/Kevanko/codex-switcher-fork/releases/latest/download/latest.json
+```
+
+Before pushing a release, keep the working tree clean and make sure no local agent files, screenshots, or temporary notes are staged.
+
+## Local data
+
+Account storage lives in the user's local profile. The app also reads and writes the normal Codex auth location so the selected account is picked up by Codex itself.
+
+Full backups use the app's encrypted `.cswf` format. Slim import/export is intended only for non-secret account metadata.
+
+## Disclaimer
+
+Use this only with accounts you personally control. You are responsible for following OpenAI's and ChatGPT's terms. This fork does not grant permission to share accounts or automate quota abuse.
