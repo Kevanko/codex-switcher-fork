@@ -209,6 +209,7 @@ export function useAccounts() {
             : a
         )
       );
+      return usage;
     } catch (err) {
       console.error("Failed to refresh single usage:", err);
       setAccounts((prev) =>

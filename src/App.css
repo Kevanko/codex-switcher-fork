@@ -527,6 +527,12 @@ textarea:focus-visible {
   box-shadow: 0 24px 48px var(--accent-glow);
 }
 
+.ui-action-button.is-active {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
 .ui-action-button.is-ghost {
   background: transparent;
 }
@@ -1502,7 +1508,8 @@ textarea:focus-visible {
 
 .account-active-chip,
 .account-plan-chip,
-.account-status-pill {
+.account-status-pill,
+.account-auto-warmup-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1514,6 +1521,34 @@ textarea:focus-visible {
   color: var(--text-secondary);
   border: 1px solid var(--border-soft);
   background: rgba(255, 255, 255, 0.05);
+}
+
+.account-auto-warmup-button {
+  cursor: pointer;
+  background: var(--surface-3);
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms var(--ease-smooth);
+}
+
+.account-auto-warmup-button:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.account-auto-warmup-button.is-active {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.account-auto-warmup-button:disabled {
+  cursor: default;
+  opacity: 0.72;
+  transform: none;
 }
 
 .account-active-chip {

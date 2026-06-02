@@ -28,6 +28,10 @@ interface AccountCardProps {
   onReauthorize?: () => void;
   switching?: boolean;
   warmingUp?: boolean;
+  autoWarmupEnabled?: boolean;
+  autoWarmupManagedByAll?: boolean;
+  autoWarmupLabel?: string;
+  onToggleAutoWarmup?: () => void;
   masked?: boolean;
   onToggleMask?: () => void;
   locale?: Locale;
@@ -113,6 +117,10 @@ export function AccountCard({
   onReauthorize,
   switching,
   warmingUp,
+  autoWarmupEnabled = false,
+  autoWarmupManagedByAll = false,
+  autoWarmupLabel,
+  onToggleAutoWarmup,
   masked = false,
   onToggleMask,
   locale = "en",
@@ -287,6 +295,18 @@ export function AccountCard({
           <span className={`account-status-pill is-${subscriptionStatus.tone}`}>
             {subscriptionStatus.label}
           </span>
+        )}
+        {onToggleAutoWarmup && (
+          <button
+            type="button"
+            className={`account-auto-warmup-button ${autoWarmupEnabled ? "is-active" : ""}`}
+            onClick={onToggleAutoWarmup}
+            disabled={autoWarmupManagedByAll}
+            title={autoWarmupManagedByAll ? t.account.autoWarmupManagedByAll : autoWarmupLabel}
+          >
+            <Activity size={13} className={warmingUp ? "pulse-soft" : undefined} />
+            {autoWarmupLabel ?? t.account.autoWarmupOff}
+          </button>
         )}
       </div>
 
