@@ -53,7 +53,7 @@ function formatLimitLabel(window: VisibleLimitWindow, locale: Locale): string {
 
 function getToneClass(remainingPercent: number) {
   if (remainingPercent <= 0) return "is-danger";
-  if (remainingPercent <= 30) return "is-warning";
+  if (remainingPercent <= 10) return "is-warning";
   return "is-accent";
 }
 
@@ -97,7 +97,10 @@ function RateLimitBar({
       <div className="usage-track" aria-hidden="true">
         <div
           className={`usage-fill ${toneClass}`}
-          style={{ width: `${Math.min(remainingPercent, 100)}%` }}
+          style={{
+            width: `${Math.min(remainingPercent, 100)}%`,
+            minWidth: remainingPercent > 0 ? 12 : 0,
+          }}
         />
       </div>
     </div>

@@ -87,9 +87,11 @@ const AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS = 60 * 60 * 1000;
 const AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES = 5;
 const DEFAULT_PRIMARY_WINDOW_MINUTES = 300;
 const LIMIT_FULL_THRESHOLD = 99.5;
+const NEAR_LIMIT_REMAINING_THRESHOLD = 10;
 
 type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose";
 type AutoWarmupLedger = Record<string, { lastSuccessfulWarmupAt?: number }>;
+type ProviderTab = "codex" | "claude";
 type SortMode =
   | "deadline_asc"
   | "deadline_desc"
@@ -309,7 +311,7 @@ function getRemainingPercent(account: AccountWithUsage) {
 function getLimitTone(remaining: number | null): "success" | "warning" | "danger" | "muted" {
   if (remaining === null) return "muted";
   if (remaining <= 0) return "danger";
-  if (remaining <= 30) return "warning";
+  if (remaining <= NEAR_LIMIT_REMAINING_THRESHOLD) return "warning";
   return "success";
 }
 
@@ -363,7 +365,7 @@ function formatAuthTokenCountdown(expiresAt: string | null | undefined, locale: 
 
 function isAccountNearLimit(account: AccountWithUsage) {
   const remaining = getRemainingPercent(account);
-  return remaining !== null && remaining <= 30;
+  return remaining !== null && remaining <= NEAR_LIMIT_REMAINING_THRESHOLD;
 }
 
 function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" | "danger" | "muted" {
@@ -371,7 +373,7 @@ function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" 
   const remaining = getRemainingPercent(account);
   if (remaining === null) return "muted";
   if (remaining <= 0) return "danger";
-  if (remaining <= 30) return "warning";
+  if (remaining <= NEAR_LIMIT_REMAINING_THRESHOLD) return "warning";
   return "success";
 }
 
@@ -869,6 +871,7 @@ function App() {
     deleteAccount,
     renameAccount,
     importFromFile,
+    importClaudeFromFile,
     exportAccountsSlimText,
     importAccountsSlimText,
     startOAuthLogin,
@@ -880,6 +883,7 @@ function App() {
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [activeProvider, setActiveProvider] = useState<ProviderTab>("codex");
   const [reauthAccount, setReauthAccount] = useState<AccountWithUsage | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -1326,7 +1330,11 @@ function App() {
     setIsRefreshing(true);
     setRefreshSuccess(false);
     try {
-      await refreshUsage(undefined, { refreshMetadata: true });
+      if (activeProvider === "claude") {
+        await loadAccounts(true);
+      } else {
+        await refreshUsage(undefined, { refreshMetadata: true });
+      }
       setRefreshSuccess(true);
       setTimeout(() => setRefreshSuccess(false), 2000);
     } finally {
@@ -1603,19 +1611,26 @@ function App() {
 
   const filteredAccounts = useMemo(() => {
     const query = deferredSearchQuery.trim().toLowerCase();
-    if (!query) return accounts;
+    const providerAccounts = accounts.filter((account) => account.provider === activeProvider);
+    if (!query) return providerAccounts;
 
-    return accounts.filter((account) => {
+    return providerAccounts.filter((account) => {
       const name = account.name.toLowerCase();
       const email = account.email?.toLowerCase() ?? "";
       const plan = account.plan_type?.toLowerCase() ?? "";
-      return name.includes(query) || email.includes(query) || plan.includes(query);
+      const organization = account.claude_organization_uuid?.toLowerCase() ?? "";
+      return (
+        name.includes(query) ||
+        email.includes(query) ||
+        plan.includes(query) ||
+        organization.includes(query)
+      );
     });
-  }, [accounts, deferredSearchQuery]);
+  }, [accounts, activeProvider, deferredSearchQuery]);
 
   const activeAccount = useMemo(
-    () => accounts.find((account) => account.is_active) ?? null,
-    [accounts]
+    () => accounts.find((account) => account.provider === activeProvider && account.is_active) ?? null,
+    [accounts, activeProvider]
   );
 
   const filteredActiveAccount = useMemo(
@@ -1638,17 +1653,27 @@ function App() {
     [filteredActiveAccount, sortedOtherAccounts]
   );
 
+  const providerCounts = useMemo(
+    () => ({
+      codex: accounts.filter((account) => account.provider === "codex").length,
+      claude: accounts.filter((account) => account.provider === "claude").length,
+    }),
+    [accounts]
+  );
+
   const summary = useMemo(() => {
-    const total = accounts.length;
-    const errorCount = accounts.filter((account) => Boolean(account.usage?.error)).length;
-    const nearLimitCount = accounts.filter((account) => isAccountNearLimit(account)).length;
-    const availableCount = accounts.filter((account) => {
+    const providerAccounts = accounts.filter((account) => account.provider === activeProvider);
+    const total = providerAccounts.length;
+    const errorCount = providerAccounts.filter((account) => Boolean(account.usage?.error)).length;
+    const nearLimitCount = providerAccounts.filter((account) => isAccountNearLimit(account)).length;
+    const availableCount = providerAccounts.filter((account) => {
+      if (account.provider === "claude") return true;
       if (account.usage?.error) return false;
       const remaining = getRemainingPercent(account);
       return remaining === null || remaining > 0;
     }).length;
     return { total, errorCount, nearLimitCount, availableCount };
-  }, [accounts]);
+  }, [accounts, activeProvider]);
 
   const hasRunningProcesses = processInfo && processInfo.count > 0;
   const isBackendUnavailable =
@@ -1727,15 +1752,9 @@ function App() {
           <div className="sidebar-section">
             <div className="sidebar-top">
               {isSidebarExpanded && (
-                <>
-                  <div className="brand-mark">
-                    <LayoutPanelLeft size={20} />
-                  </div>
-                  <div className="brand-copy">
-                    <div className="brand-title">Codex Switcher</div>
-                    <div className="brand-subtitle">{t.sidebar.subtitle}</div>
-                  </div>
-                </>
+                <div className="brand-copy">
+                  <div className="brand-title">Codex Switcher</div>
+                </div>
               )}
               <button
                 type="button"
@@ -1910,6 +1929,25 @@ function App() {
                 <p>{t.toolbar.subtitle}</p>
               </div>
 
+              <div className="provider-tabs" aria-label={t.toolbar.providerTabs}>
+                <button
+                  type="button"
+                  className={`provider-tab ${activeProvider === "codex" ? "is-selected" : ""}`}
+                  onClick={() => setActiveProvider("codex")}
+                >
+                  Codex
+                  <strong>{providerCounts.codex}</strong>
+                </button>
+                <button
+                  type="button"
+                  className={`provider-tab ${activeProvider === "claude" ? "is-selected" : ""}`}
+                  onClick={() => setActiveProvider("claude")}
+                >
+                  Claude
+                  <strong>{providerCounts.claude}</strong>
+                </button>
+              </div>
+
               <section className="toolbar-stats-row" aria-label={t.toolbar.summaryLabel}>
                 <span className="toolbar-stat">
                   <UserRound size={14} />
@@ -1948,37 +1986,43 @@ function App() {
                   <Palette size={16} />
                   {t.toolbar.appearance}
                 </button>
-                <button
-                  type="button"
-                  className="ui-action-button"
-                  onClick={() => {
-                    void handleWarmupAll();
-                  }}
-                  disabled={isWarmingAll || accounts.length === 0}
-                >
-                  <Activity size={16} className={isWarmingAll ? "pulse-soft" : undefined} />
-                  {t.toolbar.warmAll}
-                </button>
-                <button
-                  type="button"
-                  className={`ui-action-button ${autoWarmupAllEnabled ? "is-active" : ""}`}
-                  onClick={() => setAutoWarmupAllEnabled((enabled) => !enabled)}
-                  disabled={accounts.length === 0}
-                >
-                  <Activity size={16} />
-                  {autoWarmupAllEnabled ? t.toolbar.autoWarmupOn : t.toolbar.autoWarmupOff}
-                </button>
-                <button
-                  type="button"
-                  className="ui-action-button"
-                  onClick={() => {
-                    void handleRefresh();
-                  }}
-                  disabled={isRefreshing}
-                >
-                  <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
-                  {t.toolbar.refresh}
-                </button>
+                {activeProvider === "codex" && (
+                  <>
+                    <button
+                      type="button"
+                      className="ui-action-button"
+                      onClick={() => {
+                        void handleWarmupAll();
+                      }}
+                      disabled={isWarmingAll || providerCounts.codex === 0}
+                    >
+                      <Activity size={16} className={isWarmingAll ? "pulse-soft" : undefined} />
+                      {t.toolbar.warmAll}
+                    </button>
+                    <button
+                      type="button"
+                      className={`ui-action-button ${autoWarmupAllEnabled ? "is-active" : ""}`}
+                      onClick={() => setAutoWarmupAllEnabled((enabled) => !enabled)}
+                      disabled={providerCounts.codex === 0}
+                    >
+                      <Activity size={16} />
+                      {autoWarmupAllEnabled ? t.toolbar.autoWarmupOn : t.toolbar.autoWarmupOff}
+                    </button>
+                  </>
+                )}
+                {activeProvider === "codex" && (
+                  <button
+                    type="button"
+                    className="ui-action-button"
+                    onClick={() => {
+                      void handleRefresh();
+                    }}
+                    disabled={isRefreshing}
+                  >
+                    <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
+                    {t.toolbar.refresh}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2008,7 +2052,7 @@ function App() {
                       </p>
                     </div>
                   </div>
-                ) : accounts.length === 0 ? (
+                ) : providerCounts[activeProvider] === 0 ? (
                   <div className="surface-panel">
                     <div className="empty-state">
                       <div className="empty-state-icon">
@@ -2053,6 +2097,7 @@ function App() {
                               const planVisual = getPlanVisual(filteredActiveAccount);
                               const resetItems = getActiveResetItems(filteredActiveAccount, resolvedLanguage);
                               const isMasked = maskedAccounts.has(filteredActiveAccount.id);
+                              const isClaudeAccount = filteredActiveAccount.provider === "claude";
                               const needsReauth =
                                 filteredActiveAccount.auth_mode === "chat_g_p_t" &&
                                 hasRecoverableAuthError(filteredActiveAccount.usage);
@@ -2097,43 +2142,49 @@ function App() {
                                 <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
                                   {planVisual.label}
                                 </span>
-                                <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
-                                  {effectiveRemaining !== null
-                                    ? `${effectiveRemaining.toFixed(0)}% ${t.account.left}`
-                                    : t.account.waitingUsage}
-                                </span>
-                                {filteredActiveAccount.auth_mode === "chat_g_p_t" && (
+                                {isClaudeAccount ? (
+                                  <span className="account-provider-chip">Claude</span>
+                                ) : (
+                                  <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
+                                    {effectiveRemaining !== null
+                                      ? `${effectiveRemaining.toFixed(0)}% ${t.account.left}`
+                                      : t.account.waitingUsage}
+                                  </span>
+                                )}
+                                {(filteredActiveAccount.auth_mode === "chat_g_p_t" || isClaudeAccount) && (
                                   <span className={`account-status-pill is-${tokenExpiryStatus.tone}`}>
                                     <KeyRound size={13} />
                                     {tokenExpiryStatus.label}
                                   </span>
                                 )}
-                                <button
-                                  type="button"
-                                  className={`account-auto-warmup-button ${
-                                    autoWarmupAllEnabled ||
-                                    autoWarmupAccountIds.has(filteredActiveAccount.id)
-                                      ? "is-active"
-                                      : ""
-                                  }`}
-                                  onClick={() => toggleAutoWarmupAccount(filteredActiveAccount.id)}
-                                  disabled={autoWarmupAllEnabled}
-                                  title={
-                                    autoWarmupAllEnabled
-                                      ? t.account.autoWarmupManagedByAll
-                                      : getAutoWarmupLabel(filteredActiveAccount)
-                                  }
-                                >
-                                  <Activity
-                                    size={13}
-                                    className={
-                                      autoWarmupRunningIds.has(filteredActiveAccount.id)
-                                        ? "pulse-soft"
-                                        : undefined
+                                {!isClaudeAccount && (
+                                  <button
+                                    type="button"
+                                    className={`account-auto-warmup-button ${
+                                      autoWarmupAllEnabled ||
+                                      autoWarmupAccountIds.has(filteredActiveAccount.id)
+                                        ? "is-active"
+                                        : ""
+                                    }`}
+                                    onClick={() => toggleAutoWarmupAccount(filteredActiveAccount.id)}
+                                    disabled={autoWarmupAllEnabled}
+                                    title={
+                                      autoWarmupAllEnabled
+                                        ? t.account.autoWarmupManagedByAll
+                                        : getAutoWarmupLabel(filteredActiveAccount)
                                     }
-                                  />
-                                  {getAutoWarmupLabel(filteredActiveAccount)}
-                                </button>
+                                  >
+                                    <Activity
+                                      size={13}
+                                      className={
+                                        autoWarmupRunningIds.has(filteredActiveAccount.id)
+                                          ? "pulse-soft"
+                                          : undefined
+                                      }
+                                    />
+                                    {getAutoWarmupLabel(filteredActiveAccount)}
+                                  </button>
+                                )}
                                 {needsReauth && (
                                   <button
                                     type="button"
@@ -2147,7 +2198,28 @@ function App() {
                               </div>
                             </div>
                             <div className={`active-account-mini-rail ${resetItems.length === 1 ? "is-single" : ""}`}>
-                              {resetItems.length > 0 ? (
+                              {isClaudeAccount ? (
+                                <div className="active-claude-meta">
+                                  <div>
+                                    <span>{t.account.subscription}</span>
+                                    <strong>
+                                      {filteredActiveAccount.claude_subscription_type ||
+                                        filteredActiveAccount.plan_type ||
+                                        t.common.unknown}
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span>{t.account.rateTier}</span>
+                                    <strong>{filteredActiveAccount.claude_rate_limit_tier || t.common.unknown}</strong>
+                                  </div>
+                                  <div>
+                                    <span>{t.account.organization}</span>
+                                    <strong className={isMasked ? "masked-text" : ""}>
+                                      {filteredActiveAccount.claude_organization_uuid || t.common.unknown}
+                                    </strong>
+                                  </div>
+                                </div>
+                              ) : resetItems.length > 0 ? (
                                 resetItems.map((item) => (
                                   <div key={item.key} className={`active-limit-meter is-${item.tone}`}>
                                     <div className="active-limit-meter-head">
@@ -2155,7 +2227,12 @@ function App() {
                                       {item.remaining !== null && <strong>{item.remaining.toFixed(0)}%</strong>}
                                     </div>
                                     <div className="active-limit-track" aria-hidden="true">
-                                      <span style={{ width: `${Math.max(0, Math.min(100, item.remaining ?? 0))}%` }} />
+                                      <span
+                                        style={{
+                                          width: `${Math.max(0, Math.min(100, item.remaining ?? 0))}%`,
+                                          minWidth: item.remaining && item.remaining > 0 ? 12 : 0,
+                                        }}
+                                      />
                                     </div>
                                     <em>{t.account.reset}: {formatResetCountdown(item.resetsAt, resolvedLanguage)}</em>
                                   </div>
@@ -2265,7 +2342,7 @@ function App() {
           trayModeEnabled={trayModeEnabled}
           isExportingFull={isExportingFull}
           isImportingFull={isImportingFull}
-          hasAccounts={accounts.length > 0}
+          hasAccounts={providerCounts.codex > 0}
           onThemeChange={setThemePreference}
           onLanguageChange={setLanguagePreference}
           onAccentChange={setAccentPreset}
@@ -2295,9 +2372,11 @@ function App() {
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onImportFile={importFromFile}
+        onImportClaudeFile={importClaudeFromFile}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
+        provider={activeProvider}
         locale={resolvedLanguage}
       />
 
@@ -2307,6 +2386,7 @@ function App() {
         lockedAccountName={reauthAccount?.name}
         onClose={() => setReauthAccount(null)}
         onImportFile={importFromFile}
+        onImportClaudeFile={importClaudeFromFile}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={() => {
           if (!reauthAccount) return Promise.reject(new Error("No account selected"));

@@ -1,6 +1,7 @@
 // Types matching the Rust backend
 
-export type AuthMode = "api_key" | "chat_g_p_t";
+export type AccountProvider = "codex" | "claude";
+export type AuthMode = "api_key" | "chat_g_p_t" | "claude_oauth";
 
 export interface AccountInfo {
   id: string;
@@ -9,7 +10,11 @@ export interface AccountInfo {
   plan_type: string | null;
   subscription_expires_at: string | null;
   auth_token_expires_at: string | null;
+  provider: AccountProvider;
   auth_mode: AuthMode;
+  claude_subscription_type: string | null;
+  claude_rate_limit_tier: string | null;
+  claude_organization_uuid: string | null;
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;

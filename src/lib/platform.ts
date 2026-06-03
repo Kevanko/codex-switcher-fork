@@ -59,6 +59,23 @@ export async function pickAuthJsonFile(): Promise<FileSource | null> {
   return pickBrowserFile(".json,application/json");
 }
 
+export async function pickClaudeCredentialsFile(): Promise<FileSource | null> {
+  if (isTauriRuntime()) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "Claude credentials", extensions: ["json"] }],
+      title: "Select .credentials.json file",
+      defaultPath: "C:\\Users\\NM\\.claude\\.credentials.json",
+    });
+
+    if (!selected || Array.isArray(selected)) return null;
+    return selected;
+  }
+
+  return pickBrowserFile(".json,application/json");
+}
+
 export async function exportFullBackupFile(): Promise<boolean> {
   if (isTauriRuntime()) {
     const { save } = await import("@tauri-apps/plugin-dialog");

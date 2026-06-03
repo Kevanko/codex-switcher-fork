@@ -17,6 +17,9 @@ pub struct AccountsStore {
     pub accounts: Vec<StoredAccount>,
     /// Currently active account ID
     pub active_account_id: Option<String>,
+    /// Currently active Claude account ID
+    #[serde(default)]
+    pub active_claude_account_id: Option<String>,
     /// Set of account IDs that are masked (hidden)
     #[serde(default)]
     pub masked_account_ids: Vec<String>,
@@ -28,6 +31,7 @@ impl Default for AccountsStore {
             version: ACCOUNTS_STORE_VERSION,
             accounts: Vec::new(),
             active_account_id: None,
+            active_claude_account_id: None,
             masked_account_ids: Vec::new(),
         }
     }
@@ -51,6 +55,9 @@ pub struct StoredAccount {
     /// Subscription expiration extracted from ChatGPT ID token, when available
     #[serde(default)]
     pub subscription_expires_at: Option<DateTime<Utc>>,
+    /// Product/provider this account belongs to
+    #[serde(default)]
+    pub provider: AccountProvider,
     /// Authentication mode
     pub auth_mode: AuthMode,
     /// Authentication credentials
@@ -77,6 +84,7 @@ impl StoredAccount {
             email: None,
             plan_type: None,
             subscription_expires_at: None,
+            provider: AccountProvider::Codex,
             auth_mode: AuthMode::ApiKey,
             auth_data: AuthData::ApiKey { key: api_key },
             created_at: Utc::now(),
@@ -103,6 +111,7 @@ impl StoredAccount {
             email,
             plan_type,
             subscription_expires_at,
+            provider: AccountProvider::Codex,
             auth_mode: AuthMode::ChatGPT,
             auth_data: AuthData::ChatGPT {
                 id_token,
@@ -116,6 +125,46 @@ impl StoredAccount {
             cached_usage_updated_at: None,
         }
     }
+
+    /// Create a new account backed by Claude Code credentials.
+    pub fn new_claude(name: String, credentials: ClaudeCredentialsFile) -> Self {
+        let plan_type = credentials.claude_ai_oauth.subscription_type.clone();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            email: None,
+            plan_type,
+            subscription_expires_at: None,
+            provider: AccountProvider::Claude,
+            auth_mode: AuthMode::ClaudeOAuth,
+            auth_data: AuthData::ClaudeOAuth {
+                access_token: credentials.claude_ai_oauth.access_token,
+                refresh_token: credentials.claude_ai_oauth.refresh_token,
+                expires_at: credentials.claude_ai_oauth.expires_at,
+                scopes: credentials.claude_ai_oauth.scopes,
+                subscription_type: credentials.claude_ai_oauth.subscription_type,
+                rate_limit_tier: credentials.claude_ai_oauth.rate_limit_tier,
+                organization_uuid: credentials.organization_uuid,
+            },
+            created_at: Utc::now(),
+            last_used_at: None,
+            cached_usage: None,
+            cached_usage_updated_at: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountProvider {
+    Codex,
+    Claude,
+}
+
+impl Default for AccountProvider {
+    fn default() -> Self {
+        Self::Codex
+    }
 }
 
 /// Authentication mode
@@ -125,7 +174,11 @@ pub enum AuthMode {
     /// Using an OpenAI API key
     ApiKey,
     /// Using ChatGPT OAuth tokens
+    #[serde(rename = "chat_g_p_t")]
     ChatGPT,
+    /// Using Claude OAuth credentials
+    #[serde(rename = "claude_oauth")]
+    ClaudeOAuth,
 }
 
 /// Authentication data (credentials)
@@ -148,6 +201,37 @@ pub enum AuthData {
         /// ChatGPT account ID
         account_id: Option<String>,
     },
+    #[serde(rename = "claude_oauth")]
+    ClaudeOAuth {
+        access_token: String,
+        refresh_token: String,
+        expires_at: i64,
+        #[serde(default)]
+        scopes: Vec<String>,
+        subscription_type: Option<String>,
+        rate_limit_tier: Option<String>,
+        organization_uuid: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeCredentialsFile {
+    #[serde(rename = "claudeAiOauth")]
+    pub claude_ai_oauth: ClaudeAiOauthCredentials,
+    pub organization_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAiOauthCredentials {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub subscription_type: Option<String>,
+    pub rate_limit_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -239,7 +323,11 @@ pub struct AccountInfo {
     pub plan_type: Option<String>,
     pub subscription_expires_at: Option<DateTime<Utc>>,
     pub auth_token_expires_at: Option<DateTime<Utc>>,
+    pub provider: AccountProvider,
     pub auth_mode: AuthMode,
+    pub claude_subscription_type: Option<String>,
+    pub claude_rate_limit_tier: Option<String>,
+    pub claude_organization_uuid: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
@@ -248,12 +336,16 @@ pub struct AccountInfo {
 }
 
 impl AccountInfo {
-    pub fn from_stored(account: &StoredAccount, active_id: Option<&str>) -> Self {
+    pub fn from_stored(
+        account: &StoredAccount,
+        active_id: Option<&str>,
+        active_claude_id: Option<&str>,
+    ) -> Self {
         let fallback_subscription_expires_at = match &account.auth_data {
             AuthData::ChatGPT { id_token, .. } => {
                 parse_chatgpt_id_token_claims(id_token).subscription_expires_at
             }
-            AuthData::ApiKey { .. } => None,
+            AuthData::ApiKey { .. } | AuthData::ClaudeOAuth { .. } => None,
         };
 
         Self {
@@ -267,10 +359,33 @@ impl AccountInfo {
                 .or(fallback_subscription_expires_at),
             auth_token_expires_at: match &account.auth_data {
                 AuthData::ChatGPT { access_token, .. } => parse_jwt_expiry(access_token),
+                AuthData::ClaudeOAuth { expires_at, .. } => parse_claude_expiry(*expires_at),
                 AuthData::ApiKey { .. } => None,
             },
+            provider: account.provider,
             auth_mode: account.auth_mode,
-            is_active: active_id == Some(&account.id),
+            is_active: match account.provider {
+                AccountProvider::Codex => active_id == Some(&account.id),
+                AccountProvider::Claude => active_claude_id == Some(&account.id),
+            },
+            claude_subscription_type: match &account.auth_data {
+                AuthData::ClaudeOAuth {
+                    subscription_type, ..
+                } => subscription_type.clone(),
+                _ => None,
+            },
+            claude_rate_limit_tier: match &account.auth_data {
+                AuthData::ClaudeOAuth {
+                    rate_limit_tier, ..
+                } => rate_limit_tier.clone(),
+                _ => None,
+            },
+            claude_organization_uuid: match &account.auth_data {
+                AuthData::ClaudeOAuth {
+                    organization_uuid, ..
+                } => organization_uuid.clone(),
+                _ => None,
+            },
             created_at: account.created_at,
             last_used_at: account.last_used_at,
             cached_usage: account.cached_usage.clone(),
@@ -291,6 +406,19 @@ pub fn parse_jwt_expiry(token: &str) -> Option<DateTime<Utc>> {
     let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
     let exp = json.get("exp").and_then(|value| value.as_i64())?;
     Utc.timestamp_opt(exp, 0).single()
+}
+
+pub fn parse_claude_expiry(expires_at: i64) -> Option<DateTime<Utc>> {
+    if expires_at <= 0 {
+        return None;
+    }
+
+    let seconds = if expires_at > 10_000_000_000 {
+        expires_at / 1000
+    } else {
+        expires_at
+    };
+    Utc.timestamp_opt(seconds, 0).single()
 }
 
 /// Usage information for an account
@@ -409,7 +537,10 @@ pub struct CreditStatusDetails {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_chatgpt_id_token_claims;
+    use super::{
+        parse_chatgpt_id_token_claims, parse_claude_expiry, AccountProvider, ClaudeCredentialsFile,
+        StoredAccount,
+    };
     use base64::Engine;
 
     #[test]
@@ -429,5 +560,71 @@ mod tests {
                 .map(|value| value.to_rfc3339()),
             Some("2026-04-23T05:03:38+00:00".to_string())
         );
+    }
+
+    #[test]
+    fn parses_claude_credentials_shape() {
+        let payload = r#"{
+            "claudeAiOauth": {
+                "accessToken": "access",
+                "refreshToken": "refresh",
+                "expiresAt": 1893456000000,
+                "scopes": ["user:inference"],
+                "subscriptionType": "pro",
+                "rateLimitTier": "tier_1"
+            },
+            "organizationUuid": "org_123"
+        }"#;
+
+        let credentials: ClaudeCredentialsFile = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(credentials.claude_ai_oauth.access_token, "access");
+        assert_eq!(credentials.claude_ai_oauth.refresh_token, "refresh");
+        assert_eq!(credentials.claude_ai_oauth.expires_at, 1893456000000);
+        assert_eq!(
+            credentials.claude_ai_oauth.subscription_type.as_deref(),
+            Some("pro")
+        );
+        assert_eq!(
+            credentials.claude_ai_oauth.rate_limit_tier.as_deref(),
+            Some("tier_1")
+        );
+        assert_eq!(credentials.organization_uuid.as_deref(), Some("org_123"));
+    }
+
+    #[test]
+    fn parses_claude_expiry_seconds_and_milliseconds() {
+        assert_eq!(
+            parse_claude_expiry(1893456000).map(|value| value.to_rfc3339()),
+            Some("2030-01-01T00:00:00+00:00".to_string())
+        );
+        assert_eq!(
+            parse_claude_expiry(1893456000000).map(|value| value.to_rfc3339()),
+            Some("2030-01-01T00:00:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn old_accounts_without_provider_default_to_codex() {
+        let payload = r#"{
+            "id": "legacy",
+            "name": "Legacy account",
+            "email": null,
+            "plan_type": null,
+            "subscription_expires_at": null,
+            "auth_mode": "api_key",
+            "auth_data": {
+                "type": "api_key",
+                "key": "sk-test"
+            },
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_used_at": null,
+            "cached_usage": null,
+            "cached_usage_updated_at": null
+        }"#;
+
+        let account: StoredAccount = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(account.provider, AccountProvider::Codex);
     }
 }

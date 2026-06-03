@@ -21,9 +21,9 @@ import { UsageBar } from "./UsageBar";
 interface AccountCardProps {
   account: AccountWithUsage;
   onSwitch: () => void;
-  onWarmup: () => Promise<void>;
+  onWarmup?: () => Promise<void>;
   onDelete: () => void;
-  onRefresh: () => Promise<void>;
+  onRefresh?: () => Promise<void>;
   onRename: (newName: string) => Promise<void>;
   onReauthorize?: () => void;
   switching?: boolean;
@@ -134,7 +134,7 @@ function getUsageState(account: AccountWithUsage, locale: Locale): {
   }
 
   if (remaining <= 0) return { label: t.account.criticalLimit, tone: "danger" };
-  if (remaining <= 30) return { label: t.account.approachingLimit, tone: "warning" };
+  if (remaining <= 10) return { label: t.account.approachingLimit, tone: "warning" };
   return { label: t.account.healthyCapacity, tone: "success" };
 }
 
@@ -193,6 +193,7 @@ export function AccountCard({
   }, [account.cached_usage_updated_at, account.name, account.usage]);
 
   const handleRefresh = async () => {
+    if (!onRefresh) return;
     setIsRefreshing(true);
     try {
       await onRefresh();
@@ -226,6 +227,7 @@ export function AccountCard({
   };
 
   const t = translations[locale];
+  const isClaude = account.provider === "claude";
   const planVisual = getPlanVisual(account);
   const usageState = getUsageState(account, locale);
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at, locale);
@@ -259,6 +261,7 @@ export function AccountCard({
               {planVisual.premium && <Crown size={13} />}
               {planVisual.label}
             </span>
+            {isClaude && <span className="account-provider-chip">Claude</span>}
           </div>
 
           <div className="account-card-name-row">
@@ -338,13 +341,18 @@ export function AccountCard({
             {subscriptionStatus.label}
           </span>
         )}
-        {account.auth_mode === "chat_g_p_t" && (
+        {isClaude && account.claude_rate_limit_tier && (
+          <span className="account-status-pill is-muted">
+            {t.account.rateTier}: {account.claude_rate_limit_tier}
+          </span>
+        )}
+        {(account.auth_mode === "chat_g_p_t" || isClaude) && (
           <span className={`account-status-pill is-${tokenExpiryStatus.tone}`}>
             <KeyRound size={13} />
             {tokenExpiryStatus.label}
           </span>
         )}
-        {onToggleAutoWarmup && (
+        {!isClaude && onToggleAutoWarmup && (
           <button
             type="button"
             className={`account-auto-warmup-button ${autoWarmupEnabled ? "is-active" : ""}`}
@@ -358,16 +366,43 @@ export function AccountCard({
         )}
       </div>
 
-      <UsageBar
-        account={account}
-        usage={account.usage}
-        loading={isRefreshing || account.usageLoading}
-        locale={locale}
-      />
+      {isClaude ? (
+        <div className="claude-account-details">
+          <div>
+            <span>{t.account.provider}</span>
+            <strong>Claude</strong>
+          </div>
+          <div>
+            <span>{t.account.organization}</span>
+            <strong>
+              <BlurredText blur={masked}>
+                {account.claude_organization_uuid || t.common.unknown}
+              </BlurredText>
+            </strong>
+          </div>
+          <div>
+            <span>{t.account.subscription}</span>
+            <strong>{account.claude_subscription_type || account.plan_type || t.common.unknown}</strong>
+          </div>
+        </div>
+      ) : (
+        <UsageBar
+          account={account}
+          usage={account.usage}
+          loading={isRefreshing || account.usageLoading}
+          locale={locale}
+        />
+      )}
 
       <div className="account-footnotes">
         <div>{t.account.lastUpdated} {formatLastRefresh(lastRefresh, locale)}</div>
-        <div>{account.auth_mode === "api_key" ? t.account.importedKey : t.account.chatgptLogin}</div>
+        <div>
+          {isClaude
+            ? t.account.claudeCredentials
+            : account.auth_mode === "api_key"
+              ? t.account.importedKey
+              : t.account.chatgptLogin}
+        </div>
       </div>
 
       {confirmingDelete && (
@@ -391,7 +426,7 @@ export function AccountCard({
         </div>
       )}
 
-      <div className="account-actions">
+      <div className={`account-actions ${isClaude ? "is-claude" : ""}`}>
         {needsReauth && onReauthorize ? (
           <button type="button" onClick={onReauthorize} className="ui-action-button is-primary">
             <KeyRound size={16} />
@@ -414,29 +449,33 @@ export function AccountCard({
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={() => {
-            void onWarmup();
-          }}
-          disabled={warmingUp}
-          className="ui-icon-button"
-          title={warmingUp ? t.account.sendingWarmup : t.account.sendWarmup}
-        >
-          <Activity size={16} className={warmingUp ? "pulse-soft" : undefined} />
-        </button>
+        {!isClaude && onWarmup && (
+          <button
+            type="button"
+            onClick={() => {
+              void onWarmup();
+            }}
+            disabled={warmingUp}
+            className="ui-icon-button"
+            title={warmingUp ? t.account.sendingWarmup : t.account.sendWarmup}
+          >
+            <Activity size={16} className={warmingUp ? "pulse-soft" : undefined} />
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => {
-            void handleRefresh();
-          }}
-          disabled={isRefreshing}
-          className="ui-icon-button"
-          title={t.account.refreshUsage}
-        >
-          <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
-        </button>
+        {!isClaude && onRefresh && (
+          <button
+            type="button"
+            onClick={() => {
+              void handleRefresh();
+            }}
+            disabled={isRefreshing}
+            className="ui-icon-button"
+            title={t.account.refreshUsage}
+          >
+            <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
+          </button>
+        )}
 
         <button
           type="button"

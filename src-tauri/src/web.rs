@@ -10,12 +10,14 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use tokio::runtime::Runtime;
 
 use crate::commands::{
-    add_account_from_auth_json_text, add_account_from_file, cancel_login, check_codex_processes,
-    complete_login, complete_reauth_login, delete_account, export_accounts_full_encrypted_bytes,
-    export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_usage,
-    import_accounts_full_encrypted_bytes, import_accounts_slim_text, list_accounts,
-    refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
-    start_login, switch_account, warmup_account, warmup_all_accounts,
+    add_account_from_auth_json_text, add_account_from_file,
+    add_claude_account_from_credentials_text, add_claude_account_from_file, cancel_login,
+    check_codex_processes, complete_login, complete_reauth_login, delete_account,
+    export_accounts_full_encrypted_bytes, export_accounts_slim_text, get_active_account_info,
+    get_masked_account_ids, get_usage, import_accounts_full_encrypted_bytes,
+    import_accounts_slim_text, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
+    rename_account, set_masked_account_ids, start_login, switch_account, warmup_account,
+    warmup_all_accounts,
 };
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +55,12 @@ struct MaskedIdsArgs {
 
 #[derive(Debug, Deserialize)]
 struct UploadAuthJsonArgs {
+    name: String,
+    contents: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadClaudeCredentialsArgs {
     name: String,
     contents: String,
 }
@@ -133,9 +141,17 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             let args: FileImportArgs = parse_args(payload)?;
             to_json(add_account_from_file(args.path, args.name).await?)
         }
+        "add_claude_account_from_file" => {
+            let args: FileImportArgs = parse_args(payload)?;
+            to_json(add_claude_account_from_file(args.path, args.name).await?)
+        }
         "add_account_from_auth_json_text" => {
             let args: UploadAuthJsonArgs = parse_args(payload)?;
             to_json(add_account_from_auth_json_text(args.name, args.contents).await?)
+        }
+        "add_claude_account_from_credentials_text" => {
+            let args: UploadClaudeCredentialsArgs = parse_args(payload)?;
+            to_json(add_claude_account_from_credentials_text(args.name, args.contents).await?)
         }
         "get_usage" => {
             let args: AccountIdArgs = parse_args(payload)?;

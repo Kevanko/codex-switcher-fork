@@ -13,6 +13,7 @@ import {
   isTauriRuntime,
   openExternalUrl,
   pickAuthJsonFile,
+  pickClaudeCredentialsFile,
   type FileSource,
 } from "../lib/platform";
 import { translations, type Locale } from "../i18n";
@@ -21,11 +22,13 @@ interface AddAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
   onImportFile: (source: FileSource, name: string) => Promise<void>;
+  onImportClaudeFile: (source: FileSource, name: string) => Promise<void>;
   onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
   onCompleteOAuth: () => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;
   locale?: Locale;
   mode?: "add" | "reauthorize";
+  provider?: "codex" | "claude";
   lockedAccountName?: string;
 }
 
@@ -35,11 +38,13 @@ export function AddAccountModal({
   isOpen,
   onClose,
   onImportFile,
+  onImportClaudeFile,
   onStartOAuth,
   onCompleteOAuth,
   onCancelOAuth,
   locale = "en",
   mode = "add",
+  provider = "codex",
   lockedAccountName,
 }: AddAccountModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>("oauth");
@@ -53,6 +58,7 @@ export function AddAccountModal({
   const tauriRuntime = isTauriRuntime();
   const t = translations[locale];
   const isReauthorize = mode === "reauthorize";
+  const isClaude = provider === "claude" && !isReauthorize;
 
   useEffect(() => {
     if (isOpen && isReauthorize && lockedAccountName) {
@@ -65,6 +71,17 @@ export function AddAccountModal({
       setCopied(false);
     }
   }, [isOpen, isReauthorize, lockedAccountName]);
+
+  useEffect(() => {
+    if (isOpen && isClaude) {
+      setActiveTab("import");
+      setFileSource(null);
+      setError(null);
+      setAuthUrl("");
+      setOauthPending(false);
+      setCopied(false);
+    }
+  }, [isOpen, isClaude]);
 
   const resetForm = () => {
     setName(isReauthorize && lockedAccountName ? lockedAccountName : "");
@@ -109,7 +126,7 @@ export function AddAccountModal({
 
   const handleSelectFile = async () => {
     try {
-      const selected = await pickAuthJsonFile();
+      const selected = isClaude ? await pickClaudeCredentialsFile() : await pickAuthJsonFile();
       if (selected) setFileSource(selected);
     } catch (err) {
       console.error("Failed to open file dialog:", err);
@@ -122,14 +139,18 @@ export function AddAccountModal({
       return;
     }
     if (!fileSource) {
-      setError(t.addAccount.selectFile);
+      setError(isClaude ? t.addAccount.selectClaudeFile : t.addAccount.selectFile);
       return;
     }
 
     try {
       setLoading(true);
       setError(null);
-      await onImportFile(fileSource, name.trim());
+      if (isClaude) {
+        await onImportClaudeFile(fileSource, name.trim());
+      } else {
+        await onImportFile(fileSource, name.trim());
+      }
       handleClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -152,8 +173,20 @@ export function AddAccountModal({
       >
         <div className="config-header">
           <div>
-            <h2>{isReauthorize ? t.addAccount.reauthTitle : t.addAccount.title}</h2>
-            <p>{isReauthorize ? t.addAccount.reauthSubtitle : t.addAccount.subtitle}</p>
+            <h2>
+              {isReauthorize
+                ? t.addAccount.reauthTitle
+                : isClaude
+                  ? t.addAccount.claudeTitle
+                  : t.addAccount.title}
+            </h2>
+            <p>
+              {isReauthorize
+                ? t.addAccount.reauthSubtitle
+                : isClaude
+                  ? t.addAccount.claudeSubtitle
+                  : t.addAccount.subtitle}
+            </p>
           </div>
           <button type="button" className="ui-icon-button" onClick={handleClose} title={t.common.close}>
             <X size={16} />
@@ -161,7 +194,7 @@ export function AddAccountModal({
         </div>
 
         <div className="config-body">
-          {!isReauthorize && (
+          {!isReauthorize && !isClaude && (
           <div className="add-account-tabs">
             <button
               type="button"
@@ -217,7 +250,7 @@ export function AddAccountModal({
             />
           </label>
 
-          {activeTab === "oauth" ? (
+          {activeTab === "oauth" && !isClaude ? (
             <div className="settings-section">
               <div>
                 <h3>{t.addAccount.secureLogin}</h3>
@@ -278,15 +311,15 @@ export function AddAccountModal({
           ) : (
             <div className="settings-section">
               <div>
-                <h3>{t.addAccount.importExisting}</h3>
-                <p>{t.addAccount.importHint}</p>
+                <h3>{isClaude ? t.addAccount.importClaude : t.addAccount.importExisting}</h3>
+                <p>{isClaude ? t.addAccount.importClaudeHint : t.addAccount.importHint}</p>
               </div>
               <div className="sidebar-search" style={{ height: "auto", minHeight: 56 }}>
                 <input
                   type="text"
                   readOnly
                   value={describeFileSource(fileSource)}
-                  aria-label={t.addAccount.selectedFile}
+                  aria-label={isClaude ? t.addAccount.selectedClaudeFile : t.addAccount.selectedFile}
                 />
                 <button
                   type="button"
@@ -317,13 +350,13 @@ export function AddAccountModal({
               type="button"
               className="ui-action-button is-primary"
               onClick={() => {
-                void (activeTab === "oauth" ? handleOAuthLogin() : handleImportFile());
+                void (activeTab === "oauth" && !isClaude ? handleOAuthLogin() : handleImportFile());
               }}
-              disabled={loading || (activeTab === "oauth" && oauthPending)}
+              disabled={loading || (activeTab === "oauth" && !isClaude && oauthPending)}
             >
               {loading
                 ? t.common.working
-                : activeTab === "oauth"
+                : activeTab === "oauth" && !isClaude
                   ? isReauthorize
                     ? t.addAccount.refreshLogin
                     : t.addAccount.generateLink

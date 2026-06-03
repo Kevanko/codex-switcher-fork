@@ -1069,6 +1069,51 @@ textarea:focus-visible {
   min-height: 38px;
 }
 
+.provider-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  background: var(--surface-3);
+}
+
+.provider-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.provider-tab strong {
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.78rem;
+}
+
+.provider-tab.is-selected {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.provider-tab.is-selected strong {
+  color: var(--accent-contrast);
+  background: var(--accent);
+}
+
 .toolbar-pill {
   display: inline-flex;
   align-items: center;
@@ -1509,6 +1554,7 @@ textarea:focus-visible {
 .account-active-chip,
 .account-plan-chip,
 .account-status-pill,
+.account-provider-chip,
 .account-auto-warmup-button {
   display: inline-flex;
   align-items: center;
@@ -1521,6 +1567,14 @@ textarea:focus-visible {
   color: var(--text-secondary);
   border: 1px solid var(--border-soft);
   background: rgba(255, 255, 255, 0.05);
+}
+
+.account-provider-chip {
+  color: color-mix(in srgb, var(--accent) 88%, white 12%);
+  border-color: var(--accent-border);
+  background:
+    radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.16), transparent 34%),
+    var(--accent-soft);
 }
 
 .account-auto-warmup-button {
@@ -1771,6 +1825,55 @@ textarea:focus-visible {
   min-height: 118px;
 }
 
+.account-actions.is-claude {
+  grid-template-columns: minmax(120px, 1fr) 40px;
+}
+
+.claude-account-details,
+.active-claude-meta {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.claude-account-details {
+  min-height: 118px;
+  align-content: center;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, var(--accent-soft), transparent 58%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.claude-account-details > div,
+.active-claude-meta > div {
+  display: grid;
+  grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.claude-account-details span,
+.active-claude-meta span {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.claude-account-details strong,
+.active-claude-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .usage-block {
   display: grid;
   gap: 8px;
@@ -1987,6 +2090,10 @@ textarea:focus-visible {
 .density-compact .account-actions {
   grid-template-columns: minmax(112px, 1fr) repeat(3, 38px);
   gap: 6px;
+}
+
+.density-compact .account-actions.is-claude {
+  grid-template-columns: minmax(112px, 1fr) 38px;
 }
 
 .density-compact .account-actions .ui-action-button {

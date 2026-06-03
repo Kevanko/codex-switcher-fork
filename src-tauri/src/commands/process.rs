@@ -280,7 +280,9 @@ pub fn terminate_codex_processes(pids: &[u32]) -> anyhow::Result<()> {
     for pid in pids {
         #[cfg(unix)]
         {
-            let status = Command::new("kill").args(["-9", &pid.to_string()]).status()?;
+            let status = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()?;
             if !status.success() {
                 anyhow::bail!("Failed to terminate Codex process {pid}");
             }
@@ -338,7 +340,10 @@ pub fn restart_codex_process(target: Option<&CodexRestartTarget>) -> anyhow::Res
                     "-NoProfile",
                     "-NonInteractive",
                     "-Command",
-                    &format!("Start-Process -FilePath '{}'", executable.replace("'", "''")),
+                    &format!(
+                        "Start-Process -FilePath '{}'",
+                        executable.replace("'", "''")
+                    ),
                 ])
                 .spawn()?;
             return Ok(true);
@@ -462,7 +467,9 @@ Get-CimInstance Win32_Process |
 }
 
 #[cfg(windows)]
-fn query_windows_codex_processes_from_output(stdout: &[u8]) -> anyhow::Result<Vec<WindowsCodexProcess>> {
+fn query_windows_codex_processes_from_output(
+    stdout: &[u8],
+) -> anyhow::Result<Vec<WindowsCodexProcess>> {
     let stdout = String::from_utf8_lossy(stdout);
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
