@@ -1,6 +1,6 @@
 import { AlertCircle, Clock3, Coins } from "lucide-react";
 import type { AccountWithUsage, UsageInfo } from "../types";
-import { getVisibleLimitWindows } from "../lib/usageModel";
+import { getVisibleLimitWindows, type VisibleLimitWindow } from "../lib/usageModel";
 import { getDateLocale, translations, type Locale } from "../i18n";
 
 interface UsageBarProps {
@@ -40,6 +40,15 @@ function formatWindowDuration(minutes: number | null | undefined, locale: Locale
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ${windowLabel}`;
   return `${Math.floor(hours / 24)}d ${windowLabel}`;
+}
+
+function formatLimitLabel(window: VisibleLimitWindow, locale: Locale): string {
+  const t = translations[locale];
+  if (window.kind === "primary") return t.account.primaryWindow;
+  if (window.kind === "weekly") return t.account.weeklyWindow;
+
+  const duration = formatWindowDuration(window.windowMinutes, locale);
+  return duration ? `${t.account.limit} ${duration.replace(` ${t.account.window}`, "")}` : t.account.primaryWindow;
 }
 
 function getToneClass(remainingPercent: number) {
@@ -141,7 +150,7 @@ export function UsageBar({ account, usage, loading, locale = "en" }: UsageBarPro
       {visibleWindows.map((window) => (
         <RateLimitBar
           key={window.key}
-          label={window.kind === "primary" ? t.account.primaryWindow : t.account.weeklyWindow}
+          label={formatLimitLabel(window, locale)}
           usedPercent={window.usedPercent}
           windowMinutes={window.windowMinutes}
           resetsAt={window.resetsAt}
