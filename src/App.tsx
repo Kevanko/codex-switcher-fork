@@ -327,6 +327,38 @@ function formatResetCountdown(resetAt: number | null | undefined, locale: Locale
   return `${Math.floor(diff / 86400)}d`;
 }
 
+function formatAuthTokenCountdown(expiresAt: string | null | undefined, locale: Locale): {
+  label: string;
+  tone: "warning" | "danger" | "muted";
+} {
+  const t = translations[locale];
+  if (!expiresAt) return { label: t.account.authTokenUnknown, tone: "muted" };
+
+  const remainingMs = new Date(expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(remainingMs)) {
+    return { label: t.account.authTokenUnknown, tone: "muted" };
+  }
+  if (remainingMs <= 0) {
+    return { label: t.account.authTokenExpired, tone: "danger" };
+  }
+
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const countdown =
+    totalSeconds < 60
+      ? `${seconds}s`
+      : hours > 0
+        ? `${hours}h ${minutes}m`
+        : `${minutes}m`;
+
+  return {
+    label: `${t.account.authTokenRefreshIn} ${countdown}`,
+    tone: remainingMs <= 5 * 60 * 1000 ? "warning" : "muted",
+  };
+}
+
 function isAccountNearLimit(account: AccountWithUsage) {
   const remaining = getRemainingPercent(account);
   return remaining !== null && remaining <= 30;
@@ -879,6 +911,7 @@ function App() {
   );
   const [autoWarmupRunningIds, setAutoWarmupRunningIds] = useState<Set<string>>(new Set());
   const [refreshSuccess, setRefreshSuccess] = useState(false);
+  const [, setClockTick] = useState(() => Date.now());
   const [warmupToast, setWarmupToast] = useState<{
     message: string;
     isError: boolean;
@@ -1005,6 +1038,11 @@ function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, [checkProcesses]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClockTick(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     loadMaskedAccountIds().then((ids) => {
@@ -2017,6 +2055,10 @@ function App() {
                                 filteredActiveAccount.auth_mode === "chat_g_p_t" &&
                                 hasRecoverableAuthError(filteredActiveAccount.usage);
                               const effectiveRemaining = getRemainingPercent(filteredActiveAccount);
+                              const tokenExpiryStatus = formatAuthTokenCountdown(
+                                filteredActiveAccount.auth_token_expires_at,
+                                resolvedLanguage
+                              );
 
                               return (
                                 <>
@@ -2058,6 +2100,12 @@ function App() {
                                     ? `${effectiveRemaining.toFixed(0)}% ${t.account.left}`
                                     : t.account.waitingUsage}
                                 </span>
+                                {filteredActiveAccount.auth_mode === "chat_g_p_t" && (
+                                  <span className={`account-status-pill is-${tokenExpiryStatus.tone}`}>
+                                    <KeyRound size={13} />
+                                    {tokenExpiryStatus.label}
+                                  </span>
+                                )}
                                 <button
                                   type="button"
                                   className={`account-auto-warmup-button ${
