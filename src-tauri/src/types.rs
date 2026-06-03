@@ -1,7 +1,7 @@
 //! Core types for Codex Switcher
 
 use base64::Engine;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -238,6 +238,7 @@ pub struct AccountInfo {
     pub email: Option<String>,
     pub plan_type: Option<String>,
     pub subscription_expires_at: Option<DateTime<Utc>>,
+    pub auth_token_expires_at: Option<DateTime<Utc>>,
     pub auth_mode: AuthMode,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -264,6 +265,10 @@ impl AccountInfo {
                 .subscription_expires_at
                 .clone()
                 .or(fallback_subscription_expires_at),
+            auth_token_expires_at: match &account.auth_data {
+                AuthData::ChatGPT { access_token, .. } => parse_jwt_expiry(access_token),
+                AuthData::ApiKey { .. } => None,
+            },
             auth_mode: account.auth_mode,
             is_active: active_id == Some(&account.id),
             created_at: account.created_at,
@@ -272,6 +277,20 @@ impl AccountInfo {
             cached_usage_updated_at: account.cached_usage_updated_at,
         }
     }
+}
+
+pub fn parse_jwt_expiry(token: &str) -> Option<DateTime<Utc>> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let exp = json.get("exp").and_then(|value| value.as_i64())?;
+    Utc.timestamp_opt(exp, 0).single()
 }
 
 /// Usage information for an account

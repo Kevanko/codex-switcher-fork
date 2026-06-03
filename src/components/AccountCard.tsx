@@ -84,6 +84,41 @@ function getSubscriptionStatus(timestamp: string | null | undefined, locale: Loc
   return { label: `${t.account.ends} ${formattedDate}`, tone: "muted" } as const;
 }
 
+function formatTokenExpiry(timestamp: string | null | undefined, locale: Locale): {
+  label: string;
+  tone: "success" | "warning" | "danger" | "muted";
+} {
+  const t = translations[locale];
+  if (!timestamp) {
+    return { label: t.account.authTokenUnknown, tone: "muted" };
+  }
+
+  const remainingMs = new Date(timestamp).getTime() - Date.now();
+  if (!Number.isFinite(remainingMs)) {
+    return { label: t.account.authTokenUnknown, tone: "muted" };
+  }
+
+  if (remainingMs <= 0) {
+    return { label: t.account.authTokenExpired, tone: "danger" };
+  }
+
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const countdown =
+    totalSeconds < 60
+      ? `${seconds}s`
+      : hours > 0
+        ? `${hours}h ${minutes}m`
+        : `${minutes}m`;
+
+  return {
+    label: `${t.account.authTokenRefreshIn} ${countdown}`,
+    tone: remainingMs <= 5 * 60 * 1000 ? "warning" : "muted",
+  };
+}
+
 function getUsageState(account: AccountWithUsage, locale: Locale): {
   label: string;
   tone: "success" | "warning" | "danger" | "muted";
@@ -133,7 +168,13 @@ export function AccountCard({
   const [editName, setEditName] = useState(account.name);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
+  const [, setClockTick] = useState(() => Date.now());
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClockTick(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -188,6 +229,7 @@ export function AccountCard({
   const planVisual = getPlanVisual(account);
   const usageState = getUsageState(account, locale);
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at, locale);
+  const tokenExpiryStatus = formatTokenExpiry(account.auth_token_expires_at, locale);
   const needsReauth =
     account.auth_mode === "chat_g_p_t" && hasRecoverableAuthError(account.usage);
 
@@ -294,6 +336,12 @@ export function AccountCard({
         {account.auth_mode === "chat_g_p_t" && (
           <span className={`account-status-pill is-${subscriptionStatus.tone}`}>
             {subscriptionStatus.label}
+          </span>
+        )}
+        {account.auth_mode === "chat_g_p_t" && (
+          <span className={`account-status-pill is-${tokenExpiryStatus.tone}`}>
+            <KeyRound size={13} />
+            {tokenExpiryStatus.label}
           </span>
         )}
         {onToggleAutoWarmup && (
