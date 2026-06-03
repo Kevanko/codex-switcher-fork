@@ -263,8 +263,8 @@ export const translations = {
       now: "Сейчас",
       working: "Работаю",
       readyToSwitch: "Готово к переключению",
-      process: "процесс Codex запущен",
-      processes: "процессов Codex запущено",
+      process: "процесс Codex",
+      processes: "процессов Codex",
     },
     sidebar: {
       subtitle: "Панель управления аккаунтами",

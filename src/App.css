@@ -840,7 +840,7 @@ textarea:focus-visible {
 
 .sidebar-switch-confirm {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 8px;
   padding: 9px;
@@ -850,6 +850,38 @@ textarea:focus-visible {
   color: var(--text-secondary);
   box-shadow: var(--shadow-soft), var(--shadow-inner);
   font-size: 0.78rem;
+}
+
+.sidebar-switch-confirm:not(.is-compact) {
+  grid-template-columns: 1fr 42px;
+  padding: 10px;
+}
+
+.sidebar-switch-confirm:not(.is-compact) > span {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.76rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-switch-confirm:not(.is-compact) .ui-action-button {
+  justify-self: stretch;
+  min-width: 0;
+  min-height: 36px;
+  padding-inline: 10px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+}
+
+.sidebar-switch-confirm:not(.is-compact) .ui-icon-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: 12px;
 }
 
 .sidebar-switch-confirm.is-compact {
@@ -910,6 +942,28 @@ textarea:focus-visible {
   min-height: 40px;
   justify-content: center;
   padding: 0;
+}
+
+.sidebar-process-pill {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.sidebar-process-pill strong {
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-process-pill span:not(.status-dot) {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .main-shell {
@@ -1077,7 +1131,10 @@ textarea:focus-visible {
   padding: 5px;
   border: 1px solid var(--border-soft);
   border-radius: 16px;
-  background: var(--surface-3);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-3) 82%, transparent), transparent 150%),
+    var(--surface-2);
+  box-shadow: var(--shadow-inner);
 }
 
 .provider-tab {
@@ -1092,26 +1149,51 @@ textarea:focus-visible {
   background: transparent;
   font-weight: 650;
   letter-spacing: -0.01em;
+  --provider-color: var(--accent);
+  --provider-soft: var(--accent-soft);
+  --provider-border: var(--accent-border);
+}
+
+.provider-tab svg {
+  color: var(--provider-color);
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--provider-color) 24%, transparent));
+}
+
+.provider-tab.is-codex {
+  --provider-color: #4b8dff;
+  --provider-soft: rgba(75, 141, 255, 0.13);
+  --provider-border: rgba(75, 141, 255, 0.34);
+}
+
+.provider-tab.is-claude {
+  --provider-color: #d99a24;
+  --provider-soft: rgba(217, 154, 36, 0.14);
+  --provider-border: rgba(217, 154, 36, 0.36);
 }
 
 .provider-tab strong {
   min-width: 22px;
   padding: 2px 7px;
   border-radius: 999px;
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.06);
+  color: color-mix(in srgb, var(--provider-color) 88%, var(--text-primary));
+  background: var(--provider-soft);
   font-size: 0.78rem;
 }
 
 .provider-tab.is-selected {
-  color: var(--accent);
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
+  color: var(--provider-color);
+  border-color: var(--provider-border);
+  background:
+    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--provider-color) 20%, transparent), transparent 54%),
+    var(--provider-soft);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 12px 24px color-mix(in srgb, var(--provider-color) 12%, transparent);
 }
 
 .provider-tab.is-selected strong {
-  color: var(--accent-contrast);
-  background: var(--accent);
+  color: #06111f;
+  background: var(--provider-color);
 }
 
 .toolbar-pill {
@@ -1456,7 +1538,7 @@ textarea:focus-visible {
 .active-limit-track span {
   display: block;
   height: 100%;
-  min-width: 3px;
+  min-width: 14px;
   border-radius: inherit;
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 72%, white), var(--accent));
   box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 34%, transparent);

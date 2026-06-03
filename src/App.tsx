@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   BadgePlus,
+  Bot,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -35,6 +36,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Sun,
   Upload,
   UserRound,
@@ -1709,8 +1711,11 @@ function App() {
     target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
 
+  const topToolbarProcessCount = processInfo?.count ?? 0;
   const topToolbarInfo = hasRunningProcesses
-    ? `${processInfo?.count ?? 0} ${processInfo?.count === 1 ? t.common.process : t.common.processes}`
+    ? topToolbarProcessCount === 1
+      ? t.common.process
+      : t.common.processes
     : t.common.readyToSwitch;
 
   return (
@@ -1855,9 +1860,18 @@ function App() {
           </div>
 
           <div className="sidebar-bottom">
-            <div className="toolbar-pill">
+            <div className="toolbar-pill sidebar-process-pill">
               <span className={`status-dot is-${hasRunningProcesses ? "warning" : "success"}`} />
-              {isSidebarExpanded ? topToolbarInfo : null}
+              {isSidebarExpanded ? (
+                hasRunningProcesses ? (
+                  <>
+                    <strong>{topToolbarProcessCount}</strong>
+                    <span>{topToolbarInfo}</span>
+                  </>
+                ) : (
+                  <span>{topToolbarInfo}</span>
+                )
+              ) : null}
             </div>
           </div>
         </aside>
@@ -1932,18 +1946,20 @@ function App() {
               <div className="provider-tabs" aria-label={t.toolbar.providerTabs}>
                 <button
                   type="button"
-                  className={`provider-tab ${activeProvider === "codex" ? "is-selected" : ""}`}
+                  className={`provider-tab is-codex ${activeProvider === "codex" ? "is-selected" : ""}`}
                   onClick={() => setActiveProvider("codex")}
                 >
-                  Codex
+                  <Bot size={15} />
+                  <span>Codex</span>
                   <strong>{providerCounts.codex}</strong>
                 </button>
                 <button
                   type="button"
-                  className={`provider-tab ${activeProvider === "claude" ? "is-selected" : ""}`}
+                  className={`provider-tab is-claude ${activeProvider === "claude" ? "is-selected" : ""}`}
                   onClick={() => setActiveProvider("claude")}
                 >
-                  Claude
+                  <Sparkles size={15} />
+                  <span>Claude</span>
                   <strong>{providerCounts.claude}</strong>
                 </button>
               </div>
@@ -2230,7 +2246,7 @@ function App() {
                                       <span
                                         style={{
                                           width: `${Math.max(0, Math.min(100, item.remaining ?? 0))}%`,
-                                          minWidth: item.remaining && item.remaining > 0 ? 12 : 0,
+                                          minWidth: item.remaining && item.remaining > 0 ? 22 : 0,
                                         }}
                                       />
                                     </div>
