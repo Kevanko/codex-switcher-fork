@@ -21,6 +21,7 @@ function formatBytes(bytes: number) {
 export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
   const [status, setStatus] = useState<UpdateStatus>({ kind: "idle" });
   const [dismissed, setDismissed] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const t = translations[locale].update;
 
   const checkForUpdate = useCallback(async () => {
@@ -49,10 +50,11 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
   }, [checkForUpdate]);
 
   const handleDownloadAndInstall = async () => {
-    if (status.kind !== "available") return;
+    if (status.kind !== "available" || installing) return;
 
     try {
       if (!isTauriRuntime()) return;
+      setInstalling(true);
       let downloaded = 0;
       let total: number | null = null;
 
@@ -71,10 +73,13 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             break;
         }
       });
+      setStatus({ kind: "ready" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("Update install failed:", err);
       setStatus({ kind: "error", message });
+    } finally {
+      setInstalling(false);
     }
   };
 
@@ -92,8 +97,8 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
   if (status.kind === "idle" || status.kind === "checking" || dismissed) return null;
 
   return (
-    <div className="app-toast-stack" aria-live="polite">
-      <div className="app-toast fade-up">
+    <div className="app-toast-stack update-toast-stack" aria-live="polite">
+      <div className="app-toast update-toast fade-up">
         {status.kind === "available" && (
           <>
             <ArrowUpCircle size={18} />
@@ -108,9 +113,14 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             <button type="button" className="ui-action-button is-ghost" onClick={() => setDismissed(true)}>
               {t.later}
             </button>
-            <button type="button" className="ui-action-button is-primary" onClick={handleDownloadAndInstall}>
-              <Download size={16} />
-              {t.install}
+            <button
+              type="button"
+              className="ui-action-button is-primary"
+              onClick={handleDownloadAndInstall}
+              disabled={installing}
+            >
+              <Download size={16} className={installing ? "spin" : undefined} />
+              {installing ? t.downloading : t.install}
             </button>
           </>
         )}

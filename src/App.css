@@ -2580,9 +2580,11 @@ textarea:focus-visible {
   left: 50%;
   bottom: 22px;
   transform: translateX(-50%);
-  z-index: 80;
+  z-index: 320;
   display: grid;
   gap: 12px;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
 }
 
 .app-toast {
@@ -2597,6 +2599,19 @@ textarea:focus-visible {
   box-shadow: var(--shadow-soft), var(--shadow-inner);
   color: var(--text-primary);
   backdrop-filter: blur(20px);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.app-toast button,
+.app-toast [role="button"] {
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.update-toast-stack,
+.update-toast {
+  user-select: none;
 }
 
 .app-toast.is-success {
