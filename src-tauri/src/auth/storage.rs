@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-use crate::types::{AccountsStore, AuthData, StoredAccount, UsageInfo, ACCOUNTS_STORE_VERSION};
+use crate::types::{
+    AccountProvider, AccountsStore, AuthData, StoredAccount, UsageInfo, ACCOUNTS_STORE_VERSION,
+};
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
@@ -39,7 +41,10 @@ pub fn load_accounts() -> Result<AccountsStore> {
                     Utc::now().format("%Y%m%d-%H%M%S")
                 ));
                 fs::write(&backup_path, &content).with_context(|| {
-                    format!("Failed to backup broken accounts file: {}", backup_path.display())
+                    format!(
+                        "Failed to backup broken accounts file: {}",
+                        backup_path.display()
+                    )
                 })?;
                 let store: AccountsStore = serde_json::from_str(&repaired).with_context(|| {
                     format!(
@@ -47,8 +52,9 @@ pub fn load_accounts() -> Result<AccountsStore> {
                         backup_path.display()
                     )
                 })?;
-                fs::write(&path, repaired)
-                    .with_context(|| format!("Failed to write repaired accounts file: {}", path.display()))?;
+                fs::write(&path, repaired).with_context(|| {
+                    format!("Failed to write repaired accounts file: {}", path.display())
+                })?;
                 store
             } else {
                 return Err(parse_error)
@@ -74,8 +80,8 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
 
-    let content = serde_json::to_string_pretty(&normalized)
-        .context("Failed to serialize accounts store")?;
+    let content =
+        serde_json::to_string_pretty(&normalized).context("Failed to serialize accounts store")?;
 
     let temp_path = path.with_file_name(format!(
         ".accounts.json.tmp-{}",
@@ -84,8 +90,12 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
             .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000)
     ));
 
-    fs::write(&temp_path, content)
-        .with_context(|| format!("Failed to write temporary accounts file: {}", temp_path.display()))?;
+    fs::write(&temp_path, content).with_context(|| {
+        format!(
+            "Failed to write temporary accounts file: {}",
+            temp_path.display()
+        )
+    })?;
 
     if path.exists() {
         fs::remove_file(&path)
@@ -151,9 +161,17 @@ pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
     let account_clone = account.clone();
     store.accounts.push(account);
 
-    // If this is the first account, make it active
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(account_clone.id.clone());
+    match account_clone.provider {
+        AccountProvider::Codex => {
+            if store.active_account_id.is_none() {
+                store.active_account_id = Some(account_clone.id.clone());
+            }
+        }
+        AccountProvider::Claude => {
+            if store.active_claude_account_id.is_none() {
+                store.active_claude_account_id = Some(account_clone.id.clone());
+            }
+        }
     }
 
     save_accounts(&store)?;
@@ -171,9 +189,20 @@ pub fn remove_account(account_id: &str) -> Result<()> {
         anyhow::bail!("Account not found: {account_id}");
     }
 
-    // If we removed the active account, clear it or set to first available
     if store.active_account_id.as_deref() == Some(account_id) {
-        store.active_account_id = store.accounts.first().map(|a| a.id.clone());
+        store.active_account_id = store
+            .accounts
+            .iter()
+            .find(|a| a.provider == AccountProvider::Codex)
+            .map(|a| a.id.clone());
+    }
+
+    if store.active_claude_account_id.as_deref() == Some(account_id) {
+        store.active_claude_account_id = store
+            .accounts
+            .iter()
+            .find(|a| a.provider == AccountProvider::Claude)
+            .map(|a| a.id.clone());
     }
 
     save_accounts(&store)?;
@@ -184,12 +213,31 @@ pub fn remove_account(account_id: &str) -> Result<()> {
 pub fn set_active_account(account_id: &str) -> Result<()> {
     let mut store = load_accounts()?;
 
-    // Verify the account exists
-    if !store.accounts.iter().any(|a| a.id == account_id) {
+    if !store
+        .accounts
+        .iter()
+        .any(|a| a.id == account_id && a.provider == AccountProvider::Codex)
+    {
         anyhow::bail!("Account not found: {account_id}");
     }
 
     store.active_account_id = Some(account_id.to_string());
+    save_accounts(&store)?;
+    Ok(())
+}
+
+pub fn set_active_claude_account(account_id: &str) -> Result<()> {
+    let mut store = load_accounts()?;
+
+    if !store
+        .accounts
+        .iter()
+        .any(|a| a.id == account_id && a.provider == AccountProvider::Claude)
+    {
+        anyhow::bail!("Claude account not found: {account_id}");
+    }
+
+    store.active_claude_account_id = Some(account_id.to_string());
     save_accounts(&store)?;
     Ok(())
 }
@@ -304,8 +352,8 @@ pub fn update_account_chatgpt_tokens(
                 *stored_account_id = Some(new_account_id);
             }
         }
-        AuthData::ApiKey { .. } => {
-            anyhow::bail!("Cannot update OAuth tokens for an API key account");
+        AuthData::ApiKey { .. } | AuthData::ClaudeOAuth { .. } => {
+            anyhow::bail!("Cannot update ChatGPT OAuth tokens for this account type");
         }
     }
 

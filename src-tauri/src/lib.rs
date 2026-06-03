@@ -7,12 +7,12 @@ pub mod types;
 pub mod web;
 
 use commands::{
-    add_account_from_file, cancel_login, check_codex_processes, complete_login,
-    complete_reauth_login, delete_account, export_accounts_full_encrypted_file,
+    add_account_from_file, add_claude_account_from_file, cancel_login, check_codex_processes,
+    complete_login, complete_reauth_login, delete_account, export_accounts_full_encrypted_file,
     export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_usage,
     import_accounts_full_encrypted_file, import_accounts_slim_text, list_accounts,
-    refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
-    refresh_tray_menu, set_tray_mode_enabled, setup_tray, start_login, switch_account,
+    refresh_account_metadata, refresh_all_accounts_usage, refresh_tray_menu, rename_account,
+    set_masked_account_ids, set_tray_mode_enabled, setup_tray, start_login, switch_account,
     warmup_account, warmup_all_accounts,
 };
 
@@ -35,6 +35,7 @@ pub fn run() {
             list_accounts,
             get_active_account_info,
             add_account_from_file,
+            add_claude_account_from_file,
             switch_account,
             delete_account,
             rename_account,

@@ -17,6 +17,16 @@ export function getPlanVisual(account: AccountWithUsage): {
     };
   }
 
+  if (account.provider === "claude") {
+    const label = account.claude_subscription_type || account.plan_type || "Claude";
+    return {
+      label: label.charAt(0).toUpperCase() + label.slice(1),
+      shortLabel: "CL",
+      tone: "team",
+      premium: true,
+    };
+  }
+
   const normalized = account.plan_type?.trim().toLowerCase() ?? "";
 
   if (normalized.includes("team")) {

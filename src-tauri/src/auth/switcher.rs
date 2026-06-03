@@ -8,7 +8,8 @@ use chrono::Utc;
 
 use crate::auth::storage::{load_accounts, save_accounts};
 use crate::types::{
-    parse_chatgpt_id_token_claims, AuthData, AuthDotJson, StoredAccount, TokenData,
+    parse_chatgpt_id_token_claims, AuthData, AuthDotJson, ClaudeAiOauthCredentials,
+    ClaudeCredentialsFile, StoredAccount, TokenData,
 };
 
 /// Get the official Codex home directory
@@ -25,6 +26,12 @@ pub fn get_codex_home() -> Result<PathBuf> {
 /// Get the path to the official auth.json file
 pub fn get_codex_auth_file() -> Result<PathBuf> {
     Ok(get_codex_home()?.join("auth.json"))
+}
+
+/// Get the official Claude credentials file path.
+pub fn get_claude_credentials_file() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not find home directory")?;
+    Ok(home.join(".claude").join(".credentials.json"))
 }
 
 /// Switch to a specific account by writing its credentials to ~/.codex/auth.json
@@ -55,6 +62,58 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     Ok(())
 }
 
+/// Switch Claude Code to a specific account by writing ~/.claude/.credentials.json.
+pub fn switch_to_claude_account(account: &StoredAccount) -> Result<()> {
+    let credentials = create_claude_credentials(account)?;
+    let credentials_path = get_claude_credentials_file()?;
+    let claude_home = credentials_path
+        .parent()
+        .context("Claude credentials path has no parent directory")?;
+
+    fs::create_dir_all(claude_home)
+        .with_context(|| format!("Failed to create Claude home: {}", claude_home.display()))?;
+
+    let content = serde_json::to_string_pretty(&credentials)
+        .context("Failed to serialize Claude credentials")?;
+    let temp_path = claude_home.join(format!(
+        ".credentials.json.tmp-{}",
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000)
+    ));
+
+    fs::write(&temp_path, content).with_context(|| {
+        format!(
+            "Failed to write temporary Claude credentials: {}",
+            temp_path.display()
+        )
+    })?;
+    if credentials_path.exists() {
+        fs::remove_file(&credentials_path).with_context(|| {
+            format!(
+                "Failed to replace Claude credentials: {}",
+                credentials_path.display()
+            )
+        })?;
+    }
+    fs::rename(&temp_path, &credentials_path).with_context(|| {
+        format!(
+            "Failed to move temporary Claude credentials {} to {}",
+            temp_path.display(),
+            credentials_path.display()
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&credentials_path, perms)?;
+    }
+
+    Ok(())
+}
+
 /// Create an AuthDotJson structure from a StoredAccount
 fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
     match &account.auth_data {
@@ -78,6 +137,34 @@ fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
             }),
             last_refresh: Some(Utc::now()),
         }),
+        AuthData::ClaudeOAuth { .. } => {
+            anyhow::bail!("Claude accounts cannot be written to Codex auth.json")
+        }
+    }
+}
+
+fn create_claude_credentials(account: &StoredAccount) -> Result<ClaudeCredentialsFile> {
+    match &account.auth_data {
+        AuthData::ClaudeOAuth {
+            access_token,
+            refresh_token,
+            expires_at,
+            scopes,
+            subscription_type,
+            rate_limit_tier,
+            organization_uuid,
+        } => Ok(ClaudeCredentialsFile {
+            claude_ai_oauth: ClaudeAiOauthCredentials {
+                access_token: access_token.clone(),
+                refresh_token: refresh_token.clone(),
+                expires_at: *expires_at,
+                scopes: scopes.clone(),
+                subscription_type: subscription_type.clone(),
+                rate_limit_tier: rate_limit_tier.clone(),
+            },
+            organization_uuid: organization_uuid.clone(),
+        }),
+        _ => anyhow::bail!("Account is not a Claude OAuth account"),
     }
 }
 
@@ -117,6 +204,39 @@ pub fn import_from_auth_json_contents(
     } else {
         anyhow::bail!("auth.json contains neither API key nor tokens");
     }
+}
+
+/// Import a Claude account from an existing .credentials.json file.
+pub fn import_from_claude_credentials(path: &str, account_name: String) -> Result<StoredAccount> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read Claude credentials: {path}"))?;
+
+    import_from_claude_credentials_contents(&content, account_name)
+        .with_context(|| format!("Failed to parse Claude credentials: {path}"))
+}
+
+pub fn import_from_claude_credentials_contents(
+    content: &str,
+    account_name: String,
+) -> Result<StoredAccount> {
+    let credentials: ClaudeCredentialsFile =
+        serde_json::from_str(content).context("Failed to parse Claude credentials contents")?;
+
+    validate_claude_credentials(&credentials)?;
+    Ok(StoredAccount::new_claude(account_name, credentials))
+}
+
+fn validate_claude_credentials(credentials: &ClaudeCredentialsFile) -> Result<()> {
+    if credentials.claude_ai_oauth.access_token.trim().is_empty() {
+        anyhow::bail!("Claude accessToken is missing");
+    }
+    if credentials.claude_ai_oauth.refresh_token.trim().is_empty() {
+        anyhow::bail!("Claude refreshToken is missing");
+    }
+    if credentials.claude_ai_oauth.expires_at <= 0 {
+        anyhow::bail!("Claude expiresAt is missing");
+    }
+    Ok(())
 }
 
 /// Read the current auth.json file if it exists
@@ -169,7 +289,11 @@ pub fn reconcile_active_account_with_current_auth() -> Result<Option<String>> {
 }
 
 fn account_matches_auth(account: &StoredAccount, auth: &AuthDotJson) -> bool {
-    match (&account.auth_data, auth.openai_api_key.as_ref(), auth.tokens.as_ref()) {
+    match (
+        &account.auth_data,
+        auth.openai_api_key.as_ref(),
+        auth.tokens.as_ref(),
+    ) {
         (AuthData::ApiKey { key }, Some(active_key), _) => key == active_key,
         (
             AuthData::ChatGPT {
@@ -197,6 +321,52 @@ fn account_matches_auth(account: &StoredAccount, auth: &AuthDotJson) -> bool {
                 && access_token == &tokens.access_token
                 && refresh_token == &tokens.refresh_token
         }
+        (AuthData::ClaudeOAuth { .. }, _, _) => false,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_from_claude_credentials_contents;
+    use crate::types::{AccountProvider, AuthData};
+
+    #[test]
+    fn imports_valid_claude_credentials_contents() {
+        let payload = r#"{
+            "claudeAiOauth": {
+                "accessToken": "access",
+                "refreshToken": "refresh",
+                "expiresAt": 1893456000000,
+                "scopes": [],
+                "subscriptionType": "max",
+                "rateLimitTier": "tier_2"
+            },
+            "organizationUuid": "org_123"
+        }"#;
+
+        let account =
+            import_from_claude_credentials_contents(payload, "Claude Work".to_string()).unwrap();
+
+        assert_eq!(account.provider, AccountProvider::Claude);
+        assert!(matches!(account.auth_data, AuthData::ClaudeOAuth { .. }));
+        assert_eq!(account.plan_type.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn rejects_incomplete_claude_credentials_contents() {
+        let payload = r#"{
+            "claudeAiOauth": {
+                "accessToken": "",
+                "refreshToken": "refresh",
+                "expiresAt": 1893456000000
+            }
+        }"#;
+
+        let error = import_from_claude_credentials_contents(payload, "Broken".to_string())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("accessToken"));
     }
 }

@@ -18,7 +18,9 @@ pub async fn get_usage(account_id: String) -> Result<UsageInfo, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    let usage = get_account_usage(&account).await.map_err(|e| e.to_string())?;
+    let usage = get_account_usage(&account)
+        .await
+        .map_err(|e| e.to_string())?;
     if usage.error.is_none() {
         let _ = update_account_usage_cache(&account_id, &usage);
     }
@@ -36,6 +38,7 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
 
     let updated = match &account.auth_data {
         AuthData::ApiKey { .. } => account,
+        AuthData::ClaudeOAuth { .. } => account,
         AuthData::ChatGPT { .. } => {
             let refreshed = refresh_chatgpt_tokens(&account)
                 .await
@@ -57,7 +60,12 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
-    Ok(AccountInfo::from_stored(&updated, active_id))
+    let active_claude_id = store.active_claude_account_id.as_deref();
+    Ok(AccountInfo::from_stored(
+        &updated,
+        active_id,
+        active_claude_id,
+    ))
 }
 
 /// Refresh usage info for all accounts
@@ -87,10 +95,15 @@ pub async fn warmup_account(account_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn warmup_all_accounts() -> Result<WarmupSummary, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    let total_accounts = store.accounts.len();
+    let accounts = store
+        .accounts
+        .into_iter()
+        .filter(|account| !matches!(account.auth_data, AuthData::ClaudeOAuth { .. }))
+        .collect::<Vec<_>>();
+    let total_accounts = accounts.len();
     let concurrency = total_accounts.min(10).max(1);
 
-    let results: Vec<(String, bool)> = stream::iter(store.accounts.into_iter())
+    let results: Vec<(String, bool)> = stream::iter(accounts.into_iter())
         .map(|account| async move {
             let account_id = account.id.clone();
             let failed = send_warmup(&account).await.is_err();

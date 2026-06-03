@@ -106,7 +106,9 @@ export function useAccounts() {
       options?: { refreshMetadata?: boolean }
     ) => {
       try {
-        let list = accountList ?? accountsRef.current;
+        let list = (accountList ?? accountsRef.current).filter(
+          (account) => account.provider !== "claude"
+        );
         if (list.length === 0) {
           return;
         }
@@ -122,7 +124,7 @@ export function useAccounts() {
             maxConcurrentUsageRequests
           );
 
-          list = await loadAccounts(true);
+          list = (await loadAccounts(true)).filter((account) => account.provider !== "claude");
         }
 
         const accountIds = list.map((account) => account.id);
@@ -314,6 +316,26 @@ export function useAccounts() {
     [loadAccounts, refreshUsage]
   );
 
+  const importClaudeFromFile = useCallback(
+    async (source: FileSource, name: string) => {
+      try {
+        if (typeof source === "string") {
+          await invokeBackend<AccountInfo>("add_claude_account_from_file", { path: source, name });
+        } else {
+          const contents = await source.text();
+          await invokeBackend<AccountInfo>("add_claude_account_from_credentials_text", {
+            name,
+            contents,
+          });
+        }
+        await loadAccounts();
+      } catch (err) {
+        throw err;
+      }
+    },
+    [loadAccounts]
+  );
+
   const startOAuthLogin = useCallback(async (accountName: string) => {
     try {
       const info = await invokeBackend<{ auth_url: string; callback_port: number }>(
@@ -449,6 +471,7 @@ export function useAccounts() {
     deleteAccount,
     renameAccount,
     importFromFile,
+    importClaudeFromFile,
     exportAccountsSlimText,
     importAccountsSlimText,
     exportAccountsFullEncryptedFile,

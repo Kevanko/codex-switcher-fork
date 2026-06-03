@@ -22,6 +22,7 @@ export function getUsageRemaining(usedPercent: number | null | undefined): numbe
 
 export function getVisibleLimitWindows(account: AccountWithUsage): VisibleLimitWindow[] {
   const usage = account.usage;
+  if (account.provider === "claude") return [];
   if (!usage || usage.error) return [];
 
   const isPremiumPlan = getPlanVisual(account).premium;

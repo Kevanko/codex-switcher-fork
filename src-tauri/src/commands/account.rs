@@ -2,14 +2,17 @@
 
 use crate::auth::{
     add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    import_from_auth_json, import_from_auth_json_contents, load_accounts,
-    reconcile_active_account_with_current_auth, remove_account, save_accounts,
-    set_active_account, switch_to_account, touch_account,
+    import_from_auth_json, import_from_auth_json_contents, import_from_claude_credentials,
+    import_from_claude_credentials_contents, load_accounts,
+    reconcile_active_account_with_current_auth, remove_account, save_accounts, set_active_account,
+    set_active_claude_account, switch_to_account, switch_to_claude_account, touch_account,
 };
 use crate::commands::process::{
     restart_codex_process, snapshot_restart_target, terminate_codex_processes,
 };
-use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
+use crate::types::{
+    AccountInfo, AccountProvider, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount,
+};
 
 use anyhow::Context;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -76,11 +79,12 @@ pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     let _ = reconcile_active_account_with_current_auth();
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
 
     let accounts: Vec<AccountInfo> = store
         .accounts
         .iter()
-        .map(|a| AccountInfo::from_stored(a, active_id))
+        .map(|a| AccountInfo::from_stored(a, active_id, active_claude_id))
         .collect();
 
     Ok(accounts)
@@ -92,9 +96,14 @@ pub async fn get_active_account_info() -> Result<Option<AccountInfo>, String> {
     let _ = reconcile_active_account_with_current_auth();
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
 
     if let Some(active) = get_active_account().map_err(|e| e.to_string())? {
-        Ok(Some(AccountInfo::from_stored(&active, active_id)))
+        Ok(Some(AccountInfo::from_stored(
+            &active,
+            active_id,
+            active_claude_id,
+        )))
     } else {
         Ok(None)
     }
@@ -112,8 +121,13 @@ pub async fn add_account_from_file(path: String, name: String) -> Result<Account
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
 
-    Ok(AccountInfo::from_stored(&stored, active_id))
+    Ok(AccountInfo::from_stored(
+        &stored,
+        active_id,
+        active_claude_id,
+    ))
 }
 
 /// Add an account from uploaded auth.json contents.
@@ -127,8 +141,53 @@ pub async fn add_account_from_auth_json_text(
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
 
-    Ok(AccountInfo::from_stored(&stored, active_id))
+    Ok(AccountInfo::from_stored(
+        &stored,
+        active_id,
+        active_claude_id,
+    ))
+}
+
+/// Add a Claude account from a .credentials.json file
+#[tauri::command]
+pub async fn add_claude_account_from_file(
+    path: String,
+    name: String,
+) -> Result<AccountInfo, String> {
+    let account = import_from_claude_credentials(&path, name).map_err(|e| e.to_string())?;
+    let stored = add_account(account).map_err(|e| e.to_string())?;
+
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
+
+    Ok(AccountInfo::from_stored(
+        &stored,
+        active_id,
+        active_claude_id,
+    ))
+}
+
+/// Add a Claude account from uploaded .credentials.json contents.
+pub async fn add_claude_account_from_credentials_text(
+    name: String,
+    contents: String,
+) -> Result<AccountInfo, String> {
+    let account =
+        import_from_claude_credentials_contents(&contents, name).map_err(|e| e.to_string())?;
+    let stored = add_account(account).map_err(|e| e.to_string())?;
+
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
+
+    Ok(AccountInfo::from_stored(
+        &stored,
+        active_id,
+        active_claude_id,
+    ))
 }
 
 /// Switch to a different account
@@ -142,6 +201,13 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         .iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    if account.provider == AccountProvider::Claude {
+        switch_to_claude_account(account).map_err(|e| e.to_string())?;
+        set_active_claude_account(&account_id).map_err(|e| e.to_string())?;
+        touch_account(&account_id).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
 
     let (running_pids, restart_target) = snapshot_restart_target().map_err(|e| e.to_string())?;
     if !running_pids.is_empty() {
@@ -240,6 +306,7 @@ pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccounts
 #[tauri::command]
 pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
+    let store = codex_only_store(&store);
     let encrypted =
         encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
     write_encrypted_file(&path, &encrypted).map_err(|e| e.to_string())?;
@@ -249,6 +316,7 @@ pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), Str
 /// Export full account config as encrypted bytes for browser clients.
 pub async fn export_accounts_full_encrypted_bytes() -> Result<Vec<u8>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
+    let store = codex_only_store(&store);
     encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())
 }
 
@@ -348,16 +416,20 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
 }
 
 fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<String> {
+    let codex_accounts = store
+        .accounts
+        .iter()
+        .filter(|account| account.provider == AccountProvider::Codex)
+        .collect::<Vec<_>>();
+
     let active_name = store.active_account_id.as_ref().and_then(|active_id| {
-        store
-            .accounts
+        codex_accounts
             .iter()
             .find(|account| account.id == *active_id)
             .map(|account| account.name.clone())
     });
 
-    let slim_accounts = store
-        .accounts
+    let slim_accounts = codex_accounts
         .iter()
         .map(|account| match &account.auth_data {
             AuthData::ApiKey { key } => SlimAccountPayload {
@@ -372,6 +444,7 @@ fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<Strin
                 api_key: None,
                 refresh_token: Some(refresh_token.clone()),
             },
+            AuthData::ClaudeOAuth { .. } => unreachable!("Claude accounts are filtered out"),
         })
         .collect();
 
@@ -391,6 +464,10 @@ fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<Strin
 }
 
 pub(crate) fn finalize_added_account_state(added_account: &StoredAccount) -> anyhow::Result<()> {
+    if added_account.provider != AccountProvider::Codex {
+        return Ok(());
+    }
+
     let matched_active_id = reconcile_active_account_with_current_auth()?;
     if matched_active_id.is_some() {
         return Ok(());
@@ -517,6 +594,7 @@ async fn build_store_from_slim_payload(
         version: 1,
         accounts,
         active_account_id,
+        active_claude_account_id: None,
         masked_account_ids: Vec::new(),
     })
 }
@@ -707,7 +785,35 @@ fn validate_imported_store(store: &AccountsStore) -> anyhow::Result<()> {
         }
     }
 
+    if let Some(active_id) = &store.active_claude_account_id {
+        if !ids.contains(active_id) {
+            anyhow::bail!("Import references a missing active Claude account: {active_id}");
+        }
+    }
+
     Ok(())
+}
+
+fn codex_only_store(store: &AccountsStore) -> AccountsStore {
+    let accounts = store
+        .accounts
+        .iter()
+        .filter(|account| account.provider == AccountProvider::Codex)
+        .cloned()
+        .collect::<Vec<_>>();
+    let active_account_id = store
+        .active_account_id
+        .as_ref()
+        .filter(|id| accounts.iter().any(|account| &account.id == *id))
+        .cloned();
+
+    AccountsStore {
+        version: store.version,
+        accounts,
+        active_account_id,
+        active_claude_account_id: None,
+        masked_account_ids: store.masked_account_ids.clone(),
+    }
 }
 
 fn merge_accounts_store(
@@ -716,6 +822,7 @@ fn merge_accounts_store(
 ) -> (AccountsStore, ImportAccountsSummary) {
     let imported_version = imported.version;
     let imported_active_id = imported.active_account_id;
+    let imported_active_claude_id = imported.active_claude_account_id;
     let total_in_payload = imported.accounts.len();
     let mut imported_count = 0usize;
     let mut existing_ids: HashSet<String> = current.accounts.iter().map(|a| a.id.clone()).collect();
@@ -748,6 +855,38 @@ fn merge_accounts_store(
             }
         } else {
             current.active_account_id = current.accounts.first().map(|a| a.id.clone());
+        }
+    }
+
+    let current_claude_active_is_valid =
+        current.active_claude_account_id.as_ref().is_some_and(|id| {
+            current
+                .accounts
+                .iter()
+                .any(|a| &a.id == id && a.provider == AccountProvider::Claude)
+        });
+
+    if !current_claude_active_is_valid {
+        if let Some(imported_active) = imported_active_claude_id {
+            if current
+                .accounts
+                .iter()
+                .any(|a| a.id == imported_active && a.provider == AccountProvider::Claude)
+            {
+                current.active_claude_account_id = Some(imported_active);
+            } else {
+                current.active_claude_account_id = current
+                    .accounts
+                    .iter()
+                    .find(|a| a.provider == AccountProvider::Claude)
+                    .map(|a| a.id.clone());
+            }
+        } else {
+            current.active_claude_account_id = current
+                .accounts
+                .iter()
+                .find(|a| a.provider == AccountProvider::Claude)
+                .map(|a| a.id.clone());
         }
     }
 

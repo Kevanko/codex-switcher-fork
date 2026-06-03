@@ -79,6 +79,10 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
+        AuthData::ClaudeOAuth { .. } => Ok(UsageInfo::error(
+            account.id.clone(),
+            "Claude usage is not supported in this version".to_string(),
+        )),
     }
 }
 
@@ -92,6 +96,9 @@ pub async fn warmup_account(account: &StoredAccount) -> Result<()> {
     match &account.auth_data {
         AuthData::ApiKey { key } => warmup_with_api_key(key).await,
         AuthData::ChatGPT { .. } => warmup_with_chatgpt_auth(account).await,
+        AuthData::ClaudeOAuth { .. } => {
+            anyhow::bail!("Claude warm-up is not supported in this version")
+        }
     }
 }
 
@@ -314,7 +321,9 @@ fn extract_chatgpt_auth(account: &StoredAccount) -> Result<(&str, Option<&str>)>
             account_id,
             ..
         } => Ok((access_token.as_str(), account_id.as_deref())),
-        AuthData::ApiKey { .. } => anyhow::bail!("Account is not using ChatGPT OAuth"),
+        AuthData::ApiKey { .. } | AuthData::ClaudeOAuth { .. } => {
+            anyhow::bail!("Account is not using ChatGPT OAuth")
+        }
     }
 }
 

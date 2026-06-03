@@ -10,7 +10,7 @@ use tauri::{
 
 use crate::auth::load_accounts;
 use crate::commands::account::switch_account;
-use crate::types::{StoredAccount, UsageInfo};
+use crate::types::{AccountProvider, StoredAccount, UsageInfo};
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_OPEN_ID: &str = "tray-open";
@@ -64,8 +64,7 @@ pub fn setup_tray(app: &App) -> tauri::Result<()> {
         let window_to_hide = window.clone();
         window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if TRAY_MODE_ENABLED.load(Ordering::Relaxed)
-                    && !FORCE_QUIT.load(Ordering::Relaxed)
+                if TRAY_MODE_ENABLED.load(Ordering::Relaxed) && !FORCE_QUIT.load(Ordering::Relaxed)
                 {
                     api.prevent_close();
                     let _ = window_to_hide.hide();
@@ -93,6 +92,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu
 
     let mut visible_accounts: Vec<_> = accounts
         .drain(..)
+        .filter(|account| account.provider == AccountProvider::Codex)
         .filter_map(|account| {
             let remaining = effective_remaining_percent(&account)?;
             (remaining > 0).then_some((account, remaining))
