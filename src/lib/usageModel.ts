@@ -1,7 +1,7 @@
 import type { AccountWithUsage, UsageInfo } from "../types";
 import { getPlanVisual } from "./accountVisuals";
 
-export type LimitWindowKind = "primary" | "weekly";
+export type LimitWindowKind = "primary" | "weekly" | "rolling";
 
 export interface VisibleLimitWindow {
   key: string;
@@ -48,7 +48,7 @@ export function getVisibleLimitWindows(account: AccountWithUsage): VisibleLimitW
   } else if (!isPremiumPlan && hasPercent(usage.primary_used_percent)) {
     windows.push({
       key: "weekly-primary",
-      kind: "weekly",
+      kind: "rolling",
       usedPercent: usage.primary_used_percent,
       windowMinutes: usage.primary_window_minutes,
       resetsAt: usage.primary_resets_at,

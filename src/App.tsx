@@ -293,6 +293,8 @@ function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
     label:
       window.kind === "primary"
         ? formatResetWindowLabel(window.windowMinutes, t.account.reset5h)
+        : window.kind === "rolling"
+        ? formatResetWindowLabel(window.windowMinutes, t.account.reset)
         : t.account.reset7d,
     resetsAt: window.resetsAt,
     remaining: getUsageRemaining(window.usedPercent),
