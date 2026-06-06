@@ -6,45 +6,42 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type ElementType,
 } from "react";
-import type { CSSProperties } from "react";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Activity,
   AlertTriangle,
-  BadgePlus,
   Bot,
+  Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  CircleOff,
+  Clock,
   Copy,
-  Crown,
   Database,
   Download,
   Eye,
   EyeOff,
   FolderInput,
   KeyRound,
-  LayoutPanelLeft,
   Monitor,
   Moon,
-  Palette,
-  PanelLeftOpen,
   RefreshCcw,
   Search,
   Settings2,
-  ShieldCheck,
   Sparkles,
   Sun,
+  Terminal,
+  Trash2,
   Upload,
   UserRound,
   X,
+  Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
-import type { AccountWithUsage, CodexProcessInfo, UsageInfo } from "./types";
+import { AddAccountModal, UpdateChecker } from "./components";
+import type { AccountWithUsage, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
   importFullBackupFile,
@@ -54,8 +51,6 @@ import {
 import { getPlanVisual } from "./lib/accountVisuals";
 import {
   getEffectiveRemainingPercent,
-  getMostLimitedResetWindow,
-  getResetProgressPercentForWindow,
   getUsageRemaining,
   getVisibleLimitWindows,
   hasRecoverableAuthError,
@@ -75,9 +70,7 @@ import "./App.css";
 const THEME_STORAGE_KEY = "codex-switcher-theme";
 const LANGUAGE_STORAGE_KEY = "codex-switcher-language";
 const ACCENT_STORAGE_KEY = "codex-switcher-accent";
-const SIDEBAR_STORAGE_KEY = "codex-switcher-sidebar-expanded";
 const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
-const OTHER_ACCOUNTS_SORT_STORAGE_KEY = "codex-switcher-other-accounts-sort";
 const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
 const TRAY_MODE_STORAGE_KEY = "codex-switcher-tray-mode";
 const AUTO_WARMUP_ALL_STORAGE_KEY = "codex-switcher-auto-warmup-all";
@@ -94,89 +87,25 @@ const NEAR_LIMIT_REMAINING_THRESHOLD = 10;
 type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose";
 type AutoWarmupLedger = Record<string, { lastSuccessfulWarmupAt?: number }>;
 type ProviderTab = "codex" | "claude";
-type SortMode =
-  | "deadline_asc"
-  | "deadline_desc"
-  | "remaining_desc"
-  | "remaining_asc"
-  | "subscription_asc"
-  | "subscription_desc";
 type ConfigModalMode = "slim_export" | "slim_import";
 type CardDensity = "compact" | "comfortable" | "detailed";
+type StatusFilter = "all" | "ready" | "limit" | "error";
+type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
 const currentWindow = isTauriRuntime() ? getCurrentWindow() : null;
 const isMacOs =
   typeof navigator !== "undefined" &&
   /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent);
 
-type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
-
 const accentPresets: Record<
   AccentPreset,
-  {
-    label: string;
-    accent: string;
-    soft: string;
-    strong: string;
-    border: string;
-    glow: string;
-    contrast: string;
-  }
+  { label: string; accent: string; soft: string; strong: string; border: string; glow: string; contrast: string }
 > = {
-  green: {
-    label: "Signal green",
-    accent: "#18a872",
-    soft: "rgba(24, 168, 114, 0.15)",
-    strong: "rgba(24, 168, 114, 0.24)",
-    border: "rgba(24, 168, 114, 0.32)",
-    glow: "rgba(24, 168, 114, 0.2)",
-    contrast: "#f7fffb",
-  },
-  cyan: {
-    label: "Cyan glass",
-    accent: "#18a0c8",
-    soft: "rgba(24, 160, 200, 0.15)",
-    strong: "rgba(24, 160, 200, 0.24)",
-    border: "rgba(24, 160, 200, 0.32)",
-    glow: "rgba(24, 160, 200, 0.2)",
-    contrast: "#f7fdff",
-  },
-  blue: {
-    label: "Control blue",
-    accent: "#3e7ce9",
-    soft: "rgba(62, 124, 233, 0.15)",
-    strong: "rgba(62, 124, 233, 0.24)",
-    border: "rgba(62, 124, 233, 0.32)",
-    glow: "rgba(62, 124, 233, 0.2)",
-    contrast: "#f8fbff",
-  },
-  amber: {
-    label: "Amber focus",
-    accent: "#d88b22",
-    soft: "rgba(216, 139, 34, 0.16)",
-    strong: "rgba(216, 139, 34, 0.24)",
-    border: "rgba(216, 139, 34, 0.34)",
-    glow: "rgba(216, 139, 34, 0.2)",
-    contrast: "#211305",
-  },
-  rose: {
-    label: "Rose pulse",
-    accent: "#d15a7d",
-    soft: "rgba(209, 90, 125, 0.16)",
-    strong: "rgba(209, 90, 125, 0.24)",
-    border: "rgba(209, 90, 125, 0.34)",
-    glow: "rgba(209, 90, 125, 0.21)",
-    contrast: "#fff8fb",
-  },
-};
-
-const sortLabels: Record<SortMode, string> = {
-  deadline_asc: "Reset soonest",
-  deadline_desc: "Reset latest",
-  remaining_desc: "Most capacity",
-  remaining_asc: "Least capacity",
-  subscription_asc: "Expiry soonest",
-  subscription_desc: "Expiry latest",
+  green:  { label: "Signal green",  accent: "#18a872", soft: "rgba(24,168,114,.15)", strong: "rgba(24,168,114,.24)", border: "rgba(24,168,114,.32)", glow: "rgba(24,168,114,.2)",  contrast: "#f7fffb" },
+  cyan:   { label: "Cyan glass",    accent: "#18a0c8", soft: "rgba(24,160,200,.15)", strong: "rgba(24,160,200,.24)", border: "rgba(24,160,200,.32)", glow: "rgba(24,160,200,.2)",  contrast: "#f7fdff" },
+  blue:   { label: "Control blue",  accent: "#3e7ce9", soft: "rgba(62,124,233,.15)", strong: "rgba(62,124,233,.24)", border: "rgba(62,124,233,.32)", glow: "rgba(62,124,233,.2)",  contrast: "#f8fbff" },
+  amber:  { label: "Amber focus",   accent: "#d88b22", soft: "rgba(216,139,34,.16)", strong: "rgba(216,139,34,.24)", border: "rgba(216,139,34,.34)", glow: "rgba(216,139,34,.2)",  contrast: "#211305" },
+  rose:   { label: "Rose pulse",    accent: "#d15a7d", soft: "rgba(209,90,125,.16)", strong: "rgba(209,90,125,.24)", border: "rgba(209,90,125,.34)", glow: "rgba(209,90,125,.21)", contrast: "#fff8fb" },
 };
 
 const cardDensityLabels: Record<CardDensity, string> = {
@@ -185,40 +114,28 @@ const cardDensityLabels: Record<CardDensity, string> = {
   detailed: "Detailed",
 };
 
-const narrowButtonStyle = {
-  minWidth: 0,
-};
-
 function readThemePreference(): ThemePreference {
   if (typeof window === "undefined") return "system";
   try {
-    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
-  } catch {
-    return "system";
-  }
+    const s = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return s === "light" || s === "dark" || s === "system" ? s : "system";
+  } catch { return "system"; }
 }
 
 function readLanguagePreference(): LanguagePreference {
   if (typeof window === "undefined") return "system";
   try {
-    const saved = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
-    return saved === "en" || saved === "ru" || saved === "system" ? saved : "system";
-  } catch {
-    return "system";
-  }
+    const s = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    return s === "en" || s === "ru" || s === "system" ? s : "system";
+  } catch { return "system"; }
 }
 
 function readStoredStringArray(key: string): string[] {
   if (typeof window === "undefined") return [];
   try {
     const parsed = JSON.parse(window.localStorage.getItem(key) ?? "[]");
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string")
-      : [];
-  } catch {
-    return [];
-  }
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch { return []; }
 }
 
 function readStoredAutoWarmupLedger(): AutoWarmupLedger {
@@ -226,45 +143,37 @@ function readStoredAutoWarmupLedger(): AutoWarmupLedger {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(AUTO_WARMUP_LEDGER_STORAGE_KEY) ?? "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-
     return Object.fromEntries(
       Object.entries(parsed)
-        .map(([accountId, value]) => {
-          const timestamp =
-            value &&
-            typeof value === "object" &&
-            "lastSuccessfulWarmupAt" in value &&
-            typeof value.lastSuccessfulWarmupAt === "number"
-              ? value.lastSuccessfulWarmupAt
-              : undefined;
-          return timestamp ? [accountId, { lastSuccessfulWarmupAt: timestamp }] : null;
+        .map(([id, v]) => {
+          const ts = v && typeof v === "object" && "lastSuccessfulWarmupAt" in v && typeof (v as { lastSuccessfulWarmupAt: unknown }).lastSuccessfulWarmupAt === "number"
+            ? (v as { lastSuccessfulWarmupAt: number }).lastSuccessfulWarmupAt
+            : undefined;
+          return ts ? [id, { lastSuccessfulWarmupAt: ts }] : null;
         })
-        .filter((entry): entry is [string, { lastSuccessfulWarmupAt: number }] => Boolean(entry))
+        .filter((e): e is [string, { lastSuccessfulWarmupAt: number }] => Boolean(e))
     );
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
-function resolveThemePreference(preference: ThemePreference): ThemeMode {
-  return preference === "system" ? getSystemTheme() : preference;
+function resolveThemePreference(p: ThemePreference): ThemeMode {
+  return p === "system" ? getSystemTheme() : p;
 }
 
-function resolveLanguagePreference(preference: LanguagePreference): Locale {
-  return preference === "system" ? getSystemLocale() : preference;
+function resolveLanguagePreference(p: LanguagePreference): Locale {
+  return p === "system" ? getSystemLocale() : p;
 }
 
 function formatResetWindowLabel(minutes: number | null | undefined, fallback: string): string {
-  if (!minutes) return fallback;
-  if (minutes === 300) return fallback;
+  if (!minutes || minutes === 300) return fallback;
   if (minutes < 60) return `${minutes}m reset`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h reset`;
-  return `${Math.floor(hours / 24)}d reset`;
+  const h = Math.floor(minutes / 60);
+  if (h < 24) return `${h}h reset`;
+  return `${Math.floor(h / 24)}d reset`;
 }
 
-function isLimitFull(usedPercent: number | null | undefined): boolean {
-  return usedPercent !== null && usedPercent !== undefined && usedPercent >= LIMIT_FULL_THRESHOLD;
+function isLimitFull(pct: number | null | undefined): boolean {
+  return pct !== null && pct !== undefined && pct >= LIMIT_FULL_THRESHOLD;
 }
 
 function getPrimaryWindowMinutes(usage: UsageInfo): number {
@@ -277,33 +186,14 @@ function getPrimaryRemainingMs(usage: UsageInfo): number | null {
 }
 
 function isPrimaryFullWindow(usage: UsageInfo): boolean {
-  const remainingMs = getPrimaryRemainingMs(usage);
-  if (remainingMs === null) return false;
-  const thresholdMinutes = Math.max(
-    0,
-    getPrimaryWindowMinutes(usage) - AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES
-  );
-  return remainingMs >= thresholdMinutes * 60 * 1000;
+  const ms = getPrimaryRemainingMs(usage);
+  if (ms === null) return false;
+  const threshold = Math.max(0, getPrimaryWindowMinutes(usage) - AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES);
+  return ms >= threshold * 60 * 1000;
 }
 
-function getLastSuccessfulWarmupAt(ledger: AutoWarmupLedger, accountId: string): number | undefined {
-  return ledger[accountId]?.lastSuccessfulWarmupAt;
-}
-
-function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
-  const t = translations[locale];
-  return getVisibleLimitWindows(account).map((window) => ({
-    key: window.key,
-    label:
-      window.kind === "primary"
-        ? formatResetWindowLabel(window.windowMinutes, t.account.reset5h)
-        : window.kind === "rolling"
-        ? formatResetWindowLabel(window.windowMinutes, t.account.reset)
-        : t.account.reset7d,
-    resetsAt: window.resetsAt,
-    remaining: getUsageRemaining(window.usedPercent),
-    tone: getLimitTone(getUsageRemaining(window.usedPercent)),
-  }));
+function getLastSuccessfulWarmupAt(ledger: AutoWarmupLedger, id: string): number | undefined {
+  return ledger[id]?.lastSuccessfulWarmupAt;
 }
 
 function getRemainingPercent(account: AccountWithUsage) {
@@ -317,14 +207,9 @@ function getLimitTone(remaining: number | null): "success" | "warning" | "danger
   return "success";
 }
 
-function getResetProgressPercent(account: AccountWithUsage) {
-  return getResetProgressPercentForWindow(getMostLimitedResetWindow(account));
-}
-
 function formatResetCountdown(resetAt: number | null | undefined, locale: Locale): string {
   const t = translations[locale];
   if (!resetAt) return t.common.unknown;
-
   const diff = resetAt - Math.floor(Date.now() / 1000);
   if (diff <= 0) return t.common.now;
   if (diff < 60) return `${diff}s`;
@@ -334,212 +219,472 @@ function formatResetCountdown(resetAt: number | null | undefined, locale: Locale
 }
 
 function formatAuthTokenCountdown(expiresAt: string | null | undefined, locale: Locale): {
-  label: string;
-  tone: "warning" | "danger" | "muted";
+  label: string; tone: "warning" | "danger" | "muted";
 } {
   const t = translations[locale];
   if (!expiresAt) return { label: t.account.authTokenUnknown, tone: "muted" };
-
   const remainingMs = new Date(expiresAt).getTime() - Date.now();
-  if (!Number.isFinite(remainingMs)) {
-    return { label: t.account.authTokenUnknown, tone: "muted" };
-  }
-  if (remainingMs <= 0) {
-    return { label: t.account.authTokenExpired, tone: "danger" };
-  }
-
-  const totalSeconds = Math.floor(remainingMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const countdown =
-    totalSeconds < 60
-      ? `${seconds}s`
-      : hours > 0
-        ? `${hours}h ${minutes}m`
-        : `${minutes}m`;
-
-  return {
-    label: `${t.account.authTokenRefreshIn} ${countdown}`,
-    tone: remainingMs <= 5 * 60 * 1000 ? "warning" : "muted",
-  };
+  if (!Number.isFinite(remainingMs)) return { label: t.account.authTokenUnknown, tone: "muted" };
+  if (remainingMs <= 0) return { label: t.account.authTokenExpired, tone: "danger" };
+  const secs = Math.floor(remainingMs / 1000);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const countdown = secs < 60 ? `${s}s` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return { label: `${t.account.authTokenRefreshIn} ${countdown}`, tone: remainingMs <= 5 * 60 * 1000 ? "warning" : "muted" };
 }
 
-function isAccountNearLimit(account: AccountWithUsage) {
-  const remaining = getRemainingPercent(account);
-  return remaining !== null && remaining <= NEAR_LIMIT_REMAINING_THRESHOLD;
+function formatLastUsed(lastUsedAt: string | null): string {
+  if (!lastUsedAt) return "—";
+  const diff = Math.floor((Date.now() - new Date(lastUsedAt).getTime()) / 1000);
+  if (diff < 5) return "сейчас";
+  if (diff < 60) return `${diff}с`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}м`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}ч`;
+  return `${Math.floor(diff / 86400)}дн`;
 }
 
 function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" | "danger" | "muted" {
   if (account.usage?.error) return "danger";
-  const remaining = getRemainingPercent(account);
-  if (remaining === null) return "muted";
-  if (remaining <= 0) return "danger";
-  if (remaining <= NEAR_LIMIT_REMAINING_THRESHOLD) return "warning";
+  const r = getRemainingPercent(account);
+  if (r === null) return "muted";
+  if (r <= 0) return "danger";
+  if (r <= NEAR_LIMIT_REMAINING_THRESHOLD) return "warning";
   return "success";
 }
 
-function sortAccounts(accounts: AccountWithUsage[], sortMode: SortMode) {
-  const getResetDeadline = (resetAt: number | null | undefined) =>
-    resetAt ?? Number.POSITIVE_INFINITY;
-
-  const getSubscriptionDeadline = (expiresAt: string | null | undefined) => {
-    if (!expiresAt) return null;
-    const timestamp = new Date(expiresAt).getTime();
-    return Number.isNaN(timestamp) ? null : timestamp;
-  };
-
-  const compareOptionalNumber = (
-    aValue: number | null,
-    bValue: number | null,
-    direction: "asc" | "desc"
-  ) => {
-    if (aValue === null && bValue === null) return 0;
-    if (aValue === null) return 1;
-    if (bValue === null) return -1;
-    return direction === "asc" ? aValue - bValue : bValue - aValue;
-  };
-
-  return [...accounts].sort((a, b) => {
-    if (sortMode === "subscription_asc" || sortMode === "subscription_desc") {
-      const subscriptionDiff = compareOptionalNumber(
-        getSubscriptionDeadline(a.subscription_expires_at),
-        getSubscriptionDeadline(b.subscription_expires_at),
-        sortMode === "subscription_asc" ? "asc" : "desc"
-      );
-      if (subscriptionDiff !== 0) return subscriptionDiff;
-    }
-
-    if (sortMode === "deadline_asc" || sortMode === "deadline_desc") {
-      const deadlineDiff =
-        getResetDeadline(getMostLimitedResetWindow(a)?.resetsAt) -
-        getResetDeadline(getMostLimitedResetWindow(b)?.resetsAt);
-      if (deadlineDiff !== 0) {
-        return sortMode === "deadline_asc" ? deadlineDiff : -deadlineDiff;
-      }
-    }
-
-    if (sortMode === "remaining_desc" || sortMode === "remaining_asc") {
-      const aRemaining = getRemainingPercent(a) ?? Number.NEGATIVE_INFINITY;
-      const bRemaining = getRemainingPercent(b) ?? Number.NEGATIVE_INFINITY;
-      if (aRemaining !== bRemaining) {
-        return sortMode === "remaining_desc" ? bRemaining - aRemaining : aRemaining - bRemaining;
-      }
-    }
-
-    const fallbackDeadline =
-      getResetDeadline(getMostLimitedResetWindow(a)?.resetsAt) -
-      getResetDeadline(getMostLimitedResetWindow(b)?.resetsAt);
-    if (fallbackDeadline !== 0) return fallbackDeadline;
-
-    return a.name.localeCompare(b.name);
-  });
+function getRowStatus(account: AccountWithUsage): StatusFilter {
+  if (account.usage?.error) return "error";
+  const r = getRemainingPercent(account);
+  if (r !== null && r <= 0) return "limit";
+  return "ready";
 }
 
-function SidebarAccountButton({
+function getInitials(name: string): string {
+  return name.replace(/[^a-zA-Zа-яА-Я0-9]/g, "").slice(0, 2).toUpperCase() || "··";
+}
+
+function getMeterTone(remaining: number | null): string {
+  if (remaining === null) return "accent";
+  if (remaining <= 0) return "amber";
+  if (remaining <= 30) return "amber";
+  return "green";
+}
+
+function getDotColor(tone: "success" | "warning" | "danger" | "muted"): string {
+  if (tone === "success") return "var(--ok)";
+  if (tone === "warning") return "var(--warn)";
+  if (tone === "danger") return "var(--bad)";
+  return "var(--text-3)";
+}
+
+function getBarClass(tone: "success" | "warning" | "danger" | "muted"): string {
+  if (tone === "warning") return "dcard-bar dcard-bar--warn";
+  if (tone === "danger") return "dcard-bar dcard-bar--bad";
+  if (tone === "success") return "dcard-bar dcard-bar--ok";
+  return "dcard-bar dcard-bar--accent";
+}
+
+function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
+  const t = translations[locale];
+  return getVisibleLimitWindows(account).map((w) => ({
+    key: w.key,
+    label: w.kind === "primary"
+      ? formatResetWindowLabel(w.windowMinutes, t.account.reset5h)
+      : w.kind === "rolling"
+        ? formatResetWindowLabel(w.windowMinutes, t.account.reset)
+        : t.account.reset7d,
+    resetsAt: w.resetsAt,
+    remaining: getUsageRemaining(w.usedPercent),
+    tone: getLimitTone(getUsageRemaining(w.usedPercent)),
+  }));
+}
+
+// ── Account Row (left panel list item) ────────────────────────────────────────
+function AccountListRow({
   account,
-  expanded,
-  onSelect,
-  pending,
-  switching,
-  onConfirmSwitch,
-  onCancelSwitch,
-  locale,
+  selected,
+  isActiveAcc,
+  masked,
+  onClick,
 }: {
   account: AccountWithUsage;
-  expanded: boolean;
-  onSelect: () => void;
-  pending: boolean;
-  switching: boolean;
-  onConfirmSwitch: () => void;
-  onCancelSwitch: () => void;
-  locale: Locale;
+  selected: boolean;
+  isActiveAcc: boolean;
+  masked: boolean;
+  onClick: () => void;
 }) {
-  const t = translations[locale];
   const tone = getAccountHealthTone(account);
   const remaining = getRemainingPercent(account);
-  const resetProgress = getResetProgressPercent(account);
   const planVisual = getPlanVisual(account);
-  const isWaitingForReset = tone === "danger" && remaining !== null && remaining <= 0;
-  const isPremiumLimit = planVisual.premium && isWaitingForReset;
-  const ringPercent = isWaitingForReset ? (resetProgress ?? 12) : (remaining ?? 0);
-  const compactStatus = isWaitingForReset
-    ? `${Math.round(ringPercent)}%`
-    : remaining !== null
-      ? `${remaining.toFixed(0)}%`
-      : planVisual.shortLabel;
-  const statusText =
-    tone === "danger"
-      ? account.usage?.error
-        ? t.account.usageError
-        : t.account.criticalLimit
-      : tone === "warning"
-        ? t.toolbar.nearLimit
-        : tone === "success"
-          ? remaining !== null
-            ? `${remaining.toFixed(0)}% ${t.account.left}`
-            : t.account.healthyCapacity
-          : t.account.waitingUsage;
+  const initials = account.provider === "claude" ? "CL" : getInitials(account.name);
+  const dotColor = account.is_active ? "var(--accent)" : getDotColor(tone);
+  const isPulse = account.is_active || tone === "warning";
+
+  const maskEmail = (email: string) => {
+    if (!masked) return email;
+    const [u, d] = email.split("@");
+    if (!u || !d) return email;
+    return u.slice(0, 2) + "•".repeat(Math.max(3, u.length - 2)) + "@" + d;
+  };
 
   return (
-    <div className={`sidebar-account-wrap ${pending ? "has-confirm" : ""}`}>
-      <button
-        type="button"
-        className={`sidebar-account ${account.is_active ? "is-active" : ""}`}
-        onClick={onSelect}
-        title={expanded ? undefined : `${account.name} - ${planVisual.label} - ${statusText}`}
-      >
+    <button
+      type="button"
+      className={[
+        "acc-row",
+        selected ? "is-selected" : "",
+        isActiveAcc ? "is-active-acc" : "",
+      ].join(" ")}
+      onClick={onClick}
+    >
+      <span className="acc-avatar">
+        {initials}
         <span
-          className={`sidebar-account-badge is-${tone} is-plan-${planVisual.tone} ${isPremiumLimit ? "is-premium-limit" : ""}`}
-          style={{ "--sidebar-ring-percent": `${ringPercent}%` } as CSSProperties}
-        >
-          {!expanded && <span className="sidebar-usage-ring" aria-hidden="true" />}
-          {planVisual.premium && <Crown className="sidebar-plan-crown" size={11} />}
-          <UserRound className="sidebar-user-icon" size={22} />
-          {!expanded && <span className="sidebar-compact-percent">{compactStatus}</span>}
+          className={"st-dot" + (isPulse ? " st-dot--pulse" : "")}
+          style={{ width: 9, height: 9, background: dotColor, color: dotColor }}
+        />
+      </span>
+      <span className="acc-main">
+        <span className="acc-top">
+          <span className="acc-name">{account.name}</span>
+          <span className={"tag " + (planVisual.premium ? "tag--accent" : "tag--neutral")}>
+            {planVisual.shortLabel}
+          </span>
         </span>
-        {expanded && (
+        {account.email && (
+          <span className="acc-sub">{maskEmail(account.email)}</span>
+        )}
+      </span>
+      <span className="acc-right">
+        {account.usage?.error || account.provider === "claude" ? (
+          <span className="acc-pct" style={{ color: account.usage?.error ? "var(--bad)" : "var(--text-3)", fontSize: 11 }}>
+            {account.usage?.error ? "СБОЙ" : planVisual.shortLabel}
+          </span>
+        ) : (
           <>
-            <span className="sidebar-account-meta">
-              <span className="sidebar-account-name">{account.name}</span>
-              <span className="sidebar-account-subline">
-                <span className={`status-dot is-${tone}`} />
-                <span className={`sidebar-plan-label is-plan-${planVisual.tone}`}>{planVisual.label}</span>
-                {statusText}
+            <span className="acc-pct" style={{ color: remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
+              {remaining !== null ? `${Math.round(remaining)}%` : "—"}
+            </span>
+            <span className="acc-meter">
+              <span className="meter" style={{ height: 4 }}>
+                <span
+                  className={"meter-fill meter-fill--" + getMeterTone(remaining)}
+                  style={{ width: Math.max(2, remaining ?? 0) + "%" }}
+                />
               </span>
             </span>
-            {account.is_active && <ShieldCheck size={16} />}
           </>
         )}
-      </button>
+      </span>
+    </button>
+  );
+}
 
-      {pending && (
-        <div className={`sidebar-switch-confirm ${expanded ? "" : "is-compact"}`}>
-          {expanded && <span>{t.sidebar.switchTo} {account.name}?</span>}
-          <button
-            type="button"
-            className="ui-action-button is-primary"
-            onClick={onConfirmSwitch}
-            disabled={switching}
-            title={`${t.sidebar.switchTo} ${account.name}`}
-          >
-            <ShieldCheck size={14} />
-            {expanded && (switching ? t.sidebar.switching : t.sidebar.switch)}
-          </button>
-          <button
-            type="button"
-            className="ui-icon-button"
-            onClick={onCancelSwitch}
-            title={t.sidebar.cancelSwitch}
-          >
-            <X size={14} />
+// ── Account Detail Panel (right panel) ────────────────────────────────────────
+function AccountDetailPanel({
+  account,
+  masked,
+  onToggleMask,
+  onCopyEmail,
+  emailCopied,
+  switching,
+  warmingUp,
+  autoWarmupEnabled,
+  autoWarmupLabel,
+  onSwitch,
+  onWarmup,
+  onRefresh,
+  onDelete,
+  onToggleAutoWarmup,
+  onReauthorize,
+  locale,
+  t,
+}: {
+  account: AccountWithUsage;
+  masked: boolean;
+  onToggleMask: () => void;
+  onCopyEmail: () => void;
+  emailCopied: boolean;
+  switching: boolean;
+  warmingUp: boolean;
+  autoWarmupEnabled: boolean;
+  autoWarmupLabel: string;
+  onSwitch: () => void;
+  onWarmup: () => void;
+  onRefresh: () => void;
+  onDelete: () => void;
+  onToggleAutoWarmup: () => void;
+  onReauthorize?: () => void;
+  locale: Locale;
+  t: AppText;
+}) {
+  const tone = getAccountHealthTone(account);
+  const remaining = getRemainingPercent(account);
+  const planVisual = getPlanVisual(account);
+  const initials = account.provider === "claude" ? "CL" : getInitials(account.name);
+  const isCodex = account.provider === "codex";
+  const resetItems = getActiveResetItems(account, locale);
+  const tokenExpiry = formatAuthTokenCountdown(account.auth_token_expires_at, locale);
+  const needsReauth = account.auth_mode === "chat_g_p_t" && hasRecoverableAuthError(account.usage);
+
+  const maskEmail = (email: string) => {
+    if (!masked) return email;
+    const [u, d] = email.split("@");
+    if (!u || !d) return email;
+    return u.slice(0, 2) + "•".repeat(Math.max(3, u.length - 2)) + "@" + d;
+  };
+
+  const dotColor = account.is_active ? "var(--accent)" : getDotColor(tone);
+  const barClass = getBarClass(account.is_active ? "success" : tone);
+
+  const limitLevel = isCodex
+    ? (account.usage?.plan_type || account.plan_type || "—")
+    : (account.claude_rate_limit_tier || "—");
+
+  const orgValue = isCodex ? "—" : (account.claude_organization_uuid
+    ? account.claude_organization_uuid.length > 20
+      ? account.claude_organization_uuid.slice(0, 20) + "…"
+      : account.claude_organization_uuid
+    : "—");
+
+  return (
+    <div className="detail">
+      <div className="dcard">
+        <div className={barClass} />
+
+        <div className="dhead">
+          <div className="dhead-id">
+            {initials}
+            <span
+              className={"st-dot" + (account.is_active ? " st-dot--pulse" : "")}
+              style={{ width: 11, height: 11, background: dotColor, color: dotColor }}
+            />
+          </div>
+
+          <div className="dhead-main">
+            <div className="dhead-eyebrow">
+              {account.is_active
+                ? <><Check size={12} /> {t.account.currentAccount}</>
+                : <>{planVisual.label} · {t.account.currentAccount.replace("Текущий", "").trim() || "аккаунт"}</>
+              }
+            </div>
+            <div className="dhead-name">{account.name}</div>
+
+            {account.email && (
+              <div className="dhead-email">
+                <UserRound size={13} />
+                <span>{maskEmail(account.email)}</span>
+                <button type="button" className="icon-btn icon-btn--xs" title={t.account.copyEmail} onClick={onCopyEmail}>
+                  {emailCopied ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+                <button type="button" className="icon-btn icon-btn--xs" title={masked ? "Показать" : "Скрыть"} onClick={onToggleMask}>
+                  {masked ? <Eye size={12} /> : <EyeOff size={12} />}
+                </button>
+              </div>
+            )}
+
+            <div className="dhead-tags">
+              {account.is_active && (
+                <span className="tag tag--accent">
+                  <span className="tag-dot" style={{ background: "var(--accent)" }} />
+                  АКТИВНЫЙ
+                </span>
+              )}
+              <span className={"tag " + (planVisual.premium ? "tag--accent" : "tag--neutral")}>
+                {planVisual.label}
+              </span>
+              <span className="tag tag--neutral">
+                {account.provider === "codex" ? <Terminal size={11} /> : <Sparkles size={11} />}
+                {account.provider === "codex" ? "Codex" : "Claude"}
+              </span>
+              {autoWarmupEnabled && (
+                <span className="tag tag--accent">
+                  <Zap size={11} /> АВТОПРОГРЕВ
+                </span>
+              )}
+              {(account.auth_mode === "chat_g_p_t" || !isCodex) && tokenExpiry.tone !== "muted" && (
+                <span className={"tag tag--" + (tokenExpiry.tone === "danger" ? "red" : "amber")}>
+                  <KeyRound size={11} /> {tokenExpiry.label}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="dhead-actions">
+            {account.is_active
+              ? (
+                <button type="button" className="btn btn--ghost btn--md" disabled>
+                  <Check size={15} /> {t.account.active}
+                </button>
+              )
+              : (
+                <button type="button" className="btn btn--primary btn--md" onClick={onSwitch} disabled={switching}>
+                  {switching ? <RefreshCcw size={15} className="spin" /> : <Zap size={15} />}
+                  {switching ? t.sidebar.switching : t.sidebar.switch}
+                </button>
+              )
+            }
+            {!account.is_active && !isCodex && (
+              <span style={{ fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)", maxWidth: 160, lineHeight: 1.4, textAlign: "right" }}>
+                {locale_label("перезапустите Claude Code после смены", "restart Claude Code after switch", locale)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Banners */}
+        {account.usage?.error && !needsReauth && (
+          <div className="banner banner--bad">
+            <AlertTriangle size={17} />
+            <div className="banner-txt">
+              {t.states.failedAccounts} · <strong style={{ fontFamily: "var(--mono)" }}>{account.usage.error}</strong>
+            </div>
+          </div>
+        )}
+        {needsReauth && (
+          <div className="banner banner--bad">
+            <KeyRound size={17} />
+            <div className="banner-txt">{t.account.refreshLogin}</div>
+            {onReauthorize && (
+              <button type="button" className="btn btn--danger btn--sm" onClick={onReauthorize}>
+                <KeyRound size={13} /> {t.account.refreshLogin}
+              </button>
+            )}
+          </div>
+        )}
+        {!account.usage?.error && !needsReauth && remaining !== null && remaining <= 0 && (
+          <div className="banner banner--warn">
+            <AlertTriangle size={17} />
+            <div className="banner-txt">{t.account.criticalLimit} — {t.account.waitingUsage}</div>
+          </div>
+        )}
+
+        {/* Body */}
+        <div className="dbody">
+          <div className="dbody-col">
+            {isCodex ? (
+              <>
+                <div className="sec-label">
+                  <span className="sec-label-txt"><span className="sec-label-mark">//</span>{t.account.reset5h.includes("5") ? "Лимиты использования" : "Usage limits"}</span>
+                  <span className="sec-label-rule" />
+                </div>
+                <div className="limit-block">
+                  {resetItems.length > 0 ? resetItems.map((item) => (
+                    <div key={item.key} className="limit-item">
+                      <div className="limit-top">
+                        <span className="limit-label">{item.label.toUpperCase()}</span>
+                        <span className="limit-pct" style={{ color: item.tone === "danger" || item.tone === "warning" ? "var(--warn)" : "var(--text)" }}>
+                          {item.remaining !== null ? `${Math.round(item.remaining)}%` : "—"}
+                        </span>
+                      </div>
+                      <span className="meter" style={{ height: 6 }}>
+                        <span
+                          className={"meter-fill meter-fill--" + (item.tone === "danger" ? "red" : item.tone === "warning" ? "amber" : "accent")}
+                          style={{ width: (item.remaining !== null ? Math.min(100, Math.max(2, 100 - item.remaining)) : 2) + "%" }}
+                        />
+                      </span>
+                      {item.resetsAt && (
+                        <div className="limit-eta">
+                          <Clock size={12} /> сброс через {formatResetCountdown(item.resetsAt, locale)}
+                        </div>
+                      )}
+                    </div>
+                  )) : (
+                    <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                      {t.account.waitingUsage}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="sec-label">
+                  <span className="sec-label-txt"><span className="sec-label-mark">//</span>Подписка</span>
+                  <span className="sec-label-rule" />
+                </div>
+                <div className="meta">
+                  <div className="meta-row">
+                    <span className="meta-key">Подписка</span>
+                    <span className="meta-val">{account.claude_subscription_type || account.plan_type || "—"}</span>
+                  </div>
+                  <div className="meta-row">
+                    <span className="meta-key">Уровень лимита</span>
+                    <span className="meta-val">{limitLevel}</span>
+                  </div>
+                  <div className="meta-row">
+                    <span className="meta-key">Организация</span>
+                    <span className="meta-val">{orgValue}</span>
+                  </div>
+                  <div className="meta-row">
+                    <span className="meta-key">Статус токена</span>
+                    <span className="meta-val" style={{ color: tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
+                      {tokenExpiry.label}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="dbody-col">
+            <div className="sec-label">
+              <span className="sec-label-txt"><span className="sec-label-mark">//</span>Параметры</span>
+              <span className="sec-label-rule" />
+            </div>
+            <div className="meta">
+              <div className="meta-row">
+                <span className="meta-key">Токен</span>
+                <span className="meta-val" style={{ color: tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
+                  {tokenExpiry.label}
+                </span>
+              </div>
+              <div className="meta-row">
+                <span className="meta-key">Уровень лимита</span>
+                <span className="meta-val">{limitLevel}</span>
+              </div>
+              <div className="meta-row">
+                <span className="meta-key">Организация</span>
+                <span className="meta-val">{isCodex ? (account.plan_type || "—") : orgValue}</span>
+              </div>
+              <div className="meta-row">
+                <span className="meta-key">Был активен</span>
+                <span className="meta-val">{formatLastUsed(account.last_used_at)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="dfoot">
+          {isCodex && (
+            <>
+              <button type="button" className="btn btn--ghost btn--md" onClick={onWarmup} disabled={warmingUp}>
+                <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> Прогреть
+              </button>
+              <button type="button" className="btn btn--ghost btn--md" onClick={onRefresh}>
+                <RefreshCcw size={14} /> Обновить
+              </button>
+              <button
+                type="button"
+                className={"btn btn--ghost btn--md" + (autoWarmupEnabled ? " is-active" : "")}
+                onClick={onToggleAutoWarmup}
+              >
+                <Activity size={14} /> {autoWarmupLabel}
+              </button>
+            </>
+          )}
+          <span className="dfoot-spacer" />
+          <button type="button" className="icon-btn icon-btn--md" title={t.account.delete || "Удалить"} onClick={onDelete}>
+            <Trash2 size={16} />
           </button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
+// ── Settings Panel ─────────────────────────────────────────────────────────────
 function SettingsPanel({
   themePreference,
   languagePreference,
@@ -550,6 +695,8 @@ function SettingsPanel({
   isExportingFull,
   isImportingFull,
   hasAccounts,
+  isWarmingAll,
+  autoWarmupAllEnabled,
   onThemeChange,
   onLanguageChange,
   onAccentChange,
@@ -560,6 +707,8 @@ function SettingsPanel({
   onExportSlim,
   onImportFull,
   onExportFull,
+  onWarmupAll,
+  onToggleAutoWarmupAll,
 }: {
   themePreference: ThemePreference;
   languagePreference: LanguagePreference;
@@ -570,200 +719,141 @@ function SettingsPanel({
   isExportingFull: boolean;
   isImportingFull: boolean;
   hasAccounts: boolean;
+  isWarmingAll: boolean;
+  autoWarmupAllEnabled: boolean;
   onThemeChange: (theme: ThemePreference) => void;
-  onLanguageChange: (language: LanguagePreference) => void;
+  onLanguageChange: (lang: LanguagePreference) => void;
   onAccentChange: (preset: AccentPreset) => void;
-  onCardDensityChange: (density: CardDensity) => void;
-  onTrayModeChange: (enabled: boolean) => void;
+  onCardDensityChange: (d: CardDensity) => void;
+  onTrayModeChange: (e: boolean) => void;
   onClose: () => void;
   onOpenImportSlim: () => void;
   onExportSlim: () => void;
   onImportFull: () => void;
   onExportFull: () => void;
+  onWarmupAll: () => void;
+  onToggleAutoWarmupAll: () => void;
 }) {
   return (
-    <div
-      className="settings-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <aside className="settings-panel fade-up" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="settings-header">
+    <>
+      <div className="scrim" onClick={onClose} />
+      <div className="panel" role="dialog" aria-label={t.settings.title}>
+        <div className="panel-head">
           <div>
-            <h2>{t.settings.title}</h2>
-            <p>{t.settings.subtitle}</p>
+            <div className="panel-title">{t.settings.title}</div>
+            <div className="panel-sub">{t.settings.subtitle}</div>
           </div>
-          <button type="button" className="ui-icon-button" onClick={onClose} title={t.common.close}>
-            <X size={16} />
+          <button type="button" className="icon-btn icon-btn--md" onClick={onClose} title={t.common.close}>
+            <X size={17} />
           </button>
         </div>
+        <div className="panel-body">
 
-        <div className="settings-body">
-          <section className="settings-section">
-            <div>
-              <h3>{t.settings.language}</h3>
-              <p>{t.settings.languageHint}</p>
+          {/* Language */}
+          <div className="setting">
+            <div className="setting-label">{t.settings.language}</div>
+            <div className="setting-hint">{t.settings.languageHint}</div>
+            <div className="segmented">
+              {([["system", t.common.auto], ["ru", t.settings.russian], ["en", t.settings.english]] as [LanguagePreference, string][]).map(([v, l]) => (
+                <button key={v} type="button" className={"seg-opt" + (languagePreference === v ? " is-active" : "")} onClick={() => onLanguageChange(v)}>{l}</button>
+              ))}
             </div>
-            <div className="segment-row is-triple">
-              {([
-                ["system", t.common.auto],
-                ["ru", t.settings.russian],
-                ["en", t.settings.english],
-              ] as [LanguagePreference, string][]).map(([language, label]) => (
-                <button
-                  key={language}
-                  type="button"
-                  className={`ui-segment-button ${languagePreference === language ? "is-selected" : ""}`}
-                  onClick={() => onLanguageChange(language)}
-                >
-                  {label}
+          </div>
+
+          {/* Theme */}
+          <div className="setting">
+            <div className="setting-label">{t.settings.theme}</div>
+            <div className="setting-hint">{t.settings.themeHint}</div>
+            <div className="segmented">
+              {([["system", t.common.auto, Monitor], ["light", t.common.light, Sun], ["dark", t.common.dark, Moon]] as [ThemePreference, string, ElementType][]).map(([v, l, Icon]) => (
+                <button key={v} type="button" className={"seg-opt" + (themePreference === v ? " is-active" : "")} onClick={() => onThemeChange(v)}>
+                  <Icon size={14} />{l}
                 </button>
               ))}
             </div>
-          </section>
+          </div>
 
-          <section className="settings-section">
-            <div>
-              <h3>{t.settings.theme}</h3>
-              <p>{t.settings.themeHint}</p>
-            </div>
-            <div className="theme-choice-row">
-              <button
-                type="button"
-                className={`ui-segment-button theme-choice is-system ${themePreference === "system" ? "is-selected" : ""}`}
-                onClick={() => onThemeChange("system")}
-              >
-                <span className="theme-choice-icon"><Monitor size={16} /></span>
-                <span>{t.common.auto}</span>
-              </button>
-              <button
-                type="button"
-                className={`ui-segment-button theme-choice is-light ${themePreference === "light" ? "is-selected" : ""}`}
-                onClick={() => onThemeChange("light")}
-              >
-                <span className="theme-choice-icon"><Sun size={16} /></span>
-                <span>{t.common.light}</span>
-              </button>
-              <button
-                type="button"
-                className={`ui-segment-button theme-choice is-dark ${themePreference === "dark" ? "is-selected" : ""}`}
-                onClick={() => onThemeChange("dark")}
-              >
-                <span className="theme-choice-icon"><Moon size={16} /></span>
-                <span>{t.common.dark}</span>
-              </button>
-            </div>
-          </section>
-
-          <section className="settings-section">
-            <div>
-              <h3>{t.settings.accent}</h3>
-              <p>{t.settings.accentHint}</p>
-            </div>
-            <div className="swatch-grid">
-              {(Object.entries(accentPresets) as [AccentPreset, (typeof accentPresets)[AccentPreset]][]).map(
-                ([preset, meta]) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    className={`settings-swatch ${accentPreset === preset ? "is-selected" : ""}`}
-                    onClick={() => onAccentChange(preset)}
-                  >
-                    <span className="swatch-chip" style={{ background: meta.accent }} />
-                    <span>{meta.label}</span>
-                  </button>
-                )
-              )}
-            </div>
-          </section>
-
-          <section className="settings-section">
-            <div>
-              <h3>{t.settings.density}</h3>
-              <p>{t.settings.densityHint}</p>
-            </div>
-            <div className="segment-row is-density">
-              {(Object.keys(cardDensityLabels) as CardDensity[]).map((density) => (
-                <button
-                  key={density}
-                  type="button"
-                  className={`ui-segment-button ${cardDensity === density ? "is-selected" : ""}`}
-                  onClick={() => onCardDensityChange(density)}
-                >
-                  {t.density[density]}
+          {/* Accent */}
+          <div className="setting">
+            <div className="setting-label">{t.settings.accent}</div>
+            <div className="setting-hint">{t.settings.accentHint}</div>
+            <div className="swatches">
+              {(Object.entries(accentPresets) as [AccentPreset, typeof accentPresets[AccentPreset]][]).map(([preset, meta]) => (
+                <button key={preset} type="button" className={"swatch-btn" + (accentPreset === preset ? " is-active" : "")} onClick={() => onAccentChange(preset)}>
+                  <span className="swatch-dot" style={{ background: meta.accent }} />
+                  {meta.label}
                 </button>
               ))}
             </div>
-          </section>
+          </div>
 
-          <section className="settings-section">
-            <div>
-              <h3>{t.settings.trayMode}</h3>
-              <p>{t.settings.trayModeHint}</p>
+          {/* Density */}
+          <div className="setting">
+            <div className="setting-label">{t.settings.density}</div>
+            <div className="setting-hint">{t.settings.densityHint}</div>
+            <div className="segmented">
+              {(Object.keys(cardDensityLabels) as CardDensity[]).map((d) => (
+                <button key={d} type="button" className={"seg-opt" + (cardDensity === d ? " is-active" : "")} onClick={() => onCardDensityChange(d)}>
+                  {t.density[d]}
+                </button>
+              ))}
             </div>
-            <button
-              type="button"
-              className={`settings-toggle-card ${trayModeEnabled ? "is-selected" : ""}`}
-              onClick={() => onTrayModeChange(!trayModeEnabled)}
-            >
-              <span>
-                <Monitor size={16} />
-                {t.settings.minimizeToTray}
-              </span>
-              <span className="settings-toggle-switch" aria-hidden="true" />
+          </div>
+
+          {/* Tray mode */}
+          <div className="setting">
+            <div className="setting-label">{t.settings.trayMode}</div>
+            <div className="setting-hint">{t.settings.trayModeHint}</div>
+            <button type="button" className={"seg-opt" + (trayModeEnabled ? " is-active" : "")} style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => onTrayModeChange(!trayModeEnabled)}>
+              <Monitor size={14} /> {t.settings.minimizeToTray}
             </button>
-          </section>
+          </div>
 
-          <section className="settings-section">
-            <div>
-              <h3>{t.settings.accountManagement}</h3>
-              <p>{t.settings.accountHint}</p>
+          {/* Warmup tools */}
+          <div className="setting">
+            <div className="setting-label">Инструменты</div>
+            <div className="setting-hint">Массовые операции с аккаунтами.</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <button type="button" className="btn btn--ghost btn--md btn--full" onClick={onWarmupAll} disabled={isWarmingAll || !hasAccounts}>
+                <Zap size={14} className={isWarmingAll ? "pulse-soft" : undefined} />
+                {isWarmingAll ? "Прогрев…" : t.toolbar.warmAll}
+              </button>
+              <button type="button" className={"btn btn--ghost btn--md btn--full" + (autoWarmupAllEnabled ? " is-active" : "")} onClick={onToggleAutoWarmupAll} disabled={!hasAccounts}>
+                <Activity size={14} /> {autoWarmupAllEnabled ? t.toolbar.autoWarmupOn : t.toolbar.autoWarmupOff}
+              </button>
             </div>
+          </div>
+
+          {/* Account management */}
+          <div className="setting">
+            <div className="setting-label">{t.settings.accountManagement}</div>
+            <div className="setting-hint">{t.settings.accountHint}</div>
             <div className="settings-actions-grid">
-              <button
-                type="button"
-                className="ui-action-button"
-                onClick={onExportSlim}
-                disabled={!hasAccounts}
-              >
-                <Download size={16} />
-                {t.settings.exportSlim}
+              <button type="button" className="btn btn--ghost btn--md" onClick={onExportSlim} disabled={!hasAccounts}>
+                <Download size={14} /> {t.settings.exportSlim}
               </button>
-              <button type="button" className="ui-action-button" onClick={onOpenImportSlim}>
-                <Upload size={16} />
-                {t.settings.importSlim}
+              <button type="button" className="btn btn--ghost btn--md" onClick={onOpenImportSlim}>
+                <Upload size={14} /> {t.settings.importSlim}
               </button>
-              <button
-                type="button"
-                className="ui-action-button"
-                onClick={onExportFull}
-                disabled={isExportingFull || !hasAccounts}
-              >
-                <Database size={16} />
-                {isExportingFull ? t.settings.exportingBackup : t.settings.exportBackup}
+              <button type="button" className="btn btn--ghost btn--md" onClick={onExportFull} disabled={isExportingFull || !hasAccounts}>
+                <Database size={14} /> {isExportingFull ? t.settings.exportingBackup : t.settings.exportBackup}
               </button>
-              <button
-                type="button"
-                className="ui-action-button"
-                onClick={onImportFull}
-                disabled={isImportingFull}
-              >
-                <FolderInput size={16} />
-                {isImportingFull ? t.settings.importingBackup : t.settings.importBackup}
+              <button type="button" className="btn btn--ghost btn--md" onClick={onImportFull} disabled={isImportingFull}>
+                <FolderInput size={14} /> {isImportingFull ? t.settings.importingBackup : t.settings.importBackup}
               </button>
             </div>
-          </section>
+          </div>
 
-          <div className="settings-note">
+          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", lineHeight: 1.5 }}>
             {t.settings.note}
           </div>
         </div>
-      </aside>
-    </div>
+      </div>
+    </>
   );
 }
 
+// ── Config Modal (export/import slim) ─────────────────────────────────────────
 function ConfigModal({
   mode,
   payload,
@@ -783,75 +873,45 @@ function ConfigModal({
   copied: boolean;
   t: AppText;
   onClose: () => void;
-  onPayloadChange: (value: string) => void;
+  onPayloadChange: (v: string) => void;
   onSubmit: () => void;
   onCopy: () => void;
 }) {
   const isExport = mode === "slim_export";
-
   return (
-    <div
-      className="config-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div className="config-panel fade-up" onMouseDown={(event) => event.stopPropagation()}>
+    <div className="config-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="config-panel fade-up" onMouseDown={(e) => e.stopPropagation()}>
         <div className="config-header">
           <div>
             <h2>{isExport ? t.config.exportTitle : t.config.importTitle}</h2>
-            <p>
-              {isExport
-                ? t.config.exportHint
-                : t.config.importHint}
-            </p>
+            <p>{isExport ? t.config.exportHint : t.config.importHint}</p>
           </div>
-          <button type="button" className="ui-icon-button" onClick={onClose} title={t.common.close}>
-            <X size={16} />
-          </button>
+          <button type="button" className="icon-btn icon-btn--md" onClick={onClose} title={t.common.close}><X size={16} /></button>
         </div>
-
         <div className="config-body">
           {!isExport && (
             <div className="inline-alert is-warning">
-              <AlertTriangle size={16} />
-              {t.config.importWarning}
+              <AlertTriangle size={15} /> {t.config.importWarning}
             </div>
           )}
-
           <textarea
             value={payload}
-            onChange={(event) => onPayloadChange(event.target.value)}
+            onChange={(e) => onPayloadChange(e.target.value)}
             readOnly={isExport}
             placeholder={isExport ? (loading ? t.config.generating : t.config.exportPayload) : t.config.pastePayload}
             className="config-textarea"
           />
-
           {error && (
             <div className="inline-alert is-danger">
-              <AlertTriangle size={16} />
-              {error}
+              <AlertTriangle size={15} /> {error}
             </div>
           )}
-
           <div className="modal-footer">
-            <button type="button" className="ui-action-button is-ghost" onClick={onClose}>
-              {t.common.close}
-            </button>
-            {isExport ? (
-              <button
-                type="button"
-                className="ui-action-button is-primary"
-                onClick={onCopy}
-                disabled={!payload || loading}
-              >
-                {copied ? t.common.copied : t.config.copyPayload}
-              </button>
-            ) : (
-              <button type="button" className="ui-action-button is-primary" onClick={onSubmit} disabled={loading}>
-                {loading ? t.config.importing : t.config.importMissing}
-              </button>
-            )}
+            <button type="button" className="btn btn--ghost btn--md" onClick={onClose}>{t.common.close}</button>
+            {isExport
+              ? <button type="button" className="btn btn--primary btn--md" onClick={onCopy} disabled={!payload || loading}><Copy size={14} />{copied ? t.common.copied : t.config.copyPayload}</button>
+              : <button type="button" className="btn btn--primary btn--md" onClick={onSubmit} disabled={loading}>{loading ? t.config.importing : t.config.importMissing}</button>
+            }
           </div>
         </div>
       </div>
@@ -859,6 +919,7 @@ function ConfigModal({
   );
 }
 
+// ── App ────────────────────────────────────────────────────────────────────────
 function App() {
   const {
     accounts,
@@ -871,7 +932,6 @@ function App() {
     warmupAllAccounts,
     switchAccount,
     deleteAccount,
-    renameAccount,
     importFromFile,
     importClaudeFromFile,
     exportAccountsSlimText,
@@ -894,9 +954,6 @@ function App() {
   const [configModalError, setConfigModalError] = useState<string | null>(null);
   const [configCopied, setConfigCopied] = useState(false);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
-  const [pendingSidebarSwitchId, setPendingSidebarSwitchId] = useState<string | null>(null);
-  const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isExportingSlim, setIsExportingSlim] = useState(false);
   const [isImportingSlim, setIsImportingSlim] = useState(false);
   const [isExportingFull, setIsExportingFull] = useState(false);
@@ -904,82 +961,42 @@ function App() {
   const [isWarmingAll, setIsWarmingAll] = useState(false);
   const [warmingUpId, setWarmingUpId] = useState<string | null>(null);
   const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.localStorage.getItem(AUTO_WARMUP_ALL_STORAGE_KEY) === "true";
-    } catch {
-      return false;
-    }
+    try { return window.localStorage.getItem(AUTO_WARMUP_ALL_STORAGE_KEY) === "true"; } catch { return false; }
   });
   const [autoWarmupAccountIds, setAutoWarmupAccountIds] = useState<Set<string>>(
     () => new Set(readStoredStringArray(AUTO_WARMUP_ACCOUNTS_STORAGE_KEY))
   );
-  const [autoWarmupLedger, setAutoWarmupLedger] = useState<AutoWarmupLedger>(() =>
-    readStoredAutoWarmupLedger()
-  );
+  const [autoWarmupLedger, setAutoWarmupLedger] = useState<AutoWarmupLedger>(() => readStoredAutoWarmupLedger());
   const [autoWarmupRunningIds, setAutoWarmupRunningIds] = useState<Set<string>>(new Set());
-  const [refreshSuccess, setRefreshSuccess] = useState(false);
-  const [, setClockTick] = useState(() => Date.now());
-  const [warmupToast, setWarmupToast] = useState<{
-    message: string;
-    isError: boolean;
-  } | null>(null);
+  const [warmupToast, setWarmupToast] = useState<{ message: string; isError: boolean } | null>(null);
   const [copiedEmailAccountId, setCopiedEmailAccountId] = useState<string | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => resolveThemePreference(readThemePreference()));
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(readLanguagePreference);
-  const [resolvedLanguage, setResolvedLanguage] = useState<Locale>(() =>
-    resolveLanguagePreference(readLanguagePreference())
-  );
+  const [resolvedLanguage, setResolvedLanguage] = useState<Locale>(() => resolveLanguagePreference(readLanguagePreference()));
   const [accentPreset, setAccentPreset] = useState<AccentPreset>(() => {
-    if (typeof window === "undefined") return "green";
     try {
-      const saved = window.localStorage.getItem(ACCENT_STORAGE_KEY);
-      return saved && saved in accentPresets ? (saved as AccentPreset) : "green";
-    } catch {
-      return "green";
-    }
-  });
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) !== "false";
-    } catch {
-      return true;
-    }
-  });
-  const [otherAccountsSort, setOtherAccountsSort] = useState<SortMode>(() => {
-    if (typeof window === "undefined") return "deadline_asc";
-    try {
-      const saved = window.localStorage.getItem(OTHER_ACCOUNTS_SORT_STORAGE_KEY);
-      return saved && saved in sortLabels ? (saved as SortMode) : "deadline_asc";
-    } catch {
-      return "deadline_asc";
-    }
+      const s = window.localStorage.getItem(ACCENT_STORAGE_KEY);
+      return s && s in accentPresets ? (s as AccentPreset) : "green";
+    } catch { return "green"; }
   });
   const [cardDensity, setCardDensity] = useState<CardDensity>(() => {
-    if (typeof window === "undefined") return "compact";
     try {
-      const saved = window.localStorage.getItem(CARD_DENSITY_STORAGE_KEY);
-      return saved && saved in cardDensityLabels ? (saved as CardDensity) : "compact";
-    } catch {
-      return "compact";
-    }
+      const s = window.localStorage.getItem(CARD_DENSITY_STORAGE_KEY);
+      return s && s in cardDensityLabels ? (s as CardDensity) : "compact";
+    } catch { return "compact"; }
   });
   const [trayModeEnabled, setTrayModeEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.localStorage.getItem(TRAY_MODE_STORAGE_KEY) === "true";
-    } catch {
-      return false;
-    }
+    try { return window.localStorage.getItem(TRAY_MODE_STORAGE_KEY) === "true"; } catch { return false; }
   });
   const [accountSearchQuery, setAccountSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [hideAllEmails, setHideAllEmails] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
+  const [selectedId, setSelectedId] = useState<Record<ProviderTab, string | null>>({ codex: null, claude: null });
+
   const deferredSearchQuery = useDeferredValue(accountSearchQuery);
-  const activeSectionRef = useRef<HTMLDivElement | null>(null);
-  const accountRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const accountsDataRef = useRef<AccountWithUsage[]>([]);
   const autoWarmupAllEnabledRef = useRef(autoWarmupAllEnabled);
   const autoWarmupAccountIdsRef = useRef(autoWarmupAccountIds);
@@ -992,23 +1009,10 @@ function App() {
 
   const copyAccountEmail = useCallback((account: AccountWithUsage) => {
     if (!account.email) return;
-    void navigator.clipboard
-      .writeText(account.email)
-      .then(() => {
-        setCopiedEmailAccountId(account.id);
-        setTimeout(() => setCopiedEmailAccountId(null), 1600);
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleTitlebarDrag = useCallback((event: React.MouseEvent<HTMLElement>) => {
-    if (!isTauriRuntime() || event.button !== 0 || !currentWindow) return;
-    void currentWindow.startDragging();
-  }, []);
-
-  const handleTitlebarDoubleClick = useCallback(() => {
-    if (!isTauriRuntime() || !currentWindow) return;
-    void currentWindow.toggleMaximize();
+    void navigator.clipboard.writeText(account.email).then(() => {
+      setCopiedEmailAccountId(account.id);
+      setTimeout(() => setCopiedEmailAccountId(null), 1600);
+    }).catch(() => {});
   }, []);
 
   const handleResizeDrag = useCallback((direction: ResizeDirection) => {
@@ -1016,332 +1020,144 @@ function App() {
     void currentWindow.startResizeDragging(direction);
   }, []);
 
-  const checkProcesses = useCallback(async () => {
-    try {
-      const info = await invokeBackend<CodexProcessInfo>("check_codex_processes");
-      setProcessInfo((prev) => {
-        if (
-          prev &&
-          prev.can_switch === info.can_switch &&
-          prev.count === info.count &&
-          prev.background_count === info.background_count &&
-          prev.pids.length === info.pids.length &&
-          prev.pids.every((pid, index) => pid === info.pids[index])
-        ) {
-          return prev;
-        }
-        return info;
-      });
-      return info;
-    } catch (err) {
-      console.error("Failed to check processes:", err);
-      return null;
-    }
+  const handleTitlebarDoubleClick = useCallback(() => {
+    if (!isTauriRuntime() || !currentWindow) return;
+    void currentWindow.toggleMaximize();
   }, []);
 
   useEffect(() => {
-    void checkProcesses();
-    const interval = setInterval(() => {
-      void checkProcesses();
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [checkProcesses]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => setClockTick(Date.now()), 30_000);
-    return () => window.clearInterval(interval);
+    const id = window.setInterval(() => {}, 30_000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
-    loadMaskedAccountIds().then((ids) => {
-      if (ids.length > 0) {
-        setMaskedAccounts(new Set(ids));
-      }
-    });
+    loadMaskedAccountIds().then((ids) => { if (ids.length > 0) setMaskedAccounts(new Set(ids)); });
   }, [loadMaskedAccountIds]);
 
   useEffect(() => {
-    const syncTheme = () => setThemeMode(resolveThemePreference(themePreference));
-    syncTheme();
-
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
-    } catch {
-      // Ignore storage errors for this session.
-    }
-
-    if (themePreference !== "system" || typeof window === "undefined") return;
-    const query = window.matchMedia("(prefers-color-scheme: dark)");
-    query.addEventListener("change", syncTheme);
-    return () => query.removeEventListener("change", syncTheme);
+    const sync = () => setThemeMode(resolveThemePreference(themePreference));
+    sync();
+    try { window.localStorage.setItem(THEME_STORAGE_KEY, themePreference); } catch {}
+    if (themePreference !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
   }, [themePreference]);
 
   useEffect(() => {
-    const isDark = themeMode === "dark";
-    document.documentElement.classList.toggle("dark", isDark);
-    document.documentElement.dataset.themePreference = themePreference;
-  }, [themeMode, themePreference]);
+    document.body.dataset.theme = themeMode;
+  }, [themeMode]);
 
   useEffect(() => {
-    const syncLanguage = () => setResolvedLanguage(resolveLanguagePreference(languagePreference));
-    syncLanguage();
-
-    try {
-      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, languagePreference);
-    } catch {
-      // Ignore storage errors for this session.
-    }
-
-    if (languagePreference !== "system" || typeof window === "undefined") return;
-    window.addEventListener("languagechange", syncLanguage);
-    return () => window.removeEventListener("languagechange", syncLanguage);
+    const sync = () => setResolvedLanguage(resolveLanguagePreference(languagePreference));
+    sync();
+    try { window.localStorage.setItem(LANGUAGE_STORAGE_KEY, languagePreference); } catch {}
+    if (languagePreference !== "system") return;
+    window.addEventListener("languagechange", sync);
+    return () => window.removeEventListener("languagechange", sync);
   }, [languagePreference]);
 
-  useEffect(() => {
-    document.documentElement.lang = resolvedLanguage;
-  }, [resolvedLanguage]);
+  useEffect(() => { document.documentElement.lang = resolvedLanguage; }, [resolvedLanguage]);
 
+  useEffect(() => { try { window.localStorage.setItem(ACCENT_STORAGE_KEY, accentPreset); } catch {} }, [accentPreset]);
+  useEffect(() => { try { window.localStorage.setItem(CARD_DENSITY_STORAGE_KEY, cardDensity); } catch {} }, [cardDensity]);
   useEffect(() => {
-    try {
-      window.localStorage.setItem(ACCENT_STORAGE_KEY, accentPreset);
-    } catch {
-      // Ignore storage errors for this session.
-    }
-  }, [accentPreset]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(isSidebarExpanded));
-    } catch {
-      // Ignore storage errors for this session.
-    }
-  }, [isSidebarExpanded]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(OTHER_ACCOUNTS_SORT_STORAGE_KEY, otherAccountsSort);
-    } catch {
-      // Ignore storage errors for this session.
-    }
-  }, [otherAccountsSort]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(CARD_DENSITY_STORAGE_KEY, cardDensity);
-    } catch {
-      // Ignore storage errors for this session.
-    }
-  }, [cardDensity]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(TRAY_MODE_STORAGE_KEY, String(trayModeEnabled));
-    } catch {
-      // Ignore storage errors for this session.
-    }
-
-    if (isTauriRuntime()) {
-      void invokeBackend("set_tray_mode_enabled", { enabled: trayModeEnabled });
-    }
+    try { window.localStorage.setItem(TRAY_MODE_STORAGE_KEY, String(trayModeEnabled)); } catch {}
+    if (isTauriRuntime()) void invokeBackend("set_tray_mode_enabled", { enabled: trayModeEnabled });
   }, [trayModeEnabled]);
 
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    void invokeBackend("refresh_tray_menu");
-  }, [accounts]);
-
-  useEffect(() => {
-    accountsDataRef.current = accounts;
-  }, [accounts]);
+  useEffect(() => { if (isTauriRuntime()) void invokeBackend("refresh_tray_menu"); }, [accounts]);
+  useEffect(() => { accountsDataRef.current = accounts; }, [accounts]);
 
   useEffect(() => {
     autoWarmupAllEnabledRef.current = autoWarmupAllEnabled;
-    try {
-      window.localStorage.setItem(AUTO_WARMUP_ALL_STORAGE_KEY, String(autoWarmupAllEnabled));
-    } catch {
-      // Ignore storage errors for this session.
-    }
+    try { window.localStorage.setItem(AUTO_WARMUP_ALL_STORAGE_KEY, String(autoWarmupAllEnabled)); } catch {}
   }, [autoWarmupAllEnabled]);
 
   useEffect(() => {
     autoWarmupAccountIdsRef.current = autoWarmupAccountIds;
-    try {
-      window.localStorage.setItem(
-        AUTO_WARMUP_ACCOUNTS_STORAGE_KEY,
-        JSON.stringify(Array.from(autoWarmupAccountIds))
-      );
-    } catch {
-      // Ignore storage errors for this session.
-    }
+    try { window.localStorage.setItem(AUTO_WARMUP_ACCOUNTS_STORAGE_KEY, JSON.stringify(Array.from(autoWarmupAccountIds))); } catch {}
   }, [autoWarmupAccountIds]);
 
   useEffect(() => {
     autoWarmupLedgerRef.current = autoWarmupLedger;
-    try {
-      window.localStorage.setItem(AUTO_WARMUP_LEDGER_STORAGE_KEY, JSON.stringify(autoWarmupLedger));
-    } catch {
-      // Ignore storage errors for this session.
-    }
+    try { window.localStorage.setItem(AUTO_WARMUP_LEDGER_STORAGE_KEY, JSON.stringify(autoWarmupLedger)); } catch {}
   }, [autoWarmupLedger]);
 
-  useEffect(() => {
-    autoWarmupRunningIdsRef.current = autoWarmupRunningIds;
-  }, [autoWarmupRunningIds]);
+  useEffect(() => { autoWarmupRunningIdsRef.current = autoWarmupRunningIds; }, [autoWarmupRunningIds]);
 
   useEffect(() => {
-    const validIds = new Set(accounts.map((account) => account.id));
+    const validIds = new Set(accounts.map((a) => a.id));
     setAutoWarmupAccountIds((prev) => {
-      const next = new Set(Array.from(prev).filter((accountId) => validIds.has(accountId)));
+      const next = new Set(Array.from(prev).filter((id) => validIds.has(id)));
       return next.size === prev.size ? prev : next;
     });
     setAutoWarmupLedger((prev) => {
-      const next = Object.fromEntries(
-        Object.entries(prev).filter(([accountId]) => validIds.has(accountId))
-      );
+      const next = Object.fromEntries(Object.entries(prev).filter(([id]) => validIds.has(id)));
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   }, [accounts]);
 
   useEffect(() => {
-    if (!pendingSidebarSwitchId) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setPendingSidebarSwitchId(null);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [pendingSidebarSwitchId]);
-
-  useEffect(() => {
-    if (!pendingSidebarSwitchId) return;
-    if (!accounts.some((account) => account.id === pendingSidebarSwitchId)) {
-      setPendingSidebarSwitchId(null);
-    }
-  }, [accounts, pendingSidebarSwitchId]);
-
-  useEffect(() => {
     if (!isTauriRuntime() || isMacOs || !currentWindow) return;
-
     let unlisten: (() => void) | undefined;
     let saveTimer: number | undefined;
-
-    const syncMaximizedState = async () => {
-      try {
-        setIsWindowMaximized(await currentWindow.isMaximized());
-      } catch (err) {
-        console.error("Failed to read window state:", err);
-      }
-    };
-
-    const restoreSavedWindowSize = async () => {
+    const syncMax = async () => { try { setIsWindowMaximized(await currentWindow.isMaximized()); } catch {} };
+    const restoreSize = async () => {
       try {
         const saved = window.localStorage.getItem(WINDOW_SIZE_STORAGE_KEY);
         if (!saved) return;
-
-        const parsed = JSON.parse(saved) as { width?: number; height?: number };
-        const width = Math.min(2200, Math.max(720, Math.round(parsed.width ?? 0)));
-        const height = Math.min(1400, Math.max(540, Math.round(parsed.height ?? 0)));
-        if (width && height) {
-          await currentWindow.setSize(new LogicalSize(width, height));
-        }
-      } catch (err) {
-        console.error("Failed to restore window size:", err);
-      }
+        const p = JSON.parse(saved) as { width?: number; height?: number };
+        const w = Math.min(2200, Math.max(720, Math.round(p.width ?? 0)));
+        const h = Math.min(1400, Math.max(540, Math.round(p.height ?? 0)));
+        if (w && h) await currentWindow.setSize(new LogicalSize(w, h));
+      } catch {}
     };
-
-    void syncMaximizedState();
-    void restoreSavedWindowSize();
-
-    currentWindow
-      .onResized(() => {
-        void syncMaximizedState();
-        if (saveTimer) window.clearTimeout(saveTimer);
-        saveTimer = window.setTimeout(() => {
-          try {
-            window.localStorage.setItem(
-              WINDOW_SIZE_STORAGE_KEY,
-              JSON.stringify({ width: window.innerWidth, height: window.innerHeight })
-            );
-          } catch {
-            // Ignore storage errors for window geometry.
-          }
-        }, 180);
-      })
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch((err) => {
-        console.error("Failed to watch window resize:", err);
-      });
-
-    return () => {
+    void syncMax();
+    void restoreSize();
+    currentWindow.onResized(() => {
+      void syncMax();
       if (saveTimer) window.clearTimeout(saveTimer);
-      unlisten?.();
-    };
+      saveTimer = window.setTimeout(() => {
+        try { window.localStorage.setItem(WINDOW_SIZE_STORAGE_KEY, JSON.stringify({ width: window.innerWidth, height: window.innerHeight })); } catch {}
+      }, 180);
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { if (saveTimer) window.clearTimeout(saveTimer); unlisten?.(); };
   }, []);
 
   const toggleMask = (accountId: string) => {
     setMaskedAccounts((prev) => {
       const next = new Set(prev);
-      if (next.has(accountId)) {
-        next.delete(accountId);
-      } else {
-        next.add(accountId);
-      }
+      if (next.has(accountId)) next.delete(accountId); else next.add(accountId);
       void saveMaskedAccountIds(Array.from(next));
       return next;
     });
   };
 
-  const allAccountsMasked = accounts.length > 0 && accounts.every((account) => maskedAccounts.has(account.id));
-
-  const toggleAllMasks = () => {
-    setMaskedAccounts((prev) => {
-      const shouldRevealAll = accounts.length > 0 && accounts.every((account) => prev.has(account.id));
-      const next = shouldRevealAll ? new Set<string>() : new Set(accounts.map((account) => account.id));
-      void saveMaskedAccountIds(Array.from(next));
-      return next;
-    });
-  };
-
-  const handleSwitch = async (accountId: string) => {
+  const handleSwitch = async (accountId: string, provider: "codex" | "claude") => {
     try {
       setSwitchingId(accountId);
       await switchAccount(accountId);
-      setPendingSidebarSwitchId(null);
-      await checkProcesses();
+      if (provider === "claude") {
+        showWarmupToast(
+          locale_label(
+            "Учётные данные записаны. Перезапустите Claude Code чтобы применить.",
+            "Credentials written. Restart Claude Code to apply.",
+            resolvedLanguage
+          )
+        );
+      }
     } catch (err) {
-      console.error("Failed to switch account:", err);
-    } finally {
-      setSwitchingId(null);
-    }
+      const msg = err instanceof Error ? err.message : String(err);
+      showWarmupToast(
+        locale_label("Ошибка переключения: ", "Switch failed: ", resolvedLanguage) + msg,
+        true
+      );
+    } finally { setSwitchingId(null); }
   };
 
   const handleDelete = async (accountId: string) => {
-    try {
-      await deleteAccount(accountId);
-    } catch (err) {
-      console.error("Failed to delete account:", err);
-    }
-  };
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    setRefreshSuccess(false);
-    try {
-      if (activeProvider === "claude") {
-        await loadAccounts(true);
-      } else {
-        await refreshUsage(undefined, { refreshMetadata: true });
-      }
-      setRefreshSuccess(true);
-      setTimeout(() => setRefreshSuccess(false), 2000);
-    } finally {
-      setIsRefreshing(false);
-    }
+    try { await deleteAccount(accountId); } catch (err) { console.error("Failed to delete:", err); }
   };
 
   const showWarmupToast = useCallback((message: string, isError = false) => {
@@ -1351,130 +1167,74 @@ function App() {
 
   const formatWarmupError = useCallback((err: unknown) => {
     if (!err) return t.toast.unknownError;
-    if (err instanceof Error && err.message) return err.message;
+    if (err instanceof Error) return err.message;
     if (typeof err === "string") return err;
-    try {
-      return JSON.stringify(err);
-    } catch {
-      return t.toast.unknownError;
-    }
+    try { return JSON.stringify(err); } catch { return t.toast.unknownError; }
   }, [t.toast.unknownError]);
 
-  const markSuccessfulWarmup = useCallback((accountId: string) => {
-    setAutoWarmupLedger((prev) => ({
-      ...prev,
-      [accountId]: { lastSuccessfulWarmupAt: Date.now() },
-    }));
+  const markSuccessfulWarmup = useCallback((id: string) => {
+    setAutoWarmupLedger((prev) => ({ ...prev, [id]: { lastSuccessfulWarmupAt: Date.now() } }));
   }, []);
 
-  const backOffAutoWarmupRetry = useCallback((accountId: string) => {
-    autoWarmupRetryAfterRef.current[accountId] = Date.now() + AUTO_WARMUP_RETRY_BACKOFF_MS;
+  const backOffAutoWarmupRetry = useCallback((id: string) => {
+    autoWarmupRetryAfterRef.current[id] = Date.now() + AUTO_WARMUP_RETRY_BACKOFF_MS;
   }, []);
 
-  const isAutoWarmupDue = useCallback((accountId: string, usage?: UsageInfo) => {
+  const isAutoWarmupDue = useCallback((id: string, usage?: UsageInfo) => {
     if (!usage || usage.error || !usage.primary_resets_at) return false;
     if (isLimitFull(usage.secondary_used_percent)) return false;
     if (!isPrimaryFullWindow(usage)) return false;
-
-    const retryAfter = autoWarmupRetryAfterRef.current[accountId];
+    const retryAfter = autoWarmupRetryAfterRef.current[id];
     if (retryAfter && Date.now() < retryAfter) return false;
-
-    const lastSuccessfulWarmupAt = getLastSuccessfulWarmupAt(autoWarmupLedgerRef.current, accountId);
-    return (
-      !lastSuccessfulWarmupAt ||
-      Date.now() - lastSuccessfulWarmupAt >= AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS
-    );
+    const last = getLastSuccessfulWarmupAt(autoWarmupLedgerRef.current, id);
+    return !last || Date.now() - last >= AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS;
   }, []);
 
-  const runAutoWarmupForAccount = useCallback(
-    async (account: AccountWithUsage) => {
-      if (autoWarmupRunningIdsRef.current.has(account.id)) return;
-      if (!isAutoWarmupDue(account.id, account.usage)) return;
-
-      setAutoWarmupRunningIds((prev) => new Set(prev).add(account.id));
-      try {
-        const refreshedUsage = await refreshSingleUsage(account.id);
-        if (!isAutoWarmupDue(account.id, refreshedUsage)) return;
-
-        await warmupAccount(account.id);
-        markSuccessfulWarmup(account.id);
-        showWarmupToast(`${t.toast.autoWarmupSent} ${account.name}`);
-      } catch (err) {
-        console.error("Auto warm-up failed:", err);
-        backOffAutoWarmupRetry(account.id);
-        showWarmupToast(
-          `${t.toast.autoWarmupFailed} ${account.name}: ${formatWarmupError(err)}`,
-          true
-        );
-      } finally {
-        setAutoWarmupRunningIds((prev) => {
-          const next = new Set(prev);
-          next.delete(account.id);
-          return next;
-        });
-      }
-    },
-    [
-      backOffAutoWarmupRetry,
-      formatWarmupError,
-      isAutoWarmupDue,
-      markSuccessfulWarmup,
-      refreshSingleUsage,
-      showWarmupToast,
-      t.toast.autoWarmupFailed,
-      t.toast.autoWarmupSent,
-      warmupAccount,
-    ]
-  );
+  const runAutoWarmupForAccount = useCallback(async (account: AccountWithUsage) => {
+    if (autoWarmupRunningIdsRef.current.has(account.id)) return;
+    if (!isAutoWarmupDue(account.id, account.usage)) return;
+    setAutoWarmupRunningIds((prev) => new Set(prev).add(account.id));
+    try {
+      const refreshed = await refreshSingleUsage(account.id);
+      if (!isAutoWarmupDue(account.id, refreshed)) return;
+      await warmupAccount(account.id);
+      markSuccessfulWarmup(account.id);
+      showWarmupToast(`${t.toast.autoWarmupSent} ${account.name}`);
+    } catch (err) {
+      console.error("Auto warmup failed:", err);
+      backOffAutoWarmupRetry(account.id);
+      showWarmupToast(`${t.toast.autoWarmupFailed} ${account.name}: ${formatWarmupError(err)}`, true);
+    } finally {
+      setAutoWarmupRunningIds((prev) => { const n = new Set(prev); n.delete(account.id); return n; });
+    }
+  }, [backOffAutoWarmupRetry, formatWarmupError, isAutoWarmupDue, markSuccessfulWarmup, refreshSingleUsage, showWarmupToast, t.toast.autoWarmupFailed, t.toast.autoWarmupSent, warmupAccount]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      const selectedIds = autoWarmupAccountIdsRef.current;
-      const shouldWarmAll = autoWarmupAllEnabledRef.current;
-      if (!shouldWarmAll && selectedIds.size === 0) return;
-
-      const dueAccounts = accountsDataRef.current.filter((account) => {
-        if (!shouldWarmAll && !selectedIds.has(account.id)) return false;
-        return isAutoWarmupDue(account.id, account.usage);
-      });
-
-      dueAccounts.forEach((account) => {
-        void runAutoWarmupForAccount(account);
-      });
+    const id = window.setInterval(() => {
+      const ids = autoWarmupAccountIdsRef.current;
+      const all = autoWarmupAllEnabledRef.current;
+      if (!all && ids.size === 0) return;
+      accountsDataRef.current
+        .filter((a) => (all || ids.has(a.id)) && isAutoWarmupDue(a.id, a.usage))
+        .forEach((a) => void runAutoWarmupForAccount(a));
     }, AUTO_WARMUP_CHECK_INTERVAL_MS);
-
-    return () => window.clearInterval(interval);
+    return () => window.clearInterval(id);
   }, [isAutoWarmupDue, runAutoWarmupForAccount]);
 
-  const toggleAutoWarmupAccount = useCallback((accountId: string) => {
+  const toggleAutoWarmupAccount = useCallback((id: string) => {
     setAutoWarmupAccountIds((prev) => {
       const next = new Set(prev);
-      if (next.has(accountId)) {
-        next.delete(accountId);
-      } else {
-        next.add(accountId);
-      }
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   }, []);
 
-  const getAutoWarmupLabel = useCallback(
-    (account: AccountWithUsage) => {
-      const enabled = autoWarmupAllEnabled || autoWarmupAccountIds.has(account.id);
-      if (autoWarmupRunningIds.has(account.id)) return t.account.autoWarmupRunning;
-      if (autoWarmupAllEnabled) return t.account.autoWarmupManagedByAll;
-      return enabled ? t.account.autoWarmupOn : t.account.autoWarmupOff;
-    },
-    [
-      autoWarmupAccountIds,
-      autoWarmupAllEnabled,
-      autoWarmupRunningIds,
-      t.account.autoWarmupManagedByAll,
-      t.account.autoWarmupOff,
-      t.account.autoWarmupOn,
-      t.account.autoWarmupRunning,
-    ]
-  );
+  const getAutoWarmupLabel = useCallback((account: AccountWithUsage) => {
+    const enabled = autoWarmupAllEnabled || autoWarmupAccountIds.has(account.id);
+    if (autoWarmupRunningIds.has(account.id)) return t.account.autoWarmupRunning;
+    if (autoWarmupAllEnabled) return t.account.autoWarmupManagedByAll;
+    return enabled ? t.account.autoWarmupOn : t.account.autoWarmupOff;
+  }, [autoWarmupAccountIds, autoWarmupAllEnabled, autoWarmupRunningIds, t.account]);
 
   const handleWarmupAccount = async (accountId: string, accountName: string) => {
     try {
@@ -1483,98 +1243,56 @@ function App() {
       markSuccessfulWarmup(accountId);
       showWarmupToast(`${t.toast.warmupSent} ${accountName}`);
     } catch (err) {
-      console.error("Failed to warm up account:", err);
       showWarmupToast(`${t.toast.warmupFailed} ${accountName}: ${formatWarmupError(err)}`, true);
-    } finally {
-      setWarmingUpId(null);
-    }
+    } finally { setWarmingUpId(null); }
   };
 
   const handleWarmupAll = async () => {
     try {
       setIsWarmingAll(true);
       const summary = await warmupAllAccounts();
-      if (summary.total_accounts === 0) {
-        showWarmupToast(t.toast.noWarmupAccounts, true);
-        return;
-      }
-
+      if (summary.total_accounts === 0) { showWarmupToast(t.toast.noWarmupAccounts, true); return; }
       if (summary.failed_account_ids.length === 0) {
         showWarmupToast(`${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}`);
       } else {
-        showWarmupToast(
-          `${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}. ${t.toast.failed}: ${summary.failed_account_ids.length}`,
-          true
-        );
+        showWarmupToast(`${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}. ${t.toast.failed}: ${summary.failed_account_ids.length}`, true);
       }
-
-      const failedIds = new Set(summary.failed_account_ids);
-      accounts.forEach((account) => {
-        if (!failedIds.has(account.id)) {
-          markSuccessfulWarmup(account.id);
-        }
-      });
+      const failedSet = new Set(summary.failed_account_ids);
+      accounts.forEach((a) => { if (!failedSet.has(a.id)) markSuccessfulWarmup(a.id); });
     } catch (err) {
-      console.error("Failed to warm up all accounts:", err);
       showWarmupToast(`${t.toast.warmupAllFailed}: ${formatWarmupError(err)}`, true);
-    } finally {
-      setIsWarmingAll(false);
-    }
+    } finally { setIsWarmingAll(false); }
   };
 
   const handleExportSlimText = async () => {
-    setConfigModalMode("slim_export");
-    setConfigModalError(null);
-    setConfigPayload("");
-    setConfigCopied(false);
-    setIsConfigModalOpen(true);
-
+    setConfigModalMode("slim_export"); setConfigModalError(null); setConfigPayload(""); setConfigCopied(false); setIsConfigModalOpen(true);
     try {
       setIsExportingSlim(true);
       const payload = await exportAccountsSlimText();
       setConfigPayload(payload);
-      showWarmupToast(`${t.settings.exportSlim}: ${accounts.length}`);
     } catch (err) {
-      console.error("Failed to export slim text:", err);
-      const message = err instanceof Error ? err.message : String(err);
-      setConfigModalError(message);
+      const m = err instanceof Error ? err.message : String(err);
+      setConfigModalError(m);
       showWarmupToast(t.toast.slimExportFailed, true);
-    } finally {
-      setIsExportingSlim(false);
-    }
+    } finally { setIsExportingSlim(false); }
   };
 
   const openImportSlimTextModal = () => {
-    setConfigModalMode("slim_import");
-    setConfigModalError(null);
-    setConfigPayload("");
-    setConfigCopied(false);
-    setIsConfigModalOpen(true);
+    setConfigModalMode("slim_import"); setConfigModalError(null); setConfigPayload(""); setConfigCopied(false); setIsConfigModalOpen(true);
   };
 
   const handleImportSlimText = async () => {
-    if (!configPayload.trim()) {
-      setConfigModalError(t.toast.pasteSlimFirst);
-      return;
-    }
-
+    if (!configPayload.trim()) { setConfigModalError(t.toast.pasteSlimFirst); return; }
     try {
-      setIsImportingSlim(true);
-      setConfigModalError(null);
+      setIsImportingSlim(true); setConfigModalError(null);
       const summary = await importAccountsSlimText(configPayload);
-      setMaskedAccounts(new Set());
-      setIsConfigModalOpen(false);
-      showWarmupToast(
-        `${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}, ${t.toast.total} ${summary.total_in_payload}`
-      );
+      setMaskedAccounts(new Set()); setIsConfigModalOpen(false);
+      showWarmupToast(`${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}`);
     } catch (err) {
-      console.error("Failed to import slim text:", err);
-      const message = err instanceof Error ? err.message : String(err);
-      setConfigModalError(message);
+      const m = err instanceof Error ? err.message : String(err);
+      setConfigModalError(m);
       showWarmupToast(t.toast.slimImportFailed, true);
-    } finally {
-      setIsImportingSlim(false);
-    }
+    } finally { setIsImportingSlim(false); }
   };
 
   const handleExportFullFile = async () => {
@@ -1583,12 +1301,8 @@ function App() {
       const exported = await exportFullBackupFile();
       if (!exported) return;
       showWarmupToast(t.toast.fullExportOk);
-    } catch (err) {
-      console.error("Failed to export full encrypted file:", err);
-      showWarmupToast(t.toast.fullExportFailed, true);
-    } finally {
-      setIsExportingFull(false);
-    }
+    } catch { showWarmupToast(t.toast.fullExportFailed, true); }
+    finally { setIsExportingFull(false); }
   };
 
   const handleImportFullFile = async () => {
@@ -1596,758 +1310,293 @@ function App() {
       setIsImportingFull(true);
       const summary = await importFullBackupFile();
       if (!summary) return;
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
-      const maskedIds = await loadMaskedAccountIds();
-      setMaskedAccounts(new Set(maskedIds));
-      showWarmupToast(
-        `${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}, ${t.toast.total} ${summary.total_in_payload}`
-      );
-    } catch (err) {
-      console.error("Failed to import full encrypted file:", err);
-      showWarmupToast(t.toast.fullImportFailed, true);
-    } finally {
-      setIsImportingFull(false);
-    }
+      const list = await loadAccounts();
+      await refreshUsage(list);
+      const ids = await loadMaskedAccountIds();
+      setMaskedAccounts(new Set(ids));
+      showWarmupToast(`${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}`);
+    } catch { showWarmupToast(t.toast.fullImportFailed, true); }
+    finally { setIsImportingFull(false); }
   };
 
+  // ── Derived state ──────────────────────────────────────────────────────────
   const filteredAccounts = useMemo(() => {
-    const query = deferredSearchQuery.trim().toLowerCase();
-    const providerAccounts = accounts.filter((account) => account.provider === activeProvider);
-    if (!query) return providerAccounts;
-
-    return providerAccounts.filter((account) => {
-      const name = account.name.toLowerCase();
-      const email = account.email?.toLowerCase() ?? "";
-      const plan = account.plan_type?.toLowerCase() ?? "";
-      const organization = account.claude_organization_uuid?.toLowerCase() ?? "";
-      return (
-        name.includes(query) ||
-        email.includes(query) ||
-        plan.includes(query) ||
-        organization.includes(query)
-      );
-    });
+    const q = deferredSearchQuery.trim().toLowerCase();
+    const prov = accounts.filter((a) => a.provider === activeProvider);
+    if (!q) return prov;
+    return prov.filter((a) =>
+      a.name.toLowerCase().includes(q) ||
+      (a.email?.toLowerCase() ?? "").includes(q) ||
+      (a.plan_type?.toLowerCase() ?? "").includes(q) ||
+      (a.claude_organization_uuid?.toLowerCase() ?? "").includes(q)
+    );
   }, [accounts, activeProvider, deferredSearchQuery]);
 
+  const filteredByStatus = useMemo(() => {
+    if (statusFilter === "all") return filteredAccounts;
+    return filteredAccounts.filter((a) => {
+      const s = getRowStatus(a);
+      if (statusFilter === "ready") return a.is_active || s === "ready";
+      if (statusFilter === "limit") return s === "limit";
+      if (statusFilter === "error") return s === "error";
+      return true;
+    });
+  }, [filteredAccounts, statusFilter]);
+
+  const sortedListAccounts = useMemo(() => {
+    const statusOrder: Record<string, number> = { ready: 0, limit: 1, error: 2 };
+    return [...filteredByStatus].sort((a, b) => {
+      if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+      const aS = getRowStatus(a), bS = getRowStatus(b);
+      const od = (statusOrder[aS] ?? 3) - (statusOrder[bS] ?? 3);
+      if (od !== 0) return od;
+      const aR = getRemainingPercent(a) ?? -1, bR = getRemainingPercent(b) ?? -1;
+      return bR - aR;
+    });
+  }, [filteredByStatus]);
+
   const activeAccount = useMemo(
-    () => accounts.find((account) => account.provider === activeProvider && account.is_active) ?? null,
+    () => accounts.find((a) => a.provider === activeProvider && a.is_active) ?? null,
     [accounts, activeProvider]
   );
 
-  const filteredActiveAccount = useMemo(
-    () => filteredAccounts.find((account) => account.is_active) ?? null,
-    [filteredAccounts]
-  );
+  const effectiveSelectedAccount = useMemo(() => {
+    const id = selectedId[activeProvider];
+    if (id) {
+      const found = accounts.find((a) => a.id === id);
+      if (found) return found;
+    }
+    return activeAccount ?? accounts.find((a) => a.provider === activeProvider) ?? null;
+  }, [selectedId, activeProvider, accounts, activeAccount]);
 
-  const otherAccounts = useMemo(
-    () => filteredAccounts.filter((account) => !account.is_active),
-    [filteredAccounts]
-  );
-
-  const sortedOtherAccounts = useMemo(
-    () => sortAccounts(otherAccounts, otherAccountsSort),
-    [otherAccounts, otherAccountsSort]
-  );
-
-  const sortedSidebarAccounts = useMemo(
-    () => (filteredActiveAccount ? [filteredActiveAccount, ...sortedOtherAccounts] : sortedOtherAccounts),
-    [filteredActiveAccount, sortedOtherAccounts]
-  );
-
-  const providerCounts = useMemo(
-    () => ({
-      codex: accounts.filter((account) => account.provider === "codex").length,
-      claude: accounts.filter((account) => account.provider === "claude").length,
-    }),
-    [accounts]
-  );
+  const providerCounts = useMemo(() => ({
+    codex: accounts.filter((a) => a.provider === "codex").length,
+    claude: accounts.filter((a) => a.provider === "claude").length,
+  }), [accounts]);
 
   const summary = useMemo(() => {
-    const providerAccounts = accounts.filter((account) => account.provider === activeProvider);
-    const total = providerAccounts.length;
-    const errorCount = providerAccounts.filter((account) => Boolean(account.usage?.error)).length;
-    const nearLimitCount = providerAccounts.filter((account) => isAccountNearLimit(account)).length;
-    const availableCount = providerAccounts.filter((account) => {
-      if (account.provider === "claude") return true;
-      if (account.usage?.error) return false;
-      const remaining = getRemainingPercent(account);
-      return remaining === null || remaining > 0;
-    }).length;
-    return { total, errorCount, nearLimitCount, availableCount };
+    const prov = accounts.filter((a) => a.provider === activeProvider);
+    return {
+      total: prov.length,
+      errorCount: prov.filter((a) => Boolean(a.usage?.error)).length,
+      nearLimitCount: prov.filter((a) => {
+        const r = getRemainingPercent(a);
+        return r !== null && r <= NEAR_LIMIT_REMAINING_THRESHOLD;
+      }).length,
+      availableCount: prov.filter((a) => {
+        if (a.provider === "claude") return true;
+        if (a.usage?.error) return false;
+        const r = getRemainingPercent(a);
+        return r === null || r > 0;
+      }).length,
+    };
   }, [accounts, activeProvider]);
 
-  const hasRunningProcesses = processInfo && processInfo.count > 0;
-  const isBackendUnavailable =
-    !isTauriRuntime() &&
-    typeof error === "string" &&
-    /404|Failed to fetch|NetworkError|ERR_/i.test(error);
+  const isBackendUnavailable = !isTauriRuntime() && typeof error === "string" && /404|Failed to fetch|NetworkError|ERR_/i.test(error);
 
-  const shellStyle = useMemo(
-    () =>
-      ({
-        "--accent": accentTheme.accent,
-        "--accent-soft": accentTheme.soft,
-        "--accent-strong": accentTheme.strong,
-        "--accent-border": accentTheme.border,
-        "--accent-glow": accentTheme.glow,
-        "--accent-contrast": accentTheme.contrast,
-      }) as CSSProperties,
-    [accentTheme]
-  );
+  const shellStyle = useMemo(() => ({
+    "--accent": accentTheme.accent,
+    "--accent-soft": accentTheme.soft,
+    "--accent-strong": accentTheme.strong,
+    "--accent-border": accentTheme.border,
+    "--accent-glow": accentTheme.glow,
+    "--accent-contrast": accentTheme.contrast,
+  }) as CSSProperties, [accentTheme]);
 
-  const registerAccountRef = (accountId: string) => (node: HTMLDivElement | null) => {
-    accountRefs.current[accountId] = node;
-  };
-
-  const handleSidebarSelect = (accountId: string) => {
-    if (activeAccount?.id !== accountId) {
-      setPendingSidebarSwitchId((current) => (current === accountId ? null : accountId));
-      return;
-    }
-
-    setPendingSidebarSwitchId(null);
-    const target = activeAccount?.id === accountId ? activeSectionRef.current : accountRefs.current[accountId];
-    target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  };
-
-  const topToolbarProcessCount = processInfo?.count ?? 0;
-  const topToolbarInfo = hasRunningProcesses
-    ? topToolbarProcessCount === 1
-      ? t.common.process
-      : t.common.processes
-    : t.common.readyToSwitch;
+  const STATUS_FILTERS: { id: StatusFilter; label: string; dot?: string }[] = [
+    { id: "all", label: locale_label("Все", "All", resolvedLanguage) },
+    { id: "ready", label: locale_label("Готов", "Ready", resolvedLanguage), dot: "var(--ok)" },
+    { id: "limit", label: locale_label("Лимит", "Limit", resolvedLanguage), dot: "var(--warn)" },
+    { id: "error", label: locale_label("Сбой", "Error", resolvedLanguage), dot: "var(--bad)" },
+  ];
 
   return (
-    <div
-      className={`app-shell density-${cardDensity}`}
-      style={shellStyle}
-      onMouseDown={handleTitlebarDrag}
-      onDragStart={(event) => event.preventDefault()}
-      data-tauri-drag-region
-    >
+    <div className="app" data-theme={themeMode} data-density={cardDensity} style={shellStyle}>
+      {/* Tauri resize handles */}
       {([
-        ["North", "resize-handle is-n"],
-        ["South", "resize-handle is-s"],
-        ["West", "resize-handle is-w"],
-        ["East", "resize-handle is-e"],
-        ["NorthWest", "resize-handle is-nw"],
-        ["NorthEast", "resize-handle is-ne"],
-        ["SouthWest", "resize-handle is-sw"],
-        ["SouthEast", "resize-handle is-se"],
-      ] as [ResizeDirection, string][]).map(([direction, className]) => (
-        <div
-          key={direction}
-          className={className}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            handleResizeDrag(direction);
-          }}
-          aria-hidden="true"
-        />
+        ["North", "resize-handle is-n"], ["South", "resize-handle is-s"],
+        ["West", "resize-handle is-w"], ["East", "resize-handle is-e"],
+        ["NorthWest", "resize-handle is-nw"], ["NorthEast", "resize-handle is-ne"],
+        ["SouthWest", "resize-handle is-sw"], ["SouthEast", "resize-handle is-se"],
+      ] as [ResizeDirection, string][]).map(([dir, cls]) => (
+        <div key={dir} className={cls} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleResizeDrag(dir); }} aria-hidden />
       ))}
-      <div
-        className="app-frame"
-        onMouseDown={handleTitlebarDrag}
-        onDragStart={(event) => event.preventDefault()}
-        data-tauri-drag-region
-      >
-        <aside className={`app-sidebar ${isSidebarExpanded ? "is-expanded" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
-          <div className="sidebar-section">
-            <div className="sidebar-top">
-              {isSidebarExpanded && (
-                <div className="brand-copy">
-                  <div className="brand-title">Codex Switcher</div>
-                </div>
-              )}
-              <button
-                type="button"
-                className={`ui-icon-button ${isSidebarExpanded ? "" : "sidebar-expand-button"}`}
-                style={{ marginLeft: "auto" }}
-                onClick={() => setIsSidebarExpanded((prev) => !prev)}
-                title={isSidebarExpanded ? t.sidebar.collapse : t.sidebar.expand}
-              >
-                {isSidebarExpanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
-              </button>
-            </div>
 
-            <div className={`sidebar-search ${isSidebarExpanded ? "" : "compact"}`}>
-              <Search size={16} />
-              {isSidebarExpanded && (
-                <input
-                  type="text"
-                  value={accountSearchQuery}
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
-                    startTransition(() => {
-                      setAccountSearchQuery(nextValue);
-                    });
-                  }}
-                  placeholder={t.sidebar.search}
-                  aria-label={t.sidebar.search}
-                />
-              )}
-            </div>
+      {/* ── Topbar ─────────────────────────────────────────────────────────── */}
+      <div className="topbar" onDoubleClick={handleTitlebarDoubleClick}>
+        {/* Brand */}
+        <div className="brand">
+          <span className="brand-glyph"><Terminal size={14} /></span>
+          <span className="brand-name"><b>codex</b><span>·</span><b>switcher</b></span>
+        </div>
 
-            <div className={`sidebar-actions ${isSidebarExpanded ? "" : "compact"}`}>
-              <button
-                type="button"
-                className="ui-action-button is-primary"
-                onClick={() => {
-                  setIsSettingsOpen(false);
-                  setIsAddModalOpen(true);
-                }}
-                style={isSidebarExpanded ? undefined : narrowButtonStyle}
-                title={t.sidebar.addAccount}
-              >
-                <BadgePlus size={16} />
-                {isSidebarExpanded && t.sidebar.addAccount}
-              </button>
-              <button
-                type="button"
-                className="ui-action-button"
-                onClick={() => setIsSettingsOpen(true)}
-                style={isSidebarExpanded ? undefined : narrowButtonStyle}
-                title={t.sidebar.openSettings}
-              >
-                <Settings2 size={16} />
-                {isSidebarExpanded && t.sidebar.settings}
-              </button>
-            </div>
+        {/* Provider tabs */}
+        <div className="tabs">
+          <button type="button" className={"tab" + (activeProvider === "codex" ? " is-active" : "")} onClick={() => setActiveProvider("codex")}>
+            <Bot size={13} /> Codex <span className="t-count">{providerCounts.codex}</span>
+          </button>
+          <button type="button" className={"tab" + (activeProvider === "claude" ? " is-active" : "")} onClick={() => setActiveProvider("claude")}>
+            <Sparkles size={13} /> Claude <span className="t-count">{providerCounts.claude}</span>
+          </button>
+        </div>
+
+        <div className="topbar-spacer" />
+
+        {/* Global stats */}
+        <div className="gstats">
+          <div className="gstat">
+            <span className="gstat-n">{summary.total}</span>
+            <span className="gstat-l">{locale_label("ВСЕГО", "TOTAL", resolvedLanguage)}</span>
           </div>
-
-          <div className="sidebar-divider" />
-
-          <div className="sidebar-section account-list-section">
-            {sortedSidebarAccounts.length > 0 ? (
-              <div className="sidebar-list">
-                {sortedSidebarAccounts.map((account) => (
-                  <SidebarAccountButton
-                    key={account.id}
-                    account={account}
-                    expanded={isSidebarExpanded}
-                    onSelect={() => handleSidebarSelect(account.id)}
-                    pending={pendingSidebarSwitchId === account.id}
-                    switching={switchingId === account.id}
-                    locale={resolvedLanguage}
-                    onConfirmSwitch={() => {
-                      void handleSwitch(account.id);
-                    }}
-                    onCancelSwitch={() => setPendingSidebarSwitchId(null)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state" style={{ padding: "18px 8px", justifyItems: "start", textAlign: "left" }}>
-                <div className="empty-state-icon" style={{ width: 54, height: 54, borderRadius: 18 }}>
-                  {accounts.length === 0 ? <UserRound size={18} /> : <Search size={18} />}
-                </div>
-                {isSidebarExpanded && (
-                  <>
-                    <h2 style={{ fontSize: "1rem" }}>
-                      {accounts.length === 0 ? t.sidebar.noAccounts : t.sidebar.noMatches}
-                    </h2>
-                    <p>
-                      {accounts.length === 0
-                        ? t.sidebar.noAccountsHint
-                        : t.sidebar.noMatchesHint}
-                    </p>
-                  </>
-                )}
-              </div>
-            )}
+          <div className="gstat gstat--ok">
+            <span className="gstat-n">{summary.availableCount}</span>
+            <span className="gstat-l">{locale_label("ДОСТУПНО", "AVAIL", resolvedLanguage)}</span>
           </div>
-
-          <div className="sidebar-bottom">
-            <div className="toolbar-pill sidebar-process-pill">
-              <span className={`status-dot is-${hasRunningProcesses ? "warning" : "success"}`} />
-              {isSidebarExpanded ? (
-                hasRunningProcesses ? (
-                  <>
-                    <strong>{topToolbarProcessCount}</strong>
-                    <span>{topToolbarInfo}</span>
-                  </>
-                ) : (
-                  <span>{topToolbarInfo}</span>
-                )
-              ) : null}
-            </div>
+          <div className="gstat gstat--warn">
+            <span className="gstat-n">{summary.nearLimitCount}</span>
+            <span className="gstat-l">{locale_label("У ЛИМИТА", "LIMIT", resolvedLanguage)}</span>
           </div>
-        </aside>
+          <div className="gstat gstat--bad">
+            <span className="gstat-n">{summary.errorCount}</span>
+            <span className="gstat-l">{locale_label("ОШИБКИ", "ERRORS", resolvedLanguage)}</span>
+          </div>
+        </div>
 
-        <div
-          className="main-shell"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              handleTitlebarDrag(event);
-              return;
-            }
-            event.stopPropagation();
-          }}
-        >
-          <header
-            className="window-bar"
-            onMouseDown={handleTitlebarDrag}
-            onDoubleClick={handleTitlebarDoubleClick}
-            data-tauri-drag-region
+        {/* Tools */}
+        <div className="topbar-tools">
+          <button
+            type="button"
+            className={"icon-btn icon-btn--md" + (hideAllEmails ? " is-active" : "")}
+            title={hideAllEmails ? locale_label("Показать почты", "Show emails", resolvedLanguage) : locale_label("Скрыть почты", "Hide emails", resolvedLanguage)}
+            onClick={() => setHideAllEmails(v => !v)}
           >
-            <div
-              className="window-drag-zone"
-              data-tauri-drag-region
-            />
-            {!isMacOs && currentWindow && (
-              <div className="window-controls" onMouseDown={(event) => event.stopPropagation()}>
-                <button
-                  type="button"
-                  className="ui-icon-button"
-                  onClick={() => {
-                    if (trayModeEnabled) {
-                      void currentWindow.hide();
-                      return;
-                    }
-                    void currentWindow.minimize();
-                  }}
-                  title={t.common.close === "Закрыть" ? "Свернуть" : "Minimize"}
-                >
-                  <ChevronDown size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="ui-icon-button"
-                  onClick={() => {
-                    void currentWindow.toggleMaximize();
-                  }}
-                  title={isWindowMaximized ? (resolvedLanguage === "ru" ? "Восстановить" : "Restore") : (resolvedLanguage === "ru" ? "Развернуть" : "Maximize")}
-                >
-                  {isWindowMaximized ? <PanelLeftOpen size={16} /> : <Monitor size={16} />}
-                </button>
-                <button
-                  type="button"
-                  className="ui-icon-button is-danger"
-                  onClick={() => {
-                    void currentWindow.close();
-                  }}
-                  title={t.common.close}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            )}
-          </header>
+            {hideAllEmails ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+          <button type="button" className="icon-btn icon-btn--md" title={locale_label("Тема", "Theme", resolvedLanguage)}
+            onClick={() => setThemePreference(themeMode === "dark" ? "light" : "dark")}>
+            {themeMode === "dark" ? <Moon size={16} /> : <Sun size={16} />}
+          </button>
+          <button type="button" className="icon-btn icon-btn--md" title={t.settings.title} onClick={() => setIsSettingsOpen(true)}>
+            <Settings2 size={16} />
+          </button>
 
-          <main className="window-main">
-            <div className="toolbar">
-              <div className="toolbar-copy">
-                <h1>{t.toolbar.title}</h1>
-                <p>{t.toolbar.subtitle}</p>
-              </div>
-
-              <div className="provider-tabs" aria-label={t.toolbar.providerTabs}>
-                <button
-                  type="button"
-                  className={`provider-tab is-codex ${activeProvider === "codex" ? "is-selected" : ""}`}
-                  onClick={() => setActiveProvider("codex")}
-                >
-                  <Bot size={15} />
-                  <span>Codex</span>
-                  <strong>{providerCounts.codex}</strong>
-                </button>
-                <button
-                  type="button"
-                  className={`provider-tab is-claude ${activeProvider === "claude" ? "is-selected" : ""}`}
-                  onClick={() => setActiveProvider("claude")}
-                >
-                  <Sparkles size={15} />
-                  <span>Claude</span>
-                  <strong>{providerCounts.claude}</strong>
-                </button>
-              </div>
-
-              <section className="toolbar-stats-row" aria-label={t.toolbar.summaryLabel}>
-                <span className="toolbar-stat">
-                  <UserRound size={14} />
-                  <span>{t.toolbar.accounts}</span>
-                  <strong>{summary.total}</strong>
-                </span>
-                <span className="toolbar-stat">
-                  <ShieldCheck size={14} />
-                  <span>{t.toolbar.available}</span>
-                  <strong>{summary.availableCount}</strong>
-                </span>
-                <span className="toolbar-stat">
-                  <CircleOff size={14} />
-                  <span>{t.toolbar.nearLimit}</span>
-                  <strong>{summary.nearLimitCount}</strong>
-                </span>
-                <span className="toolbar-stat">
-                  <AlertTriangle size={14} />
-                  <span>{t.toolbar.errors}</span>
-                  <strong>{summary.errorCount}</strong>
-                </span>
-              </section>
-
-              <div className="toolbar-actions">
-                <button
-                  type="button"
-                  className="ui-action-button"
-                  onClick={toggleAllMasks}
-                  disabled={accounts.length === 0}
-                  title={allAccountsMasked ? t.toolbar.showEmailsTitle : t.toolbar.hideEmailsTitle}
-                >
-                  {allAccountsMasked ? <EyeOff size={16} /> : <Eye size={16} />}
-                  {allAccountsMasked ? t.toolbar.showEmails : t.toolbar.hideEmails}
-                </button>
-                <button type="button" className="ui-action-button" onClick={() => setIsSettingsOpen(true)}>
-                  <Palette size={16} />
-                  {t.toolbar.appearance}
-                </button>
-                {activeProvider === "codex" && (
-                  <>
-                    <button
-                      type="button"
-                      className="ui-action-button"
-                      onClick={() => {
-                        void handleWarmupAll();
-                      }}
-                      disabled={isWarmingAll || providerCounts.codex === 0}
-                    >
-                      <Activity size={16} className={isWarmingAll ? "pulse-soft" : undefined} />
-                      {t.toolbar.warmAll}
-                    </button>
-                    <button
-                      type="button"
-                      className={`ui-action-button ${autoWarmupAllEnabled ? "is-active" : ""}`}
-                      onClick={() => setAutoWarmupAllEnabled((enabled) => !enabled)}
-                      disabled={providerCounts.codex === 0}
-                    >
-                      <Activity size={16} />
-                      {autoWarmupAllEnabled ? t.toolbar.autoWarmupOn : t.toolbar.autoWarmupOff}
-                    </button>
-                  </>
-                )}
-                {activeProvider === "codex" && (
-                  <button
-                    type="button"
-                    className="ui-action-button"
-                    onClick={() => {
-                      void handleRefresh();
-                    }}
-                    disabled={isRefreshing}
-                  >
-                    <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
-                    {t.toolbar.refresh}
-                  </button>
-                )}
-              </div>
+          {/* Window controls (non-Mac Tauri only) */}
+          {!isMacOs && currentWindow && (
+            <div className="win-controls">
+              <button type="button" className="wc-btn" title={locale_label("Свернуть", "Minimize", resolvedLanguage)}
+                onClick={() => { if (trayModeEnabled) void currentWindow.hide(); else void currentWindow.minimize(); }}>
+                <ChevronDown size={14} />
+              </button>
+              <button type="button" className="wc-btn" title={isWindowMaximized ? locale_label("Восстановить", "Restore", resolvedLanguage) : locale_label("Развернуть", "Maximize", resolvedLanguage)}
+                onClick={() => void currentWindow.toggleMaximize()}>
+                <Monitor size={14} />
+              </button>
+              <button type="button" className="wc-btn is-danger" title={t.common.close} onClick={() => void currentWindow.close()}>
+                <X size={14} />
+              </button>
             </div>
-
-            <div className="dashboard-grid">
-              <div className="content-stack">
-                {loading && accounts.length === 0 ? (
-                  <div className="surface-panel">
-                    <div className="loading-state">
-                      <div className="loading-state-icon">
-                        <RefreshCcw size={24} className="spin" />
-                      </div>
-                      <h2>{t.states.loadingAccounts}</h2>
-                      <p>{t.states.loadingHint}</p>
-                    </div>
-                  </div>
-                ) : error ? (
-                  <div className="surface-panel">
-                    <div className="error-state">
-                      <div className="error-state-icon">
-                        <AlertTriangle size={24} />
-                      </div>
-                      <h2>{isBackendUnavailable ? t.states.backendDisconnected : t.states.failedAccounts}</h2>
-                      <p>
-                        {isBackendUnavailable
-                          ? t.states.backendHint
-                          : error}
-                      </p>
-                    </div>
-                  </div>
-                ) : providerCounts[activeProvider] === 0 ? (
-                  <div className="surface-panel">
-                    <div className="empty-state">
-                      <div className="empty-state-icon">
-                        <UserRound size={24} />
-                      </div>
-                      <h2>{t.sidebar.noAccounts}</h2>
-                      <p>{t.states.noAccountsHint}</p>
-                      <button
-                        type="button"
-                        className="ui-action-button is-primary"
-                        onClick={() => setIsAddModalOpen(true)}
-                      >
-                        <BadgePlus size={16} />
-                        {t.sidebar.addAccount}
-                      </button>
-                    </div>
-                  </div>
-                ) : filteredAccounts.length === 0 ? (
-                  <div className="surface-panel">
-                    <div className="empty-state">
-                      <div className="empty-state-icon">
-                        <Search size={24} />
-                      </div>
-                      <h2>{t.states.noResults}</h2>
-                      <p>{t.states.noResultsHint}</p>
-                      <button
-                        type="button"
-                        className="ui-action-button"
-                        onClick={() => setAccountSearchQuery("")}
-                      >
-                        {t.states.clearSearch}
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    {filteredActiveAccount && (
-                      <section className="surface-panel active-account-panel" ref={activeSectionRef}>
-                        <div className="panel-body">
-                          <div className="active-account-mini" ref={registerAccountRef(filteredActiveAccount.id)}>
-                            {(() => {
-                              const planVisual = getPlanVisual(filteredActiveAccount);
-                              const resetItems = getActiveResetItems(filteredActiveAccount, resolvedLanguage);
-                              const isMasked = maskedAccounts.has(filteredActiveAccount.id);
-                              const isClaudeAccount = filteredActiveAccount.provider === "claude";
-                              const needsReauth =
-                                filteredActiveAccount.auth_mode === "chat_g_p_t" &&
-                                hasRecoverableAuthError(filteredActiveAccount.usage);
-                              const effectiveRemaining = getRemainingPercent(filteredActiveAccount);
-                              const tokenExpiryStatus = formatAuthTokenCountdown(
-                                filteredActiveAccount.auth_token_expires_at,
-                                resolvedLanguage
-                              );
-
-                              return (
-                                <>
-                            <div className={`active-account-mini-icon is-${getAccountHealthTone(filteredActiveAccount)}`}>
-                              <ShieldCheck size={18} />
-                            </div>
-                            <div className="active-account-mini-copy">
-                              <div className="active-account-mini-kicker">{t.account.currentAccount}</div>
-                              <div className="active-account-mini-name">{filteredActiveAccount.name}</div>
-                              {filteredActiveAccount.email && (
-                                <div className="active-account-mini-email">
-                                  <span className={isMasked ? "masked-text" : ""}>{filteredActiveAccount.email}</span>
-                                  {!isMasked && (
-                                    <button
-                                      type="button"
-                                      className="account-copy-email"
-                                      onClick={() => copyAccountEmail(filteredActiveAccount)}
-                                      title={
-                                        copiedEmailAccountId === filteredActiveAccount.id
-                                          ? t.account.emailCopied
-                                          : t.account.copyEmail
-                                      }
-                                    >
-                                      <Copy size={13} />
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-                              <div className="active-account-mini-tags">
-                                <span className="account-active-chip">
-                                  <ShieldCheck size={13} />
-                                  {t.account.active}
-                                </span>
-                                <span className={`account-plan-chip is-plan-${planVisual.tone}`}>
-                                  {planVisual.label}
-                                </span>
-                                {isClaudeAccount ? (
-                                  <span className="account-provider-chip">Claude</span>
-                                ) : (
-                                  <span className={`account-status-pill is-${getAccountHealthTone(filteredActiveAccount)}`}>
-                                    {effectiveRemaining !== null
-                                      ? `${effectiveRemaining.toFixed(0)}% ${t.account.left}`
-                                      : t.account.waitingUsage}
-                                  </span>
-                                )}
-                                {(filteredActiveAccount.auth_mode === "chat_g_p_t" || isClaudeAccount) && (
-                                  <span className={`account-status-pill is-${tokenExpiryStatus.tone}`}>
-                                    <KeyRound size={13} />
-                                    {tokenExpiryStatus.label}
-                                  </span>
-                                )}
-                                {!isClaudeAccount && (
-                                  <button
-                                    type="button"
-                                    className={`account-auto-warmup-button ${
-                                      autoWarmupAllEnabled ||
-                                      autoWarmupAccountIds.has(filteredActiveAccount.id)
-                                        ? "is-active"
-                                        : ""
-                                    }`}
-                                    onClick={() => toggleAutoWarmupAccount(filteredActiveAccount.id)}
-                                    disabled={autoWarmupAllEnabled}
-                                    title={
-                                      autoWarmupAllEnabled
-                                        ? t.account.autoWarmupManagedByAll
-                                        : getAutoWarmupLabel(filteredActiveAccount)
-                                    }
-                                  >
-                                    <Activity
-                                      size={13}
-                                      className={
-                                        autoWarmupRunningIds.has(filteredActiveAccount.id)
-                                          ? "pulse-soft"
-                                          : undefined
-                                      }
-                                    />
-                                    {getAutoWarmupLabel(filteredActiveAccount)}
-                                  </button>
-                                )}
-                                {needsReauth && (
-                                  <button
-                                    type="button"
-                                    className="ui-action-button is-primary active-reauth-button"
-                                    onClick={() => setReauthAccount(filteredActiveAccount)}
-                                  >
-                                    <KeyRound size={14} />
-                                    {t.account.refreshLogin}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            <div className={`active-account-mini-rail ${resetItems.length === 1 ? "is-single" : ""}`}>
-                              {isClaudeAccount ? (
-                                <div className="active-claude-meta">
-                                  <div>
-                                    <span>{t.account.subscription}</span>
-                                    <strong>
-                                      {filteredActiveAccount.claude_subscription_type ||
-                                        filteredActiveAccount.plan_type ||
-                                        t.common.unknown}
-                                    </strong>
-                                  </div>
-                                  <div>
-                                    <span>{t.account.rateTier}</span>
-                                    <strong>{filteredActiveAccount.claude_rate_limit_tier || t.common.unknown}</strong>
-                                  </div>
-                                  <div>
-                                    <span>{t.account.organization}</span>
-                                    <strong className={isMasked ? "masked-text" : ""}>
-                                      {filteredActiveAccount.claude_organization_uuid || t.common.unknown}
-                                    </strong>
-                                  </div>
-                                </div>
-                              ) : resetItems.length > 0 ? (
-                                resetItems.map((item) => (
-                                  <div key={item.key} className={`active-limit-meter is-${item.tone}`}>
-                                    <div className="active-limit-meter-head">
-                                      <span>{item.label}</span>
-                                      {item.remaining !== null && <strong>{item.remaining.toFixed(0)}%</strong>}
-                                    </div>
-                                    <div className="active-limit-track" aria-hidden="true">
-                                      <span
-                                        style={{
-                                          width: `${Math.max(0, Math.min(100, item.remaining ?? 0))}%`,
-                                          minWidth: item.remaining && item.remaining > 0 ? 22 : 0,
-                                        }}
-                                      />
-                                    </div>
-                                    <em>{t.account.reset}: {formatResetCountdown(item.resetsAt, resolvedLanguage)}</em>
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="active-limit-meter is-muted">
-                                  <div className="active-limit-meter-head">
-                                    <span>{t.account.noRateLimit}</span>
-                                  </div>
-                                  <div className="active-limit-track" aria-hidden="true">
-                                    <span style={{ width: "0%" }} />
-                                  </div>
-                                  <em>{t.account.waitingUsage}</em>
-                                </div>
-                              )}
-                            </div>
-                                </>
-                              );
-                            })()}
-                          </div>
-                        </div>
-                      </section>
-                    )}
-
-                    {sortedOtherAccounts.length > 0 && (
-                      <section className="surface-panel">
-                        <div className="surface-panel-header">
-                          <div className="surface-panel-title">
-                            <LayoutPanelLeft size={18} />
-                            <div>
-                              <h2>{t.pool.title}</h2>
-                              <p>{t.pool.subtitle}</p>
-                            </div>
-                          </div>
-
-                          <div className="controls-row">
-                            <div className="ui-select-wrap">
-                              <select
-                                value={otherAccountsSort}
-                                onChange={(event) => setOtherAccountsSort(event.target.value as SortMode)}
-                                className="ui-select"
-                              >
-                                {(Object.keys(sortLabels) as SortMode[]).map((value) => (
-                                  <option key={value} value={value}>
-                                    {t.sort[value]}
-                                  </option>
-                                ))}
-                              </select>
-                              <ChevronDown size={16} />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="panel-body">
-                          <div className="accounts-grid">
-                            {sortedOtherAccounts.map((account) => (
-                              <div key={account.id} ref={registerAccountRef(account.id)}>
-                                <AccountCard
-                                  account={account}
-                                  onSwitch={() => {
-                                    void handleSwitch(account.id);
-                                  }}
-                                  onWarmup={() => handleWarmupAccount(account.id, account.name)}
-                                  onDelete={() => handleDelete(account.id)}
-                                  onRefresh={async () => {
-                                    await refreshSingleUsage(account.id, { refreshMetadata: true });
-                                  }}
-                                  onRename={(newName) => renameAccount(account.id, newName)}
-                                  onReauthorize={() => setReauthAccount(account)}
-                                  switching={switchingId === account.id}
-                                  warmingUp={
-                                    isWarmingAll ||
-                                    warmingUpId === account.id ||
-                                    autoWarmupRunningIds.has(account.id)
-                                  }
-                                  autoWarmupEnabled={
-                                    autoWarmupAllEnabled || autoWarmupAccountIds.has(account.id)
-                                  }
-                                  autoWarmupManagedByAll={autoWarmupAllEnabled}
-                                  autoWarmupLabel={getAutoWarmupLabel(account)}
-                                  onToggleAutoWarmup={() => toggleAutoWarmupAccount(account.id)}
-                                  masked={maskedAccounts.has(account.id)}
-                                  onToggleMask={() => toggleMask(account.id)}
-                                  locale={resolvedLanguage}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </section>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </main>
+          )}
         </div>
       </div>
 
+      {/* ── Workbench ──────────────────────────────────────────────────────── */}
+      <div className="workbench">
+        {/* Left column: account list */}
+        <div className="col-list">
+          <div className="list-head">
+            <div className="search">
+              <Search size={14} />
+              <input
+                placeholder={locale_label("поиск по имени или почте…", "search by name or email…", resolvedLanguage)}
+                value={accountSearchQuery}
+                onChange={(e) => startTransition(() => setAccountSearchQuery(e.target.value))}
+              />
+              {accountSearchQuery
+                ? <button type="button" className="icon-btn icon-btn--xs" onClick={() => setAccountSearchQuery("")}><X size={12} /></button>
+                : <kbd>/</kbd>
+              }
+            </div>
+            <div className="filters">
+              {STATUS_FILTERS.map((f) => (
+                <button key={f.id} type="button" className={"chip" + (statusFilter === f.id ? " is-active" : "")} onClick={() => setStatusFilter(f.id)}>
+                  {f.dot && <span className="chip-dot" style={{ background: f.dot }} />}
+                  {f.label}
+                </button>
+              ))}
+              <span style={{ flex: 1 }} />
+              <button type="button" className="chip chip--add" onClick={() => setIsAddModalOpen(true)} title={t.sidebar.addAccount}>
+                + {locale_label("аккаунт", "account", resolvedLanguage)}
+              </button>
+            </div>
+          </div>
+
+          <div className="acc-list">
+            {loading && accounts.length === 0 ? (
+              <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                <RefreshCcw size={20} className="spin" style={{ marginBottom: 8 }} />
+                <div>{t.states.loadingAccounts}</div>
+              </div>
+            ) : error ? (
+              <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--bad)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                <AlertTriangle size={20} style={{ marginBottom: 8 }} />
+                <div>{isBackendUnavailable ? t.states.backendDisconnected : error}</div>
+              </div>
+            ) : sortedListAccounts.length === 0 ? (
+              <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                {accounts.filter((a) => a.provider === activeProvider).length === 0
+                  ? locale_label("нет аккаунтов", "no accounts", resolvedLanguage)
+                  : locale_label("ничего не найдено", "no results", resolvedLanguage)
+                }
+              </div>
+            ) : (
+              sortedListAccounts.map((account) => (
+                <AccountListRow
+                  key={account.id}
+                  account={account}
+                  selected={effectiveSelectedAccount?.id === account.id}
+                  isActiveAcc={account.is_active}
+                  masked={hideAllEmails || maskedAccounts.has(account.id)}
+                  onClick={() => setSelectedId((prev) => ({ ...prev, [activeProvider]: account.id }))}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Right column: detail panel */}
+        <div className="col-detail">
+          {effectiveSelectedAccount ? (
+            <AccountDetailPanel
+              account={effectiveSelectedAccount}
+              masked={hideAllEmails || maskedAccounts.has(effectiveSelectedAccount.id)}
+              onToggleMask={() => toggleMask(effectiveSelectedAccount.id)}
+              onCopyEmail={() => copyAccountEmail(effectiveSelectedAccount)}
+              emailCopied={copiedEmailAccountId === effectiveSelectedAccount.id}
+              switching={switchingId === effectiveSelectedAccount.id}
+              warmingUp={isWarmingAll || warmingUpId === effectiveSelectedAccount.id || autoWarmupRunningIds.has(effectiveSelectedAccount.id)}
+              autoWarmupEnabled={autoWarmupAllEnabled || autoWarmupAccountIds.has(effectiveSelectedAccount.id)}
+              autoWarmupLabel={getAutoWarmupLabel(effectiveSelectedAccount)}
+              onSwitch={() => void handleSwitch(effectiveSelectedAccount.id, effectiveSelectedAccount.provider)}
+              onWarmup={() => void handleWarmupAccount(effectiveSelectedAccount.id, effectiveSelectedAccount.name)}
+              onRefresh={() => void refreshSingleUsage(effectiveSelectedAccount.id, { refreshMetadata: true })}
+              onDelete={() => void handleDelete(effectiveSelectedAccount.id)}
+              onToggleAutoWarmup={() => toggleAutoWarmupAccount(effectiveSelectedAccount.id)}
+              onReauthorize={effectiveSelectedAccount.auth_mode === "chat_g_p_t" ? () => setReauthAccount(effectiveSelectedAccount) : undefined}
+              locale={resolvedLanguage}
+              t={t}
+            />
+          ) : (
+            <div className="detail-empty">
+              <div style={{ textAlign: "center" }}>
+                <UserRound size={32} style={{ opacity: .4, marginBottom: 10 }} />
+                <div>{locale_label("выберите аккаунт из списка слева", "select an account from the list", resolvedLanguage)}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Overlays ───────────────────────────────────────────────────────── */}
       {isSettingsOpen && (
         <SettingsPanel
           themePreference={themePreference}
@@ -2359,28 +1608,20 @@ function App() {
           isExportingFull={isExportingFull}
           isImportingFull={isImportingFull}
           hasAccounts={providerCounts.codex > 0}
+          isWarmingAll={isWarmingAll}
+          autoWarmupAllEnabled={autoWarmupAllEnabled}
           onThemeChange={setThemePreference}
           onLanguageChange={setLanguagePreference}
           onAccentChange={setAccentPreset}
           onCardDensityChange={setCardDensity}
           onTrayModeChange={setTrayModeEnabled}
           onClose={() => setIsSettingsOpen(false)}
-          onOpenImportSlim={() => {
-            setIsSettingsOpen(false);
-            openImportSlimTextModal();
-          }}
-          onExportSlim={() => {
-            setIsSettingsOpen(false);
-            void handleExportSlimText();
-          }}
-          onImportFull={() => {
-            setIsSettingsOpen(false);
-            void handleImportFullFile();
-          }}
-          onExportFull={() => {
-            setIsSettingsOpen(false);
-            void handleExportFullFile();
-          }}
+          onOpenImportSlim={() => { setIsSettingsOpen(false); openImportSlimTextModal(); }}
+          onExportSlim={() => { setIsSettingsOpen(false); void handleExportSlimText(); }}
+          onImportFull={() => { setIsSettingsOpen(false); void handleImportFullFile(); }}
+          onExportFull={() => { setIsSettingsOpen(false); void handleExportFullFile(); }}
+          onWarmupAll={() => void handleWarmupAll()}
+          onToggleAutoWarmupAll={() => setAutoWarmupAllEnabled((v) => !v)}
         />
       )}
 
@@ -2405,7 +1646,7 @@ function App() {
         onImportClaudeFile={importClaudeFromFile}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={() => {
-          if (!reauthAccount) return Promise.reject(new Error("No account selected"));
+          if (!reauthAccount) return Promise.reject(new Error("No account"));
           return completeOAuthReauth(reauthAccount.id);
         }}
         onCancelOAuth={cancelOAuthLogin}
@@ -2422,48 +1663,34 @@ function App() {
           t={t}
           onClose={() => setIsConfigModalOpen(false)}
           onPayloadChange={setConfigPayload}
-          onSubmit={() => {
-            void handleImportSlimText();
-          }}
+          onSubmit={() => void handleImportSlimText()}
           onCopy={() => {
             if (!configPayload) return;
-            void navigator.clipboard
-              .writeText(configPayload)
-              .then(() => {
-                setConfigCopied(true);
-                setTimeout(() => setConfigCopied(false), 1500);
-              })
-              .catch(() => {
-                setConfigModalError(
-                  resolvedLanguage === "ru"
-                    ? "Буфер обмена недоступен. Скопируй payload вручную."
-                    : "Clipboard unavailable. Copy the payload manually."
-                );
-              });
+            void navigator.clipboard.writeText(configPayload).then(() => {
+              setConfigCopied(true);
+              setTimeout(() => setConfigCopied(false), 1500);
+            }).catch(() => { setConfigModalError(resolvedLanguage === "ru" ? "Буфер обмена недоступен." : "Clipboard unavailable."); });
           }}
         />
       )}
 
-      <div className="app-toast-stack" aria-live="polite">
-        {refreshSuccess && (
-          <div className="app-toast is-success fade-up">
-            <ShieldCheck size={18} />
-            Usage refreshed successfully
-          </div>
-        )}
-
+      {/* Toasts */}
+      <div className="toast-wrap" aria-live="polite">
         {warmupToast && (
-          <div className={`app-toast ${warmupToast.isError ? "is-danger" : "is-warning"} fade-up`}>
-            {warmupToast.isError ? <AlertTriangle size={18} /> : <Activity size={18} />}
-            {warmupToast.message}
+          <div className={"toast" + (warmupToast.isError ? " toast--bad" : " toast--ok")}>
+            {warmupToast.isError ? <AlertTriangle size={16} style={{ color: "var(--bad)" }} /> : <Check size={16} style={{ color: "var(--ok)" }} />}
+            <span>{warmupToast.message}</span>
           </div>
         )}
-
       </div>
 
       <UpdateChecker locale={resolvedLanguage} />
     </div>
   );
+}
+
+function locale_label(ru: string, en: string, locale: Locale): string {
+  return locale === "ru" ? ru : en;
 }
 
 export default App;
