@@ -105,7 +105,7 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 600 }}>{t.available}: v{status.update.version}</div>
               {status.update.body && (
-                <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
+                <div style={{ color: "var(--text-3)", fontSize: "0.84rem" }}>
                   {status.update.body}
                 </div>
               )}
@@ -130,7 +130,7 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             <Download size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 600 }}>{t.downloading}</div>
-              <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
+              <div style={{ color: "var(--text-3)", fontSize: "0.84rem" }}>
                 {formatBytes(status.downloaded)}
                 {status.total ? ` / ${formatBytes(status.total)}` : ""}
               </div>
@@ -154,7 +154,7 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             <RefreshCcw size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 600 }}>{t.ready}</div>
-              <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
+              <div style={{ color: "var(--text-3)", fontSize: "0.84rem" }}>
                 {t.restartHint}
               </div>
             </div>
@@ -172,7 +172,7 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             <X size={18} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 600 }}>{t.failed}</div>
-              <div style={{ color: "var(--text-secondary)", fontSize: "0.84rem" }}>
+              <div style={{ color: "var(--text-3)", fontSize: "0.84rem" }}>
                 {status.message}
               </div>
             </div>
