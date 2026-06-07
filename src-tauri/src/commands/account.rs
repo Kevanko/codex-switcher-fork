@@ -203,6 +203,20 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
     if account.provider == AccountProvider::Claude {
+        // Before switching, sync the currently active Claude account's tokens
+        // from the live .credentials.json so our DB stays up-to-date.
+        if let Some(active_claude_id) = store.active_claude_account_id.as_deref() {
+            if active_claude_id != account_id {
+                let _ = crate::auth::storage::sync_claude_tokens_from_file(active_claude_id);
+            }
+        }
+        // Reload store after potential sync
+        let store = load_accounts().map_err(|e| e.to_string())?;
+        let account = store
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| format!("Account not found: {account_id}"))?;
         switch_to_claude_account(account).map_err(|e| e.to_string())?;
         set_active_claude_account(&account_id).map_err(|e| e.to_string())?;
         touch_account(&account_id).map_err(|e| e.to_string())?;
