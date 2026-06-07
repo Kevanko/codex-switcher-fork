@@ -153,8 +153,12 @@ fn migrate_store(store: &mut AccountsStore) {
 pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
 
-    // Check for duplicate names
-    if store.accounts.iter().any(|a| a.name == account.name) {
+    // Check for duplicate names within the same provider
+    if store
+        .accounts
+        .iter()
+        .any(|a| a.provider == account.provider && a.name == account.name)
+    {
         anyhow::bail!("An account with name '{}' already exists", account.name);
     }
 
@@ -280,14 +284,21 @@ pub fn update_account_metadata(
 ) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
 
-    // Check for duplicate names first (if renaming)
+    // Check for duplicate names within the same provider (if renaming)
     if let Some(ref new_name) = name {
-        if store
+        let provider = store
             .accounts
             .iter()
-            .any(|a| a.id != account_id && a.name == *new_name)
-        {
-            anyhow::bail!("An account with name '{new_name}' already exists");
+            .find(|a| a.id == account_id)
+            .map(|a| a.provider);
+        if let Some(provider) = provider {
+            if store
+                .accounts
+                .iter()
+                .any(|a| a.id != account_id && a.provider == provider && a.name == *new_name)
+            {
+                anyhow::bail!("An account with name '{new_name}' already exists");
+            }
         }
     }
 
@@ -394,6 +405,54 @@ pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result
     }
 
     Ok(account.clone())
+}
+
+/// Sync a Claude account's stored tokens from the current .credentials.json file.
+/// If the file belongs to the same account (matching refresh_token) and has a fresher
+/// access_token, updates the stored copy so future switches use up-to-date credentials.
+pub fn sync_claude_tokens_from_file(account_id: &str) -> Result<()> {
+    use crate::auth::switcher::get_claude_credentials_file;
+    use crate::types::ClaudeCredentialsFile;
+
+    let creds_path = get_claude_credentials_file()?;
+    if !creds_path.exists() {
+        return Ok(());
+    }
+
+    let file_content = match fs::read_to_string(&creds_path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let file_creds: ClaudeCredentialsFile = match serde_json::from_str(&file_content) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    let mut store = load_accounts()?;
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == account_id);
+
+    if let Some(account) = account {
+        if let AuthData::ClaudeOAuth {
+            access_token,
+            refresh_token,
+            expires_at,
+            ..
+        } = &mut account.auth_data
+        {
+            if *refresh_token == file_creds.claude_ai_oauth.refresh_token
+                && file_creds.claude_ai_oauth.expires_at > *expires_at
+            {
+                *access_token = file_creds.claude_ai_oauth.access_token;
+                *expires_at = file_creds.claude_ai_oauth.expires_at;
+                save_accounts(&store)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Get the list of masked account IDs
