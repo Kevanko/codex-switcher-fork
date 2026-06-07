@@ -17,6 +17,12 @@ backups/
 qa-*.png
 tmp-*.png
 
+# Release artifacts
+latest.json
+*.sig
+*.key
+*.key.pub
+
 # Editor directories and files
 .vscode
 .idea
