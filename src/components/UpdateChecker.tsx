@@ -36,7 +36,18 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
     } catch (err) {
       console.error("Update check failed:", err);
       const message = err instanceof Error ? err.message : String(err);
-      setStatus({ kind: "error", message });
+      // Don't show a toast for "no release json" errors (endpoint not configured / no internet).
+      // These happen on every launch when latest.json isn't uploaded to the release.
+      const isMissingJson =
+        message.includes("release json") ||
+        message.includes("404") ||
+        message.includes("No data") ||
+        message.includes("NETWORK");
+      if (isMissingJson) {
+        setStatus({ kind: "idle" });
+      } else {
+        setStatus({ kind: "error", message });
+      }
     }
   }, []);
 
