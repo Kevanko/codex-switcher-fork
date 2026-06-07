@@ -42,7 +42,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1MkNERjAwRDEyOUZBM0UKUldRKytpblJBTjhzeGZuUlorWUFOdFMvSUFqVVFQQnBNZ0NZb0s1KzR4eTZXVmVGL3BNNzhudDIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBFNDVDMEQzQjE3NUZDNjEKUldSaC9IV3gwOEJGRGkxM0lrVWk3TkNaTE9MZVo4NlJ6T3JuQTVHUVFINjVqdGhraDFnZ3Rwd3cK",
       "endpoints": [
         "https://github.com/Kevanko/codex-switcher-fork/releases/latest/download/latest.json"
       ]
