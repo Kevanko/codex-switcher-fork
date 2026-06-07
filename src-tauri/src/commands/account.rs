@@ -77,6 +77,7 @@ struct SlimAccountPayload {
 #[tauri::command]
 pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     let _ = reconcile_active_account_with_current_auth();
+    let _ = crate::auth::switcher::reconcile_active_claude_account();
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
     let active_claude_id = store.active_claude_account_id.as_deref();
@@ -88,6 +89,18 @@ pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
         .collect();
 
     Ok(accounts)
+}
+
+/// Check whether the current ~/.claude/.credentials.json matches a known account.
+/// Returns "file_not_found" | "matched" | "unknown".
+#[tauri::command]
+pub async fn check_claude_file_status() -> Result<String, String> {
+    use crate::auth::switcher::{reconcile_active_claude_account, ClaudeReconcileResult};
+    match reconcile_active_claude_account().map_err(|e| e.to_string())? {
+        ClaudeReconcileResult::FileNotFound => Ok("file_not_found".to_string()),
+        ClaudeReconcileResult::MatchedAccount(_) => Ok("matched".to_string()),
+        ClaudeReconcileResult::UnknownCredentials => Ok("unknown".to_string()),
+    }
 }
 
 /// Get the currently active account

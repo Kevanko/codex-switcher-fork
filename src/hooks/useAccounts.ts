@@ -430,6 +430,19 @@ export function useAccounts() {
     }
   }, []);
 
+  const checkClaudeFileStatus = useCallback(async (): Promise<
+    "file_not_found" | "matched" | "unknown"
+  > => {
+    try {
+      return await invokeBackend<"file_not_found" | "matched" | "unknown">(
+        "check_claude_file_status"
+      );
+    } catch (err) {
+      console.error("Failed to check Claude file status:", err);
+      return "matched";
+    }
+  }, []);
+
   const loadMaskedAccountIds = useCallback(async () => {
     try {
       return await invokeBackend<string[]>("get_masked_account_ids");
@@ -482,5 +495,6 @@ export function useAccounts() {
     cancelOAuthLogin,
     loadMaskedAccountIds,
     saveMaskedAccountIds,
+    checkClaudeFileStatus,
   };
 }

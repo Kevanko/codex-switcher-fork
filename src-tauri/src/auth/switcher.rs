@@ -34,6 +34,91 @@ pub fn get_claude_credentials_file() -> Result<PathBuf> {
     Ok(home.join(".claude").join(".credentials.json"))
 }
 
+/// Result of reconciling the active Claude account with the live credentials file.
+#[derive(Debug)]
+pub enum ClaudeReconcileResult {
+    /// ~/.claude/.credentials.json does not exist — no active Claude session.
+    FileNotFound,
+    /// File matches a known stored account (returns its id).
+    MatchedAccount(String),
+    /// File exists but credentials don't match any stored account (external login).
+    UnknownCredentials,
+}
+
+/// Reconcile the stored active Claude account with ~/.claude/.credentials.json.
+/// Mirrors reconcile_active_account_with_current_auth() for Codex.
+pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
+    let creds_path = get_claude_credentials_file()?;
+
+    if !creds_path.exists() {
+        let mut store = load_accounts()?;
+        if store.active_claude_account_id.is_some() {
+            store.active_claude_account_id = None;
+            save_accounts(&store)?;
+        }
+        return Ok(ClaudeReconcileResult::FileNotFound);
+    }
+
+    let content = match fs::read_to_string(&creds_path) {
+        Ok(c) => c,
+        Err(_) => return Ok(ClaudeReconcileResult::UnknownCredentials),
+    };
+    let file_creds: ClaudeCredentialsFile = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return Ok(ClaudeReconcileResult::UnknownCredentials),
+    };
+
+    let mut store = load_accounts()?;
+
+    // Find a stored Claude account whose refresh_token matches the file.
+    let matched_id = store
+        .accounts
+        .iter()
+        .find(|a| {
+            if let AuthData::ClaudeOAuth { refresh_token, .. } = &a.auth_data {
+                refresh_token == &file_creds.claude_ai_oauth.refresh_token
+            } else {
+                false
+            }
+        })
+        .map(|a| a.id.clone());
+
+    match matched_id {
+        Some(ref id) => {
+            let mut changed = false;
+
+            // Update active pointer if needed.
+            if store.active_claude_account_id.as_deref() != Some(id.as_str()) {
+                store.active_claude_account_id = Some(id.clone());
+                changed = true;
+            }
+
+            // Sync fresher tokens into storage.
+            if let Some(account) = store.accounts.iter_mut().find(|a| a.id == *id) {
+                if let AuthData::ClaudeOAuth {
+                    access_token,
+                    expires_at,
+                    ..
+                } = &mut account.auth_data
+                {
+                    if file_creds.claude_ai_oauth.expires_at > *expires_at {
+                        *access_token = file_creds.claude_ai_oauth.access_token.clone();
+                        *expires_at = file_creds.claude_ai_oauth.expires_at;
+                        changed = true;
+                    }
+                }
+            }
+
+            if changed {
+                save_accounts(&store)?;
+            }
+
+            Ok(ClaudeReconcileResult::MatchedAccount(id.clone()))
+        }
+        None => Ok(ClaudeReconcileResult::UnknownCredentials),
+    }
+}
+
 /// Switch to a specific account by writing its credentials to ~/.codex/auth.json
 pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     let codex_home = get_codex_home()?;
