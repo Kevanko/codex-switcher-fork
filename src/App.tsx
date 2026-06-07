@@ -503,7 +503,7 @@ function AccountDetailPanel({
                   <Zap size={11} /> АВТОПРОГРЕВ
                 </span>
               )}
-              {(account.auth_mode === "chat_g_p_t" || !isCodex) && tokenExpiry.tone !== "muted" && (
+              {account.auth_mode === "chat_g_p_t" && tokenExpiry.tone !== "muted" && (
                 <span className={"tag tag--" + (tokenExpiry.tone === "danger" ? "red" : "amber")}>
                   <KeyRound size={11} /> {tokenExpiry.label}
                 </span>
@@ -618,9 +618,7 @@ function AccountDetailPanel({
                   </div>
                   <div className="meta-row">
                     <span className="meta-key">Статус токена</span>
-                    <span className="meta-val" style={{ color: tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
-                      {tokenExpiry.label}
-                    </span>
+                    <span className="meta-val">OAuth / автообновление</span>
                   </div>
                 </div>
               </>
@@ -635,8 +633,8 @@ function AccountDetailPanel({
             <div className="meta">
               <div className="meta-row">
                 <span className="meta-key">Токен</span>
-                <span className="meta-val" style={{ color: tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
-                  {tokenExpiry.label}
+                <span className="meta-val" style={{ color: !isCodex ? undefined : tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
+                  {isCodex ? tokenExpiry.label : "OAuth / автообновление"}
                 </span>
               </div>
               <div className="meta-row">
