@@ -940,6 +940,7 @@ function App() {
     cancelOAuthLogin,
     loadMaskedAccountIds,
     saveMaskedAccountIds,
+    checkClaudeFileStatus,
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -967,6 +968,7 @@ function App() {
   const [autoWarmupLedger, setAutoWarmupLedger] = useState<AutoWarmupLedger>(() => readStoredAutoWarmupLedger());
   const [autoWarmupRunningIds, setAutoWarmupRunningIds] = useState<Set<string>>(new Set());
   const [warmupToast, setWarmupToast] = useState<{ message: string; isError: boolean } | null>(null);
+  const [claudeUnknownToast, setClaudeUnknownToast] = useState(false);
   const [copiedEmailAccountId, setCopiedEmailAccountId] = useState<string | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
@@ -1095,6 +1097,16 @@ function App() {
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   }, [accounts]);
+
+  // On startup, check if .credentials.json has credentials not in our store.
+  const claudeCheckDoneRef = useRef(false);
+  useEffect(() => {
+    if (loading || claudeCheckDoneRef.current || !isTauriRuntime()) return;
+    claudeCheckDoneRef.current = true;
+    checkClaudeFileStatus().then((status) => {
+      if (status === "unknown") setClaudeUnknownToast(true);
+    });
+  }, [loading, checkClaudeFileStatus]);
 
   useEffect(() => {
     if (!isTauriRuntime() || isMacOs || !currentWindow) return;
@@ -1678,6 +1690,13 @@ function App() {
           <div className={"toast" + (warmupToast.isError ? " toast--bad" : " toast--ok")}>
             {warmupToast.isError ? <AlertTriangle size={16} style={{ color: "var(--bad)" }} /> : <Check size={16} style={{ color: "var(--ok)" }} />}
             <span>{warmupToast.message}</span>
+          </div>
+        )}
+        {claudeUnknownToast && (
+          <div className="toast toast--warn" style={{ cursor: "pointer" }} onClick={() => { setClaudeUnknownToast(false); setIsAddModalOpen(true); setActiveProvider("claude"); }}>
+            <AlertTriangle size={16} style={{ color: "var(--accent)" }} />
+            <span>{resolvedLanguage === "ru" ? "Найдены новые учётные данные Claude — добавьте аккаунт" : "New Claude credentials detected — add an account"}</span>
+            <button type="button" style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", padding: "0 4px" }} onClick={(e) => { e.stopPropagation(); setClaudeUnknownToast(false); }}>✕</button>
           </div>
         )}
       </div>
