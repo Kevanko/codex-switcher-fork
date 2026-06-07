@@ -64,8 +64,31 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
 
 /// Switch Claude Code to a specific account by writing ~/.claude/.credentials.json.
 pub fn switch_to_claude_account(account: &StoredAccount) -> Result<()> {
-    let credentials = create_claude_credentials(account)?;
+    let mut credentials = create_claude_credentials(account)?;
     let credentials_path = get_claude_credentials_file()?;
+
+    // If the current file already belongs to this account (same refresh_token) and
+    // has a fresher access token (Claude Code auto-refreshes), use it instead of
+    // overwriting with our stale stored copy.
+    if credentials_path.exists() {
+        if let Ok(existing_content) = fs::read_to_string(&credentials_path) {
+            if let Ok(existing) =
+                serde_json::from_str::<ClaudeCredentialsFile>(&existing_content)
+            {
+                if existing.claude_ai_oauth.refresh_token
+                    == credentials.claude_ai_oauth.refresh_token
+                    && existing.claude_ai_oauth.expires_at
+                        > credentials.claude_ai_oauth.expires_at
+                {
+                    credentials.claude_ai_oauth.access_token =
+                        existing.claude_ai_oauth.access_token;
+                    credentials.claude_ai_oauth.expires_at =
+                        existing.claude_ai_oauth.expires_at;
+                }
+            }
+        }
+    }
+
     let claude_home = credentials_path
         .parent()
         .context("Claude credentials path has no parent directory")?;
