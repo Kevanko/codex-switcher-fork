@@ -26,6 +26,7 @@ interface AddAccountModalProps {
   onImportFile: (source: FileSource, name: string) => Promise<void>;
   onImportClaudeFile: (source: FileSource, name: string) => Promise<void>;
   onAddClaudeFromSession: (name: string) => Promise<unknown>;
+  onClearClaudeSession: () => Promise<void>;
   onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
   onCompleteOAuth: () => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;
@@ -43,6 +44,7 @@ export function AddAccountModal({
   onImportFile,
   onImportClaudeFile,
   onAddClaudeFromSession,
+  onClearClaudeSession,
   onStartOAuth,
   onCompleteOAuth,
   onCancelOAuth,
@@ -59,6 +61,7 @@ export function AddAccountModal({
   const [oauthPending, setOauthPending] = useState(false);
   const [authUrl, setAuthUrl] = useState("");
   const [copied, setCopied] = useState(false);
+  const [sessionCleared, setSessionCleared] = useState(false);
   const tauriRuntime = isTauriRuntime();
   const t = translations[locale];
   const isReauthorize = mode === "reauthorize";
@@ -97,6 +100,7 @@ export function AddAccountModal({
     setOauthPending(false);
     setAuthUrl("");
     setCopied(false);
+    setSessionCleared(false);
   };
 
   const handleClose = () => {
@@ -293,12 +297,41 @@ export function AddAccountModal({
                     : "Reads the token from ~/.claude/.credentials.json and stores it in the switcher. The file is left untouched."}
                 </p>
               </div>
-              <div className="inline-alert">
-                <Zap size={16} />
-                {ru
-                  ? "Убедитесь что вы уже вошли через «claude login» перед добавлением."
-                  : "Make sure you are already logged in via «claude login» before adding."}
-              </div>
+              {sessionCleared ? (
+                <div className="inline-alert">
+                  <Zap size={16} />
+                  {ru
+                    ? "Сессия удалена. Войдите через «claude login», затем нажмите «Добавить аккаунт»."
+                    : "Session cleared. Log in via «claude login», then click «Add account»."}
+                </div>
+              ) : (
+                <div className="inline-alert">
+                  <Zap size={16} />
+                  {ru
+                    ? "Уже вошли? Введите имя и нажмите «Добавить аккаунт». Хотите войти в другой — сначала удалите активную сессию."
+                    : "Already logged in? Enter a name and click «Add account». Want a different account — clear the active session first."}
+                </div>
+              )}
+              <button
+                type="button"
+                className="ui-action-button is-ghost"
+                style={{ alignSelf: "flex-start", color: "var(--bad)" }}
+                disabled={loading || sessionCleared}
+                onClick={async () => {
+                  try {
+                    setLoading(true);
+                    setError(null);
+                    await onClearClaudeSession();
+                    setSessionCleared(true);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                {ru ? "Удалить активную сессию" : "Clear active session"}
+              </button>
             </div>
           )}
 

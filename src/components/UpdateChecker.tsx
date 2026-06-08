@@ -34,9 +34,21 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
       const update = await check();
       setStatus(update ? { kind: "available", update } : { kind: "idle" });
     } catch (err) {
-      // Update check failures are non-critical — log but never surface as a toast.
       console.error("Update check failed:", err);
-      setStatus({ kind: "idle" });
+      const msg = err instanceof Error ? err.message : String(err);
+      // Silently ignore network / missing-endpoint errors.
+      // Only show an error toast for genuine update failures (download corruption, etc.).
+      const isNetworkOrMissing =
+        msg.toLowerCase().includes("fetch") ||
+        msg.toLowerCase().includes("network") ||
+        msg.toLowerCase().includes("release json") ||
+        msg.toLowerCase().includes("404") ||
+        msg.toLowerCase().includes("no data");
+      if (!isNetworkOrMissing) {
+        setStatus({ kind: "error", message: msg });
+      } else {
+        setStatus({ kind: "idle" });
+      }
     }
   }, []);
 
