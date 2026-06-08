@@ -130,7 +130,7 @@ try {
 }
 
 # -- 8. GitHub release --------------------------------------------------------
-gh release delete "v$Version" --repo $REPO --yes 2>&1 | Out-Null
+try { gh release delete "v$Version" --repo $REPO --yes 2>&1 | Out-Null } catch {}
 
 $releaseUrl = gh release create "v$Version" `
     $nsisExeDot `
