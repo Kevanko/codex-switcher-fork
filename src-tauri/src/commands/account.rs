@@ -103,6 +103,84 @@ pub async fn check_claude_file_status() -> Result<String, String> {
     }
 }
 
+/// Add a Claude account by reading the currently active ~/.claude/.credentials.json.
+/// Fails if that refresh_token is already stored under any account.
+#[tauri::command]
+pub async fn add_claude_account_from_active_session(
+    name: String,
+) -> Result<AccountInfo, String> {
+    use crate::auth::switcher::get_claude_credentials_file;
+
+    let path = get_claude_credentials_file().map_err(|e| e.to_string())?;
+    if !path.exists() {
+        return Err(
+            "No active Claude session found (run `claude` first to log in)".to_string(),
+        );
+    }
+    let path_str = path.to_string_lossy().to_string();
+    let account = import_from_claude_credentials(&path_str, name).map_err(|e| e.to_string())?;
+    let stored = add_account(account).map_err(|e| e.to_string())?;
+
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let active_id = store.active_account_id.as_deref();
+    let active_claude_id = store.active_claude_account_id.as_deref();
+    Ok(AccountInfo::from_stored(&stored, active_id, active_claude_id))
+}
+
+/// Replace the active Claude account's full credentials with whatever is in
+/// ~/.claude/.credentials.json right now (new refresh_token included).
+/// Used when the user re-authenticated outside the switcher.
+#[tauri::command]
+pub async fn update_active_claude_account_from_file() -> Result<(), String> {
+    use crate::auth::switcher::get_claude_credentials_file;
+    use crate::types::{AuthData, ClaudeCredentialsFile};
+
+    let creds_path = get_claude_credentials_file().map_err(|e| e.to_string())?;
+    if !creds_path.exists() {
+        return Err("No active Claude session file found".to_string());
+    }
+
+    let content = fs::read_to_string(&creds_path).map_err(|e| e.to_string())?;
+    let file_creds: ClaudeCredentialsFile =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    let mut store = load_accounts().map_err(|e| e.to_string())?;
+    let active_id = store
+        .active_claude_account_id
+        .clone()
+        .ok_or_else(|| "No active Claude account to update".to_string())?;
+
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == active_id)
+        .ok_or_else(|| "Active Claude account not found in store".to_string())?;
+
+    match &mut account.auth_data {
+        AuthData::ClaudeOAuth {
+            access_token,
+            refresh_token,
+            expires_at,
+            scopes,
+            subscription_type,
+            rate_limit_tier,
+            organization_uuid,
+        } => {
+            *access_token = file_creds.claude_ai_oauth.access_token;
+            *refresh_token = file_creds.claude_ai_oauth.refresh_token;
+            *expires_at = file_creds.claude_ai_oauth.expires_at;
+            *scopes = file_creds.claude_ai_oauth.scopes;
+            *subscription_type = file_creds.claude_ai_oauth.subscription_type;
+            *rate_limit_tier = file_creds.claude_ai_oauth.rate_limit_tier;
+            *organization_uuid = file_creds.organization_uuid;
+        }
+        _ => return Err("Active account is not a Claude OAuth account".to_string()),
+    }
+
+    save_accounts(&store).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Get the currently active account
 #[tauri::command]
 pub async fn get_active_account_info() -> Result<Option<AccountInfo>, String> {

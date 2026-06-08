@@ -941,6 +941,8 @@ function App() {
     loadMaskedAccountIds,
     saveMaskedAccountIds,
     checkClaudeFileStatus,
+    addClaudeFromActiveSession,
+    updateActiveClaudeFromFile,
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -1640,6 +1642,7 @@ function App() {
         onClose={() => setIsAddModalOpen(false)}
         onImportFile={importFromFile}
         onImportClaudeFile={importClaudeFromFile}
+        onAddClaudeFromSession={addClaudeFromActiveSession}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
@@ -1654,6 +1657,7 @@ function App() {
         onClose={() => setReauthAccount(null)}
         onImportFile={importFromFile}
         onImportClaudeFile={importClaudeFromFile}
+        onAddClaudeFromSession={addClaudeFromActiveSession}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={() => {
           if (!reauthAccount) return Promise.reject(new Error("No account"));
@@ -1692,13 +1696,44 @@ function App() {
             <span>{warmupToast.message}</span>
           </div>
         )}
-        {claudeUnknownToast && (
-          <div className="toast toast--warn" style={{ cursor: "pointer" }} onClick={() => { setClaudeUnknownToast(false); setIsAddModalOpen(true); setActiveProvider("claude"); }}>
-            <AlertTriangle size={16} style={{ color: "var(--accent)" }} />
-            <span>{resolvedLanguage === "ru" ? "Найдены новые учётные данные Claude — добавьте аккаунт" : "New Claude credentials detected — add an account"}</span>
-            <button type="button" style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", padding: "0 4px" }} onClick={(e) => { e.stopPropagation(); setClaudeUnknownToast(false); }}>✕</button>
-          </div>
-        )}
+        {claudeUnknownToast && (() => {
+          const activeClaudeName = accounts.find(a => a.provider === "claude" && a.is_active)?.name;
+          const ru = resolvedLanguage === "ru";
+          return (
+            <div className="toast toast--warn" style={{ gap: 10 }}>
+              <AlertTriangle size={16} style={{ color: "var(--warn)", flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                {ru ? "Обнаружены новые учётные данные Claude" : "New Claude credentials detected"}
+              </span>
+              {activeClaudeName && (
+                <button
+                  type="button"
+                  className="ui-action-button"
+                  style={{ flexShrink: 0 }}
+                  onClick={() => {
+                    setClaudeUnknownToast(false);
+                    updateActiveClaudeFromFile().catch(console.error);
+                  }}
+                >
+                  {ru ? `Обновить «${activeClaudeName}»` : `Update "${activeClaudeName}"`}
+                </button>
+              )}
+              <button
+                type="button"
+                className="ui-action-button is-ghost"
+                style={{ flexShrink: 0 }}
+                onClick={() => { setClaudeUnknownToast(false); setIsAddModalOpen(true); setActiveProvider("claude"); }}
+              >
+                {ru ? "Добавить новый" : "Add new"}
+              </button>
+              <button
+                type="button"
+                style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", padding: "0 2px", flexShrink: 0 }}
+                onClick={() => setClaudeUnknownToast(false)}
+              >✕</button>
+            </div>
+          );
+        })()}
       </div>
 
       <UpdateChecker locale={resolvedLanguage} />

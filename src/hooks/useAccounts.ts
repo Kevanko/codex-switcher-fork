@@ -443,6 +443,23 @@ export function useAccounts() {
     }
   }, []);
 
+  const addClaudeFromActiveSession = useCallback(
+    async (name: string) => {
+      const account = await invokeBackend<AccountInfo>(
+        "add_claude_account_from_active_session",
+        { name }
+      );
+      await loadAccounts();
+      return account;
+    },
+    [loadAccounts]
+  );
+
+  const updateActiveClaudeFromFile = useCallback(async () => {
+    await invokeBackend("update_active_claude_account_from_file");
+    await loadAccounts(true);
+  }, [loadAccounts]);
+
   const loadMaskedAccountIds = useCallback(async () => {
     try {
       return await invokeBackend<string[]>("get_masked_account_ids");
@@ -496,5 +513,7 @@ export function useAccounts() {
     loadMaskedAccountIds,
     saveMaskedAccountIds,
     checkClaudeFileStatus,
+    addClaudeFromActiveSession,
+    updateActiveClaudeFromFile,
   };
 }
