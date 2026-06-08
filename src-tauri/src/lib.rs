@@ -8,7 +8,8 @@ pub mod web;
 
 use commands::{
     add_account_from_file, add_claude_account_from_active_session, add_claude_account_from_file,
-    cancel_login, check_claude_file_status, check_codex_processes, complete_login,
+    cancel_login, check_claude_file_status, check_codex_processes, clear_claude_active_session,
+    complete_login,
     complete_reauth_login, delete_account, export_accounts_full_encrypted_file,
     export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_usage,
     import_accounts_full_encrypted_file, import_accounts_slim_text, list_accounts,
@@ -67,6 +68,7 @@ pub fn run() {
             check_claude_file_status,
             add_claude_account_from_active_session,
             update_active_claude_account_from_file,
+            clear_claude_active_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

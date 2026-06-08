@@ -460,6 +460,11 @@ export function useAccounts() {
     await loadAccounts(true);
   }, [loadAccounts]);
 
+  const clearClaudeActiveSession = useCallback(async () => {
+    await invokeBackend("clear_claude_active_session");
+    await loadAccounts(true);
+  }, [loadAccounts]);
+
   const loadMaskedAccountIds = useCallback(async () => {
     try {
       return await invokeBackend<string[]>("get_masked_account_ids");
@@ -515,5 +520,6 @@ export function useAccounts() {
     checkClaudeFileStatus,
     addClaudeFromActiveSession,
     updateActiveClaudeFromFile,
+    clearClaudeActiveSession,
   };
 }

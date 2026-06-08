@@ -943,6 +943,7 @@ function App() {
     checkClaudeFileStatus,
     addClaudeFromActiveSession,
     updateActiveClaudeFromFile,
+    clearClaudeActiveSession,
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -1643,6 +1644,7 @@ function App() {
         onImportFile={importFromFile}
         onImportClaudeFile={importClaudeFromFile}
         onAddClaudeFromSession={addClaudeFromActiveSession}
+        onClearClaudeSession={clearClaudeActiveSession}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
@@ -1658,6 +1660,7 @@ function App() {
         onImportFile={importFromFile}
         onImportClaudeFile={importClaudeFromFile}
         onAddClaudeFromSession={addClaudeFromActiveSession}
+        onClearClaudeSession={clearClaudeActiveSession}
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={() => {
           if (!reauthAccount) return Promise.reject(new Error("No account"));

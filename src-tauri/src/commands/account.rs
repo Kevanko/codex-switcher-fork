@@ -103,6 +103,25 @@ pub async fn check_claude_file_status() -> Result<String, String> {
     }
 }
 
+/// Delete ~/.claude/.credentials.json so the user can log in to a different account.
+/// Does NOT touch accounts.json — stored accounts are preserved.
+#[tauri::command]
+pub async fn clear_claude_active_session() -> Result<(), String> {
+    use crate::auth::switcher::get_claude_credentials_file;
+
+    let path = get_claude_credentials_file().map_err(|e| e.to_string())?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    // Clear the active pointer so the UI reflects the logged-out state.
+    let mut store = load_accounts().map_err(|e| e.to_string())?;
+    if store.active_claude_account_id.is_some() {
+        store.active_claude_account_id = None;
+        save_accounts(&store).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Add a Claude account by reading the currently active ~/.claude/.credentials.json.
 /// Fails if that refresh_token is already stored under any account.
 #[tauri::command]
