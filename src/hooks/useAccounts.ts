@@ -16,10 +16,33 @@ function hydrateAccountUsage(account: AccountInfo): AccountWithUsage {
   };
 }
 
+function isNetworkError(msg: string): boolean {
+  if (!navigator.onLine) return true;
+  const m = msg.toLowerCase();
+  return (
+    m.includes("connection refused") ||
+    m.includes("failed to connect") ||
+    m.includes("error sending request") ||
+    m.includes("error trying to connect") ||
+    m.includes("tcp connect") ||
+    m.includes("network") ||
+    m.includes("no route to host") ||
+    m.includes("os error 10060") ||   // Windows connection timeout
+    m.includes("os error 10061") ||   // Windows connection refused
+    m.includes("os error 11001") ||   // Windows DNS lookup failed
+    m.includes("timed out") ||
+    m.includes("dns") ||
+    m.includes("name or service not known") ||
+    m.includes("no such host") ||
+    m.includes("socket")
+  );
+}
+
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [networkOffline, setNetworkOffline] = useState(false);
   const accountsRef = useRef<AccountWithUsage[]>([]);
   const maxConcurrentUsageRequests = 10;
 
@@ -139,6 +162,8 @@ export function useAccounts() {
           )
         );
 
+        let networkErrorCount = 0;
+
         await runWithConcurrency(
           list,
           async (account) => {
@@ -148,18 +173,35 @@ export function useAccounts() {
               });
               usageResults.set(account.id, usage);
             } catch (err) {
-              console.error("Failed to refresh usage:", err);
-              if (!("usage" in account) || !account.usage) {
-                const message = err instanceof Error ? err.message : String(err);
-                usageResults.set(
-                  account.id,
-                  buildUsageError(account.id, message, account.plan_type ?? null)
-                );
+              const message = err instanceof Error ? err.message : String(err);
+              if (isNetworkError(message)) {
+                networkErrorCount++;
+              } else {
+                console.error("Failed to refresh usage:", err);
+                if (!("usage" in account) || !account.usage) {
+                  usageResults.set(
+                    account.id,
+                    buildUsageError(account.id, message, account.plan_type ?? null)
+                  );
+                }
               }
             }
           },
           maxConcurrentUsageRequests
         );
+
+        // If every request failed with a network error → we're offline.
+        // Don't overwrite account data with errors; just set the offline flag.
+        if (networkErrorCount > 0 && networkErrorCount === list.length) {
+          setNetworkOffline(true);
+          setAccounts((prev) =>
+            prev.map((a) => accountIdSet.has(a.id) ? { ...a, usageLoading: false } : a)
+          );
+          return;
+        }
+
+        // Some succeeded → we're back online (or were never offline).
+        if (networkErrorCount === 0) setNetworkOffline(false);
 
         setAccounts((prev) =>
           prev.map((account) => {
@@ -193,41 +235,32 @@ export function useAccounts() {
       }
 
       setAccounts((prev) =>
-        prev.map((a) =>
-          a.id === accountId ? { ...a, usageLoading: true } : a
-        )
+        prev.map((a) => a.id === accountId ? { ...a, usageLoading: true } : a)
       );
       const usage = await invokeBackend<UsageInfo>("get_usage", { accountId });
+      setNetworkOffline(false);
       setAccounts((prev) =>
         prev.map((a) =>
           a.id === accountId
-            ? {
-                ...a,
-                cached_usage: usage,
-                cached_usage_updated_at: new Date().toISOString(),
-                usage,
-                usageLoading: false,
-              }
+            ? { ...a, cached_usage: usage, cached_usage_updated_at: new Date().toISOString(), usage, usageLoading: false }
             : a
         )
       );
       return usage;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isNetworkError(message)) {
+        setNetworkOffline(true);
+        setAccounts((prev) =>
+          prev.map((a) => a.id === accountId ? { ...a, usageLoading: false } : a)
+        );
+        throw err;
+      }
       console.error("Failed to refresh single usage:", err);
       setAccounts((prev) =>
         prev.map((a) =>
           a.id === accountId
-            ? {
-                ...a,
-                usage:
-                  a.usage ??
-                  buildUsageError(
-                    accountId,
-                    err instanceof Error ? err.message : String(err),
-                    a.plan_type ?? null
-                  ),
-                usageLoading: false,
-              }
+            ? { ...a, usage: a.usage ?? buildUsageError(accountId, message, a.plan_type ?? null), usageLoading: false }
             : a
         )
       );
@@ -484,19 +517,35 @@ export function useAccounts() {
 
   useEffect(() => {
     loadAccounts().then((accountList) => refreshUsage(accountList));
-    
+
     // Auto-refresh usage every 60 seconds (same as official Codex CLI)
     const interval = setInterval(() => {
       refreshUsage().catch(() => {});
     }, 60000);
-    
+
     return () => clearInterval(interval);
   }, [loadAccounts, refreshUsage]);
+
+  // When the browser/OS signals the network is back, retry usage immediately.
+  useEffect(() => {
+    const handleOnline = () => {
+      setNetworkOffline(false);
+      refreshUsage().catch(() => {});
+    };
+    const handleOffline = () => setNetworkOffline(true);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [refreshUsage]);
 
   return {
     accounts,
     loading,
     error,
+    networkOffline,
     loadAccounts,
     refreshUsage,
     refreshSingleUsage,

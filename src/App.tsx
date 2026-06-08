@@ -36,6 +36,7 @@ import {
   Trash2,
   Upload,
   UserRound,
+  WifiOff,
   X,
   Zap,
 } from "lucide-react";
@@ -923,6 +924,7 @@ function App() {
     accounts,
     loading,
     error,
+    networkOffline,
     loadAccounts,
     refreshUsage,
     refreshSingleUsage,
@@ -1542,6 +1544,20 @@ function App() {
               </button>
             </div>
           </div>
+
+          {networkOffline && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "7px 14px",
+              background: "var(--warn, #b45309)22",
+              borderBottom: "1px solid var(--warn, #b45309)55",
+              color: "var(--warn, #ca8a04)",
+              fontFamily: "var(--mono)", fontSize: 12,
+            }}>
+              <WifiOff size={14} style={{ flexShrink: 0 }} />
+              <span>{resolvedLanguage === "ru" ? "Ожидание подключения к сети…" : "Waiting for network connection…"}</span>
+            </div>
+          )}
 
           <div className="acc-list">
             {loading && accounts.length === 0 ? (
