@@ -129,16 +129,17 @@ export function useAccounts() {
       options?: { refreshMetadata?: boolean }
     ) => {
       try {
-        let list = (accountList ?? accountsRef.current).filter(
-          (account) => account.provider !== "claude"
-        );
+        let list: AccountInfo[] | AccountWithUsage[] = [
+          ...(accountList ?? accountsRef.current),
+        ];
         if (list.length === 0) {
           return;
         }
 
         if (options?.refreshMetadata) {
+          // Metadata refresh is a ChatGPT-only operation; skip Claude accounts.
           await runWithConcurrency(
-            list,
+            list.filter((account) => account.provider !== "claude"),
             async (account) => {
               await invokeBackend<AccountInfo>("refresh_account_metadata", {
                 accountId: account.id,
@@ -147,7 +148,7 @@ export function useAccounts() {
             maxConcurrentUsageRequests
           );
 
-          list = (await loadAccounts(true)).filter((account) => account.provider !== "claude");
+          list = await loadAccounts(true);
         }
 
         const accountIds = list.map((account) => account.id);

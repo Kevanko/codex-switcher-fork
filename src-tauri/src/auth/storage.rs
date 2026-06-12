@@ -385,6 +385,42 @@ pub fn update_account_chatgpt_tokens(
     Ok(updated)
 }
 
+/// Update Claude OAuth tokens for an account and return the updated account.
+pub fn update_account_claude_tokens(
+    account_id: &str,
+    access_token: String,
+    refresh_token: String,
+    expires_at: i64,
+) -> Result<StoredAccount> {
+    let mut store = load_accounts()?;
+
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == account_id)
+        .context("Account not found")?;
+
+    match &mut account.auth_data {
+        AuthData::ClaudeOAuth {
+            access_token: stored_access,
+            refresh_token: stored_refresh,
+            expires_at: stored_expires,
+            ..
+        } => {
+            *stored_access = access_token;
+            *stored_refresh = refresh_token;
+            *stored_expires = expires_at;
+        }
+        AuthData::ApiKey { .. } | AuthData::ChatGPT { .. } => {
+            anyhow::bail!("Cannot update Claude OAuth tokens for this account type");
+        }
+    }
+
+    let updated = account.clone();
+    save_accounts(&store)?;
+    Ok(updated)
+}
+
 /// Persist the last successful usage snapshot for an account.
 pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result<StoredAccount> {
     let mut store = load_accounts()?;

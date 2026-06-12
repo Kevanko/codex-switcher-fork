@@ -11,7 +11,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
+use crate::auth::{
+    ensure_chatgpt_tokens_fresh, ensure_claude_tokens_fresh, load_accounts,
+    refresh_chatgpt_tokens, refresh_claude_tokens,
+};
 use crate::types::{
     AuthData, CreditStatusDetails, RateLimitDetails, RateLimitStatusPayload, RateLimitWindow,
     StoredAccount, UsageInfo,
@@ -23,6 +26,11 @@ const CHATGPT_ACCOUNTS_CHECK_API: &str =
 const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_API: &str = "https://api.openai.com/v1";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
+
+const CLAUDE_OAUTH_USAGE_API: &str = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
+const CLAUDE_PRIMARY_WINDOW_MINUTES: i64 = 5 * 60;
+const CLAUDE_SECONDARY_WINDOW_MINUTES: i64 = 7 * 24 * 60;
 
 #[derive(Debug, Clone)]
 pub struct ChatGptAccountMetadata {
@@ -79,10 +87,7 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
-        AuthData::ClaudeOAuth { .. } => Ok(UsageInfo::error(
-            account.id.clone(),
-            "Claude usage is not supported in this version".to_string(),
-        )),
+        AuthData::ClaudeOAuth { .. } => get_usage_with_claude_auth(account).await,
     }
 }
 
@@ -201,6 +206,161 @@ async fn parse_usage_response(
     );
 
     Ok(usage)
+}
+
+/// One rate-limit window from https://api.anthropic.com/api/oauth/usage.
+/// `resets_at` is an ISO 8601 string on this endpoint, but other Claude Code
+/// surfaces emit epoch seconds — accept both.
+#[derive(Debug, Deserialize)]
+struct ClaudeUsageWindow {
+    utilization: f64,
+    #[serde(default)]
+    resets_at: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeUsageResponse {
+    #[serde(default)]
+    five_hour: Option<ClaudeUsageWindow>,
+    #[serde(default)]
+    seven_day: Option<ClaudeUsageWindow>,
+}
+
+fn extract_claude_access_token(account: &StoredAccount) -> Result<String> {
+    match &account.auth_data {
+        AuthData::ClaudeOAuth { access_token, .. } => Ok(access_token.clone()),
+        _ => anyhow::bail!("Account is not using Claude OAuth"),
+    }
+}
+
+async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo> {
+    let fresh_account = match ensure_claude_tokens_fresh(account).await {
+        Ok(acc) => acc,
+        Err(err) => {
+            return Ok(UsageInfo::error(
+                account.id.clone(),
+                format!("Claude token refresh failed: {err}"),
+            ))
+        }
+    };
+
+    let access_token = extract_claude_access_token(&fresh_account)?;
+    let response = send_claude_usage_request(&access_token).await?;
+
+    let status = response.status();
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        println!(
+            "[Usage] Claude token rejected for account {}, retrying once",
+            fresh_account.name
+        );
+        // The active account's credential is owned by Claude Code — never rotate
+        // it ourselves; re-sync whatever the live file has. Inactive accounts are
+        // safe to refresh directly.
+        let store = load_accounts()?;
+        let is_active =
+            store.active_claude_account_id.as_deref() == Some(fresh_account.id.as_str());
+        let retried_account = if is_active {
+            let _ = crate::auth::storage::sync_claude_tokens_from_file(&fresh_account.id);
+            load_accounts()?
+                .accounts
+                .into_iter()
+                .find(|a| a.id == fresh_account.id)
+        } else {
+            refresh_claude_tokens(&fresh_account).await.ok()
+        };
+
+        if let Some(retried) = retried_account {
+            let retry_token = extract_claude_access_token(&retried)?;
+            if retry_token != access_token {
+                let retry_response = send_claude_usage_request(&retry_token).await?;
+                return parse_claude_usage_response(&retried, retry_response).await;
+            }
+        }
+
+        return Ok(UsageInfo::error(
+            fresh_account.id.clone(),
+            "Claude session token rejected — open Claude Code to refresh the login".to_string(),
+        ));
+    }
+
+    parse_claude_usage_response(&fresh_account, response).await
+}
+
+async fn send_claude_usage_request(access_token: &str) -> Result<reqwest::Response> {
+    let client = reqwest::Client::new();
+    println!("[Usage] Requesting: {CLAUDE_OAUTH_USAGE_API}");
+
+    client
+        .get(CLAUDE_OAUTH_USAGE_API)
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {access_token}"))
+                .context("Invalid Claude access token")?,
+        )
+        .header("anthropic-beta", CLAUDE_OAUTH_BETA)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .context("Failed to send Claude usage request")
+}
+
+async fn parse_claude_usage_response(
+    account: &StoredAccount,
+    response: reqwest::Response,
+) -> Result<UsageInfo> {
+    let status = response.status();
+    println!("[Usage] Claude response status: {status}");
+
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        println!("[Usage] Claude error response: {body}");
+        return Ok(UsageInfo::error(
+            account.id.clone(),
+            format!("Claude usage API error: {status}"),
+        ));
+    }
+
+    let body_text = response
+        .text()
+        .await
+        .context("Failed to read Claude usage response body")?;
+    let payload: ClaudeUsageResponse =
+        serde_json::from_str(&body_text).context("Failed to parse Claude usage response")?;
+
+    let primary = payload.five_hour.as_ref();
+    let secondary = payload.seven_day.as_ref();
+
+    let usage = UsageInfo {
+        account_id: account.id.clone(),
+        plan_type: account.plan_type.clone(),
+        primary_used_percent: primary.map(|w| w.utilization.clamp(0.0, 100.0)),
+        primary_window_minutes: primary.map(|_| CLAUDE_PRIMARY_WINDOW_MINUTES),
+        primary_resets_at: primary.and_then(claude_window_reset_at),
+        secondary_used_percent: secondary.map(|w| w.utilization.clamp(0.0, 100.0)),
+        secondary_window_minutes: secondary.map(|_| CLAUDE_SECONDARY_WINDOW_MINUTES),
+        secondary_resets_at: secondary.and_then(claude_window_reset_at),
+        has_credits: None,
+        unlimited_credits: None,
+        credits_balance: None,
+        error: None,
+    };
+
+    println!(
+        "[Usage] {} (Claude) - 5h: {:?}%, 7d: {:?}%",
+        account.name, usage.primary_used_percent, usage.secondary_used_percent
+    );
+
+    Ok(usage)
+}
+
+fn claude_window_reset_at(window: &ClaudeUsageWindow) -> Option<i64> {
+    match window.resets_at.as_ref()? {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.timestamp()),
+        _ => None,
+    }
 }
 
 async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
