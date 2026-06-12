@@ -333,12 +333,25 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         return Ok(());
     }
 
+    // Before switching, save any token refreshes the Codex CLI did for the active account.
+    if let Some(active_codex_id) = store.active_account_id.as_deref() {
+        if active_codex_id != account_id {
+            let _ = crate::auth::storage::sync_codex_tokens_from_file(active_codex_id);
+        }
+    }
+
     let (running_pids, restart_target) = snapshot_restart_target().map_err(|e| e.to_string())?;
     if !running_pids.is_empty() {
         terminate_codex_processes(&running_pids).map_err(|e| e.to_string())?;
     }
 
-    // Write to ~/.codex/auth.json
+    // Reload store after potential token sync, then write to ~/.codex/auth.json.
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| format!("Account not found: {account_id}"))?;
     switch_to_account(account).map_err(|e| e.to_string())?;
 
     // Update the active account in our store

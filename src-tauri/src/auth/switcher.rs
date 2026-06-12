@@ -93,17 +93,25 @@ pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
                 changed = true;
             }
 
-            // Sync fresher tokens into storage.
+            // Sync ALL token fields — Claude rotates refresh_token on every use.
             if let Some(account) = store.accounts.iter_mut().find(|a| a.id == *id) {
                 if let AuthData::ClaudeOAuth {
                     access_token,
+                    refresh_token,
                     expires_at,
                     ..
                 } = &mut account.auth_data
                 {
-                    if file_creds.claude_ai_oauth.expires_at > *expires_at {
-                        *access_token = file_creds.claude_ai_oauth.access_token.clone();
-                        *expires_at = file_creds.claude_ai_oauth.expires_at;
+                    let file_rt = &file_creds.claude_ai_oauth.refresh_token;
+                    let file_at = &file_creds.claude_ai_oauth.access_token;
+                    let file_exp = file_creds.claude_ai_oauth.expires_at;
+                    if *access_token != *file_at
+                        || *refresh_token != *file_rt
+                        || *expires_at != file_exp
+                    {
+                        *access_token = file_at.clone();
+                        *refresh_token = file_rt.clone();
+                        *expires_at = file_exp;
                         changed = true;
                     }
                 }
@@ -115,7 +123,33 @@ pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
 
             Ok(ClaudeReconcileResult::MatchedAccount(id.clone()))
         }
-        None => Ok(ClaudeReconcileResult::UnknownCredentials),
+        None => {
+            // No account matched by refresh_token — Claude most likely rotated it.
+            // If there is a known active account, update its stored tokens so the
+            // next switch back uses the live (valid) credentials instead of stale ones.
+            if let Some(active_id) = store.active_claude_account_id.clone() {
+                if let Some(account) = store.accounts.iter_mut().find(|a| a.id == active_id) {
+                    if let AuthData::ClaudeOAuth {
+                        access_token,
+                        refresh_token,
+                        expires_at,
+                        ..
+                    } = &mut account.auth_data
+                    {
+                        let rt = &file_creds.claude_ai_oauth.refresh_token;
+                        let at = &file_creds.claude_ai_oauth.access_token;
+                        if !rt.trim().is_empty() && !at.trim().is_empty() {
+                            *access_token = at.clone();
+                            *refresh_token = rt.clone();
+                            *expires_at = file_creds.claude_ai_oauth.expires_at;
+                            save_accounts(&store)?;
+                            return Ok(ClaudeReconcileResult::MatchedAccount(active_id));
+                        }
+                    }
+                }
+            }
+            Ok(ClaudeReconcileResult::UnknownCredentials)
+        }
     }
 }
 
