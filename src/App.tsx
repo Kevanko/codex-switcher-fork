@@ -1103,15 +1103,32 @@ function App() {
     });
   }, [accounts]);
 
-  // On startup, check if .credentials.json has credentials not in our store.
-  const claudeCheckDoneRef = useRef(false);
+  // Watch .credentials.json for credentials that don't match any stored account.
+  // Checked on startup, on window focus and once a minute — an external re-login
+  // (e.g. after a server-side logout) can happen at any time, not just at launch.
+  const claudeFileStatusRef = useRef<"file_not_found" | "matched" | "unknown">("matched");
   useEffect(() => {
-    if (loading || claudeCheckDoneRef.current || !isTauriRuntime()) return;
-    claudeCheckDoneRef.current = true;
-    checkClaudeFileStatus().then((status) => {
-      if (status === "unknown") setClaudeUnknownToast(true);
-    });
-  }, [loading, checkClaudeFileStatus]);
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    const check = async () => {
+      const status = await checkClaudeFileStatus();
+      if (cancelled) return;
+      // Only notify on the transition into "unknown" so a dismissed toast stays dismissed.
+      if (status === "unknown" && claudeFileStatusRef.current !== "unknown") {
+        setClaudeUnknownToast(true);
+      }
+      claudeFileStatusRef.current = status;
+    };
+    void check();
+    const id = window.setInterval(() => { void check(); }, 60_000);
+    const onFocus = () => { void check(); };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [checkClaudeFileStatus]);
 
   useEffect(() => {
     if (!isTauriRuntime() || isMacOs || !currentWindow) return;

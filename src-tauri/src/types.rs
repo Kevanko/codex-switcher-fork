@@ -152,6 +152,85 @@ impl StoredAccount {
             cached_usage_updated_at: None,
         }
     }
+
+    /// Whether the live ~/.claude/.credentials.json plausibly belongs to this
+    /// stored Claude account when refresh tokens no longer match (rotation).
+    /// Verified by organization UUID when both sides have one; a missing stored
+    /// UUID is unverifiable-but-allowed (it gets filled on the next sync).
+    pub fn claude_org_matches(&self, file: &ClaudeCredentialsFile) -> bool {
+        match &self.auth_data {
+            AuthData::ClaudeOAuth {
+                organization_uuid, ..
+            } => match (organization_uuid, &file.organization_uuid) {
+                (Some(stored), Some(live)) => stored == live,
+                (Some(_), None) => false,
+                (None, _) => true,
+            },
+            _ => false,
+        }
+    }
+
+    /// Sync this Claude account's tokens and metadata from a live credentials
+    /// file. Returns true when anything changed. No-op for non-Claude accounts
+    /// and for files with empty tokens.
+    pub fn sync_claude_credentials(&mut self, file: &ClaudeCredentialsFile) -> bool {
+        let oauth = &file.claude_ai_oauth;
+        if oauth.access_token.trim().is_empty() || oauth.refresh_token.trim().is_empty() {
+            return false;
+        }
+
+        let mut changed = false;
+
+        if let AuthData::ClaudeOAuth {
+            access_token,
+            refresh_token,
+            expires_at,
+            scopes,
+            subscription_type,
+            rate_limit_tier,
+            organization_uuid,
+        } = &mut self.auth_data
+        {
+            if *access_token != oauth.access_token {
+                *access_token = oauth.access_token.clone();
+                changed = true;
+            }
+            if *refresh_token != oauth.refresh_token {
+                *refresh_token = oauth.refresh_token.clone();
+                changed = true;
+            }
+            if *expires_at != oauth.expires_at {
+                *expires_at = oauth.expires_at;
+                changed = true;
+            }
+            if *scopes != oauth.scopes {
+                *scopes = oauth.scopes.clone();
+                changed = true;
+            }
+            // Metadata: only overwrite known values, never erase them with None.
+            if oauth.subscription_type.is_some() && *subscription_type != oauth.subscription_type {
+                *subscription_type = oauth.subscription_type.clone();
+                changed = true;
+            }
+            if oauth.rate_limit_tier.is_some() && *rate_limit_tier != oauth.rate_limit_tier {
+                *rate_limit_tier = oauth.rate_limit_tier.clone();
+                changed = true;
+            }
+            if file.organization_uuid.is_some() && *organization_uuid != file.organization_uuid {
+                *organization_uuid = file.organization_uuid.clone();
+                changed = true;
+            }
+        } else {
+            return false;
+        }
+
+        if oauth.subscription_type.is_some() && self.plan_type != oauth.subscription_type {
+            self.plan_type = oauth.subscription_type.clone();
+            changed = true;
+        }
+
+        changed
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -93,27 +93,11 @@ pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
                 changed = true;
             }
 
-            // Sync ALL token fields — Claude rotates refresh_token on every use.
+            // Sync ALL token fields and metadata — Claude rotates refresh_token
+            // on every use and subscription/tier can change server-side.
             if let Some(account) = store.accounts.iter_mut().find(|a| a.id == *id) {
-                if let AuthData::ClaudeOAuth {
-                    access_token,
-                    refresh_token,
-                    expires_at,
-                    ..
-                } = &mut account.auth_data
-                {
-                    let file_rt = &file_creds.claude_ai_oauth.refresh_token;
-                    let file_at = &file_creds.claude_ai_oauth.access_token;
-                    let file_exp = file_creds.claude_ai_oauth.expires_at;
-                    if *access_token != *file_at
-                        || *refresh_token != *file_rt
-                        || *expires_at != file_exp
-                    {
-                        *access_token = file_at.clone();
-                        *refresh_token = file_rt.clone();
-                        *expires_at = file_exp;
-                        changed = true;
-                    }
+                if account.sync_claude_credentials(&file_creds) {
+                    changed = true;
                 }
             }
 
@@ -125,27 +109,22 @@ pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
         }
         None => {
             // No account matched by refresh_token — Claude most likely rotated it.
-            // If there is a known active account, update its stored tokens so the
-            // next switch back uses the live (valid) credentials instead of stale ones.
+            // Adopt the live credentials into the active account so the next switch
+            // back uses valid tokens, but only when the organization UUID does not
+            // contradict (guards against an external login into a different account
+            // silently overwriting this one).
             if let Some(active_id) = store.active_claude_account_id.clone() {
-                if let Some(account) = store.accounts.iter_mut().find(|a| a.id == active_id) {
-                    if let AuthData::ClaudeOAuth {
-                        access_token,
-                        refresh_token,
-                        expires_at,
-                        ..
-                    } = &mut account.auth_data
-                    {
-                        let rt = &file_creds.claude_ai_oauth.refresh_token;
-                        let at = &file_creds.claude_ai_oauth.access_token;
-                        if !rt.trim().is_empty() && !at.trim().is_empty() {
-                            *access_token = at.clone();
-                            *refresh_token = rt.clone();
-                            *expires_at = file_creds.claude_ai_oauth.expires_at;
-                            save_accounts(&store)?;
-                            return Ok(ClaudeReconcileResult::MatchedAccount(active_id));
-                        }
+                let adopted = store
+                    .accounts
+                    .iter_mut()
+                    .find(|a| a.id == active_id)
+                    .filter(|a| a.claude_org_matches(&file_creds))
+                    .map(|account| account.sync_claude_credentials(&file_creds));
+                if let Some(changed) = adopted {
+                    if changed {
+                        save_accounts(&store)?;
                     }
+                    return Ok(ClaudeReconcileResult::MatchedAccount(active_id));
                 }
             }
             Ok(ClaudeReconcileResult::UnknownCredentials)

@@ -109,6 +109,13 @@ pub async fn check_claude_file_status() -> Result<String, String> {
 pub async fn clear_claude_active_session() -> Result<(), String> {
     use crate::auth::switcher::get_claude_credentials_file;
 
+    // Capture any rotated tokens for the active account before deleting the
+    // file — otherwise the stored copy keeps a stale (revoked) refresh_token.
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    if let Some(active_id) = store.active_claude_account_id.as_deref() {
+        let _ = crate::auth::storage::sync_claude_tokens_from_file(active_id);
+    }
+
     let path = get_claude_credentials_file().map_err(|e| e.to_string())?;
     if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
