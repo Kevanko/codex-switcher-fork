@@ -32,6 +32,66 @@ const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const CLAUDE_PRIMARY_WINDOW_MINUTES: i64 = 5 * 60;
 const CLAUDE_SECONDARY_WINDOW_MINUTES: i64 = 7 * 24 * 60;
 
+/// Default cooldown after a 429 when the server does not send Retry-After.
+const RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS: i64 = 300;
+const RATE_LIMIT_MAX_COOLDOWN_SECONDS: i64 = 3600;
+
+/// Per-account cooldown gate: after a 429 no further requests are sent for
+/// that account until the deadline passes; callers get a rate_limited
+/// UsageInfo instantly instead.
+static RATE_LIMIT_GATE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, i64>>> =
+    std::sync::OnceLock::new();
+
+fn rate_limit_gate() -> &'static std::sync::Mutex<HashMap<String, i64>> {
+    RATE_LIMIT_GATE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Seconds remaining in this account's cooldown, if any.
+fn rate_limit_remaining(account_id: &str) -> Option<i64> {
+    let map = rate_limit_gate().lock().ok()?;
+    let until = *map.get(account_id)?;
+    let now = Utc::now().timestamp();
+    if until > now {
+        Some(until - now)
+    } else {
+        None
+    }
+}
+
+fn start_rate_limit_cooldown(account_id: &str, seconds: i64) {
+    let seconds = seconds.clamp(
+        RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS,
+        RATE_LIMIT_MAX_COOLDOWN_SECONDS,
+    );
+    if let Ok(mut map) = rate_limit_gate().lock() {
+        map.insert(account_id.to_string(), Utc::now().timestamp() + seconds);
+    }
+    println!("[Usage] Account {account_id} rate limited, cooling down for {seconds}s");
+}
+
+fn retry_after_seconds(response: &reqwest::Response) -> i64 {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS)
+}
+
+/// If the response is a 429, start the cooldown and return the rate_limited
+/// UsageInfo to hand back to the UI.
+fn handle_rate_limited_response(
+    account_id: &str,
+    response: &reqwest::Response,
+) -> Option<UsageInfo> {
+    if response.status() != StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    let seconds = retry_after_seconds(response);
+    start_rate_limit_cooldown(account_id, seconds);
+    Some(UsageInfo::rate_limited(account_id.to_string(), seconds))
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatGptAccountMetadata {
     pub plan_type: Option<String>,
@@ -66,6 +126,15 @@ struct AccountsCheckEntitlement {
 
 /// Get usage information for an account
 pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
+    // Honor an active 429 cooldown without touching the network.
+    if let Some(remaining) = rate_limit_remaining(&account.id) {
+        println!(
+            "[Usage] Account {} still cooling down ({remaining}s left), skipping fetch",
+            account.name
+        );
+        return Ok(UsageInfo::rate_limited(account.id.clone(), remaining));
+    }
+
     println!("[Usage] Fetching usage for account: {}", account.name);
 
     match &account.auth_data {
@@ -84,6 +153,7 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
                 unlimited_credits: None,
                 credits_balance: None,
                 error: Some("Usage info not available for API key accounts".to_string()),
+                rate_limited: None,
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
@@ -149,6 +219,9 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
 
     let response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    if let Some(limited) = handle_rate_limited_response(&fresh_account.id, &response) {
+        return Ok(limited);
+    }
     if response.status() == StatusCode::UNAUTHORIZED {
         println!(
             "[Usage] Unauthorized for account {}, refreshing token and retrying once",
@@ -157,6 +230,10 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
         let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
         let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
         let retry_response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
+        if let Some(limited) = handle_rate_limited_response(&refreshed_account.id, &retry_response)
+        {
+            return Ok(limited);
+        }
         return parse_usage_response(
             &refreshed_account.id,
             &refreshed_account.name,
@@ -237,15 +314,27 @@ async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo
     let fresh_account = match ensure_claude_tokens_fresh(account).await {
         Ok(acc) => acc,
         Err(err) => {
+            let message = err.to_string();
+            // The token endpoint rate-limits too; treat it the same way.
+            if message.contains("429") {
+                start_rate_limit_cooldown(&account.id, RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS);
+                return Ok(UsageInfo::rate_limited(
+                    account.id.clone(),
+                    RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS,
+                ));
+            }
             return Ok(UsageInfo::error(
                 account.id.clone(),
-                format!("Claude token refresh failed: {err}"),
-            ))
+                format!("Claude token refresh failed: {message}"),
+            ));
         }
     };
 
     let access_token = extract_claude_access_token(&fresh_account)?;
     let response = send_claude_usage_request(&access_token).await?;
+    if let Some(limited) = handle_rate_limited_response(&fresh_account.id, &response) {
+        return Ok(limited);
+    }
 
     let status = response.status();
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
@@ -273,6 +362,9 @@ async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo
             let retry_token = extract_claude_access_token(&retried)?;
             if retry_token != access_token {
                 let retry_response = send_claude_usage_request(&retry_token).await?;
+                if let Some(limited) = handle_rate_limited_response(&retried.id, &retry_response) {
+                    return Ok(limited);
+                }
                 return parse_claude_usage_response(&retried, retry_response).await;
             }
         }
@@ -343,6 +435,7 @@ async fn parse_claude_usage_response(
         unlimited_credits: None,
         credits_balance: None,
         error: None,
+        rate_limited: None,
     };
 
     println!(
@@ -642,6 +735,7 @@ fn convert_payload_to_usage_info(account_id: &str, payload: RateLimitStatusPaylo
         unlimited_credits: credits.as_ref().map(|c| c.unlimited),
         credits_balance: credits.and_then(|c| c.balance),
         error: None,
+        rate_limited: None,
     }
 }
 

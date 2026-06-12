@@ -245,8 +245,12 @@ function formatLastUsed(lastUsedAt: string | null): string {
   return `${Math.floor(diff / 86400)}дн`;
 }
 
+function isRateLimitedUsage(account: AccountWithUsage): boolean {
+  return Boolean(account.usage?.rate_limited) || Boolean(account.usageWarning);
+}
+
 function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" | "danger" | "muted" {
-  if (account.usage?.error) return "danger";
+  if (account.usage?.error) return isRateLimitedUsage(account) ? "warning" : "danger";
   const r = getRemainingPercent(account);
   if (r === null) return "muted";
   if (r <= 0) return "danger";
@@ -255,7 +259,7 @@ function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" 
 }
 
 function getRowStatus(account: AccountWithUsage): StatusFilter {
-  if (account.usage?.error) return "error";
+  if (account.usage?.error && !isRateLimitedUsage(account)) return "error";
   const r = getRemainingPercent(account);
   if (r !== null && r <= 0) return "limit";
   return "ready";
@@ -359,9 +363,15 @@ function AccountListRow({
       </span>
       <span className="acc-right">
         {account.usage?.error ? (
-          <span className="acc-pct" style={{ color: "var(--bad)", fontSize: 11 }}>
-            СБОЙ
-          </span>
+          account.usage?.rate_limited ? (
+            <span className="acc-pct" style={{ color: "var(--warn)", fontSize: 10 }}>
+              НЕ ОБНОВЛЕНО
+            </span>
+          ) : (
+            <span className="acc-pct" style={{ color: "var(--bad)", fontSize: 11 }}>
+              СБОЙ
+            </span>
+          )
         ) : (
           <>
             <span className="acc-pct" style={{ color: remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
@@ -535,11 +545,23 @@ function AccountDetailPanel({
         </div>
 
         {/* Banners */}
-        {account.usage?.error && !needsReauth && (
+        {account.usage?.error && !isRateLimitedUsage(account) && !needsReauth && (
           <div className="banner banner--bad">
             <AlertTriangle size={17} />
             <div className="banner-txt">
               {t.states.failedAccounts} · <strong style={{ fontFamily: "var(--mono)" }}>{account.usage.error}</strong>
+            </div>
+          </div>
+        )}
+        {isRateLimitedUsage(account) && !needsReauth && (
+          <div className="banner banner--warn">
+            <Clock size={17} />
+            <div className="banner-txt">
+              {locale_label(
+                "Не удалось обновить — слишком много запросов (429). Показаны последние данные, повторим автоматически.",
+                "Could not refresh — too many requests (429). Showing last known data, will retry automatically.",
+                locale
+              )}
             </div>
           </div>
         )}
@@ -1389,14 +1411,15 @@ function App() {
     const prov = accounts.filter((a) => a.provider === activeProvider);
     return {
       total: prov.length,
-      errorCount: prov.filter((a) => Boolean(a.usage?.error)).length,
+      // Transient rate limits (429) are not real failures — don't paint them red.
+      errorCount: prov.filter((a) => Boolean(a.usage?.error) && !isRateLimitedUsage(a)).length,
       nearLimitCount: prov.filter((a) => {
         const r = getRemainingPercent(a);
         return r !== null && r <= NEAR_LIMIT_REMAINING_THRESHOLD;
       }).length,
       availableCount: prov.filter((a) => {
         if (a.provider === "claude") return true;
-        if (a.usage?.error) return false;
+        if (a.usage?.error && !isRateLimitedUsage(a)) return false;
         const r = getRemainingPercent(a);
         return r === null || r > 0;
       }).length,

@@ -35,6 +35,8 @@ export interface UsageInfo {
   unlimited_credits: boolean | null;
   credits_balance: string | null;
   error: string | null;
+  /** True when the failure is a transient rate limit (429) — show yellow, keep old data. */
+  rate_limited?: boolean | null;
 }
 
 export interface OAuthLoginInfo {
@@ -45,6 +47,8 @@ export interface OAuthLoginInfo {
 export interface AccountWithUsage extends AccountInfo {
   usage?: UsageInfo;
   usageLoading?: boolean;
+  /** Last refresh attempt failed transiently (rate limit); shown as a yellow hint. */
+  usageWarning?: boolean;
 }
 
 export interface CodexProcessInfo {

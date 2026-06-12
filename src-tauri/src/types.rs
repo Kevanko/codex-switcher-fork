@@ -527,6 +527,10 @@ pub struct UsageInfo {
     pub credits_balance: Option<String>,
     /// Error message if usage fetch failed
     pub error: Option<String>,
+    /// True when the failure is a transient rate limit (HTTP 429) — the UI
+    /// should keep showing the last known data with a warning, not an error.
+    #[serde(default)]
+    pub rate_limited: Option<bool>,
 }
 
 impl UsageInfo {
@@ -544,7 +548,17 @@ impl UsageInfo {
             unlimited_credits: None,
             credits_balance: None,
             error: Some(error),
+            rate_limited: None,
         }
+    }
+
+    pub fn rate_limited(account_id: String, retry_in_seconds: i64) -> Self {
+        let mut info = Self::error(
+            account_id,
+            format!("Rate limited (429), retrying in ~{retry_in_seconds}s"),
+        );
+        info.rate_limited = Some(true);
+        info
     }
 }
 
