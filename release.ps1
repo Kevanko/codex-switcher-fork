@@ -34,7 +34,9 @@ $confContent  = [System.IO.File]::ReadAllText($CONF).TrimStart([char]0xFEFF)
 $cargoContent = [System.IO.File]::ReadAllText($CARGO).TrimStart([char]0xFEFF)
 
 $confContent  = $confContent  -replace "`"version`": `"$currentVersion`"", "`"version`": `"$Version`""
-$cargoContent = $cargoContent -replace "^version = `"$currentVersion`"", "version = `"$Version`""
+# Cargo.toml may lag behind tauri.conf.json, so replace whatever version it
+# currently has. (?m) is required -- the version line is not the first line.
+$cargoContent = $cargoContent -replace "(?m)^version = `"\d+\.\d+\.\d+`"", "version = `"$Version`""
 
 Write-Utf8NoBom $CONF  $confContent
 Write-Utf8NoBom $CARGO $cargoContent
