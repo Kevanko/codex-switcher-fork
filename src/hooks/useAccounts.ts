@@ -16,6 +16,13 @@ function hydrateAccountUsage(account: AccountInfo): AccountWithUsage {
   };
 }
 
+// Pacing for the automatic 60s poll: the active accounts refresh every tick,
+// inactive ones much less often — hitting every account every minute trips
+// provider rate limits (429) when there are many accounts.
+const ACTIVE_USAGE_REFRESH_MS = 55_000;
+const INACTIVE_USAGE_REFRESH_MS = 240_000;
+const RATE_LIMIT_FRONTEND_BACKOFF_MS = 300_000;
+
 function isNetworkError(msg: string): boolean {
   if (!navigator.onLine) return true;
   const m = msg.toLowerCase();
@@ -44,7 +51,11 @@ export function useAccounts() {
   const [error, setError] = useState<string | null>(null);
   const [networkOffline, setNetworkOffline] = useState(false);
   const accountsRef = useRef<AccountWithUsage[]>([]);
-  const maxConcurrentUsageRequests = 10;
+  // Low concurrency spreads requests out instead of firing them as one burst.
+  const maxConcurrentUsageRequests = 3;
+  // Per-account pacing state for the automatic poll.
+  const usageAttemptAtRef = useRef<Record<string, number>>({});
+  const usageBlockedUntilRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     accountsRef.current = accounts;
@@ -126,12 +137,26 @@ export function useAccounts() {
   const refreshUsage = useCallback(
     async (
       accountList?: AccountInfo[] | AccountWithUsage[],
-      options?: { refreshMetadata?: boolean }
+      options?: { refreshMetadata?: boolean; auto?: boolean }
     ) => {
       try {
         let list: AccountInfo[] | AccountWithUsage[] = [
           ...(accountList ?? accountsRef.current),
         ];
+
+        if (options?.auto) {
+          // Automatic poll: skip accounts refreshed recently or cooling down after a 429.
+          const now = Date.now();
+          list = list.filter((account) => {
+            if (now < (usageBlockedUntilRef.current[account.id] ?? 0)) return false;
+            const lastAttempt = usageAttemptAtRef.current[account.id] ?? 0;
+            const minInterval = account.is_active
+              ? ACTIVE_USAGE_REFRESH_MS
+              : INACTIVE_USAGE_REFRESH_MS;
+            return now - lastAttempt >= minInterval;
+          });
+        }
+
         if (list.length === 0) {
           return;
         }
@@ -154,6 +179,11 @@ export function useAccounts() {
         const accountIds = list.map((account) => account.id);
         const accountIdSet = new Set(accountIds);
         const usageResults = new Map<string, UsageInfo>();
+
+        const attemptStamp = Date.now();
+        accountIds.forEach((id) => {
+          usageAttemptAtRef.current[id] = attemptStamp;
+        });
 
         setAccounts((prev) =>
           prev.map((account) =>
@@ -204,15 +234,26 @@ export function useAccounts() {
         // Some succeeded → we're back online (or were never offline).
         if (networkErrorCount === 0) setNetworkOffline(false);
 
+        usageResults.forEach((usage, id) => {
+          if (usage.rate_limited) {
+            usageBlockedUntilRef.current[id] = Date.now() + RATE_LIMIT_FRONTEND_BACKOFF_MS;
+          }
+        });
+
         setAccounts((prev) =>
           prev.map((account) => {
             const usage = usageResults.get(account.id);
             if (!usage) return account;
+            if (usage.rate_limited && account.usage && !account.usage.error) {
+              // Transient 429: keep the last good data, just flag the failed refresh.
+              return { ...account, usageWarning: true, usageLoading: false };
+            }
             return {
               ...account,
               cached_usage: usage,
               cached_usage_updated_at: new Date().toISOString(),
               usage,
+              usageWarning: Boolean(usage.rate_limited),
               usageLoading: false,
             };
           })
@@ -238,14 +279,28 @@ export function useAccounts() {
       setAccounts((prev) =>
         prev.map((a) => a.id === accountId ? { ...a, usageLoading: true } : a)
       );
+      usageAttemptAtRef.current[accountId] = Date.now();
       const usage = await invokeBackend<UsageInfo>("get_usage", { accountId });
       setNetworkOffline(false);
+      if (usage.rate_limited) {
+        usageBlockedUntilRef.current[accountId] = Date.now() + RATE_LIMIT_FRONTEND_BACKOFF_MS;
+      }
       setAccounts((prev) =>
-        prev.map((a) =>
-          a.id === accountId
-            ? { ...a, cached_usage: usage, cached_usage_updated_at: new Date().toISOString(), usage, usageLoading: false }
-            : a
-        )
+        prev.map((a) => {
+          if (a.id !== accountId) return a;
+          if (usage.rate_limited && a.usage && !a.usage.error) {
+            // Transient 429: keep the last good data, just flag the failed refresh.
+            return { ...a, usageWarning: true, usageLoading: false };
+          }
+          return {
+            ...a,
+            cached_usage: usage,
+            cached_usage_updated_at: new Date().toISOString(),
+            usage,
+            usageWarning: Boolean(usage.rate_limited),
+            usageLoading: false,
+          };
+        })
       );
       return usage;
     } catch (err) {
@@ -519,9 +574,10 @@ export function useAccounts() {
   useEffect(() => {
     loadAccounts().then((accountList) => refreshUsage(accountList));
 
-    // Auto-refresh usage every 60 seconds (same as official Codex CLI)
+    // Auto-refresh tick every 60 seconds; per-account pacing inside refreshUsage
+    // decides who actually gets fetched (active: every tick, inactive: ~4 min).
     const interval = setInterval(() => {
-      refreshUsage().catch(() => {});
+      refreshUsage(undefined, { auto: true }).catch(() => {});
     }, 60000);
 
     return () => clearInterval(interval);
