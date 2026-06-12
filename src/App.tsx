@@ -358,9 +358,9 @@ function AccountListRow({
         )}
       </span>
       <span className="acc-right">
-        {account.usage?.error || account.provider === "claude" ? (
-          <span className="acc-pct" style={{ color: account.usage?.error ? "var(--bad)" : "var(--text-3)", fontSize: 11 }}>
-            {account.usage?.error ? "СБОЙ" : planVisual.shortLabel}
+        {account.usage?.error ? (
+          <span className="acc-pct" style={{ color: "var(--bad)", fontSize: 11 }}>
+            СБОЙ
           </span>
         ) : (
           <>
@@ -564,65 +564,44 @@ function AccountDetailPanel({
         {/* Body */}
         <div className="dbody">
           <div className="dbody-col">
-            {isCodex ? (
-              <>
-                <div className="sec-label">
-                  <span className="sec-label-txt"><span className="sec-label-mark">//</span>{t.account.reset5h.includes("5") ? "Лимиты использования" : "Usage limits"}</span>
-                  <span className="sec-label-rule" />
-                </div>
-                <div className="limit-block">
-                  {resetItems.length > 0 ? resetItems.map((item) => (
-                    <div key={item.key} className="limit-item">
-                      <div className="limit-top">
-                        <span className="limit-label">{item.label.toUpperCase()}</span>
-                        <span className="limit-pct" style={{ color: item.tone === "danger" || item.tone === "warning" ? "var(--warn)" : "var(--text)" }}>
-                          {item.remaining !== null ? `${Math.round(item.remaining)}%` : "—"}
-                        </span>
-                      </div>
-                      <span className="meter" style={{ height: 6 }}>
-                        <span
-                          className={"meter-fill meter-fill--" + (item.tone === "danger" ? "red" : item.tone === "warning" ? "amber" : "accent")}
-                          style={{ width: (item.remaining !== null ? Math.min(100, Math.max(2, 100 - item.remaining)) : 2) + "%" }}
-                        />
-                      </span>
-                      {item.resetsAt && (
-                        <div className="limit-eta">
-                          <Clock size={12} /> сброс через {formatResetCountdown(item.resetsAt, locale)}
-                        </div>
-                      )}
-                    </div>
-                  )) : (
-                    <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
-                      {t.account.waitingUsage}
+            <div className="sec-label">
+              <span className="sec-label-txt"><span className="sec-label-mark">//</span>{locale_label("Лимиты использования", "Usage limits", locale)}</span>
+              <span className="sec-label-rule" />
+            </div>
+            <div className="limit-block">
+              {resetItems.length > 0 ? resetItems.map((item) => (
+                <div key={item.key} className="limit-item">
+                  <div className="limit-top">
+                    <span className="limit-label">{item.label.toUpperCase()}</span>
+                    <span className="limit-pct" style={{ color: item.tone === "danger" || item.tone === "warning" ? "var(--warn)" : "var(--text)" }}>
+                      {item.remaining !== null ? `${Math.round(item.remaining)}%` : "—"}
+                    </span>
+                  </div>
+                  <span className="meter" style={{ height: 6 }}>
+                    <span
+                      className={"meter-fill meter-fill--" + (item.tone === "danger" ? "red" : item.tone === "warning" ? "amber" : "accent")}
+                      style={{ width: (item.remaining !== null ? Math.min(100, Math.max(2, 100 - item.remaining)) : 2) + "%" }}
+                    />
+                  </span>
+                  {item.resetsAt && (
+                    <div className="limit-eta">
+                      <Clock size={12} /> {locale_label("сброс через", "resets in", locale)} {formatResetCountdown(item.resetsAt, locale)}
                     </div>
                   )}
                 </div>
-              </>
-            ) : (
-              <>
-                <div className="sec-label">
-                  <span className="sec-label-txt"><span className="sec-label-mark">//</span>Подписка</span>
-                  <span className="sec-label-rule" />
+              )) : (
+                <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                  {t.account.waitingUsage}
                 </div>
-                <div className="meta">
-                  <div className="meta-row">
-                    <span className="meta-key">Подписка</span>
-                    <span className="meta-val">{account.claude_subscription_type || account.plan_type || "—"}</span>
-                  </div>
-                  <div className="meta-row">
-                    <span className="meta-key">Уровень лимита</span>
-                    <span className="meta-val">{limitLevel}</span>
-                  </div>
-                  <div className="meta-row">
-                    <span className="meta-key">Организация</span>
-                    <span className="meta-val">{orgValue}</span>
-                  </div>
-                  <div className="meta-row">
-                    <span className="meta-key">Статус токена</span>
-                    <span className="meta-val">OAuth / автообновление</span>
-                  </div>
+              )}
+            </div>
+            {!isCodex && (
+              <div className="meta">
+                <div className="meta-row">
+                  <span className="meta-key">{locale_label("Подписка", "Subscription", locale)}</span>
+                  <span className="meta-val">{account.claude_subscription_type || account.plan_type || "—"}</span>
                 </div>
-              </>
+              </div>
             )}
           </div>
 
@@ -657,21 +636,21 @@ function AccountDetailPanel({
         {/* Footer */}
         <div className="dfoot">
           {isCodex && (
-            <>
-              <button type="button" className="btn btn--ghost btn--md" onClick={onWarmup} disabled={warmingUp}>
-                <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> Прогреть
-              </button>
-              <button type="button" className="btn btn--ghost btn--md" onClick={onRefresh}>
-                <RefreshCcw size={14} /> Обновить
-              </button>
-              <button
-                type="button"
-                className={"btn btn--ghost btn--md" + (autoWarmupEnabled ? " is-active" : "")}
-                onClick={onToggleAutoWarmup}
-              >
-                <Activity size={14} /> {autoWarmupLabel}
-              </button>
-            </>
+            <button type="button" className="btn btn--ghost btn--md" onClick={onWarmup} disabled={warmingUp}>
+              <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> Прогреть
+            </button>
+          )}
+          <button type="button" className="btn btn--ghost btn--md" onClick={onRefresh}>
+            <RefreshCcw size={14} /> Обновить
+          </button>
+          {isCodex && (
+            <button
+              type="button"
+              className={"btn btn--ghost btn--md" + (autoWarmupEnabled ? " is-active" : "")}
+              onClick={onToggleAutoWarmup}
+            >
+              <Activity size={14} /> {autoWarmupLabel}
+            </button>
           )}
           <span className="dfoot-spacer" />
           <button type="button" className="icon-btn icon-btn--md" title={t.account.delete || "Удалить"} onClick={onDelete}>
@@ -1247,7 +1226,7 @@ function App() {
       const all = autoWarmupAllEnabledRef.current;
       if (!all && ids.size === 0) return;
       accountsDataRef.current
-        .filter((a) => (all || ids.has(a.id)) && isAutoWarmupDue(a.id, a.usage))
+        .filter((a) => a.provider !== "claude" && (all || ids.has(a.id)) && isAutoWarmupDue(a.id, a.usage))
         .forEach((a) => void runAutoWarmupForAccount(a));
     }, AUTO_WARMUP_CHECK_INTERVAL_MS);
     return () => window.clearInterval(id);
