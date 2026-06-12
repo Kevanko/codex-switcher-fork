@@ -428,37 +428,14 @@ pub fn sync_claude_tokens_from_file(account_id: &str) -> Result<()> {
         Err(_) => return Ok(()),
     };
 
-    // Sanity: file must have non-empty tokens before we trust it.
-    if file_creds.claude_ai_oauth.refresh_token.trim().is_empty()
-        || file_creds.claude_ai_oauth.access_token.trim().is_empty()
-    {
-        return Ok(());
-    }
-
     let mut store = load_accounts()?;
-    let account = store.accounts.iter_mut().find(|a| a.id == account_id);
 
-    if let Some(account) = account {
-        if let AuthData::ClaudeOAuth {
-            access_token,
-            refresh_token,
-            expires_at,
-            ..
-        } = &mut account.auth_data
-        {
-            // Always sync ALL token fields — Claude rotates refresh_token on every
-            // access-token refresh. We know the file belongs to this account because
-            // it is currently the active one (caller guarantees this).
-            let changed = *access_token != file_creds.claude_ai_oauth.access_token
-                || *refresh_token != file_creds.claude_ai_oauth.refresh_token
-                || *expires_at != file_creds.claude_ai_oauth.expires_at;
-
-            if changed {
-                *access_token = file_creds.claude_ai_oauth.access_token;
-                *refresh_token = file_creds.claude_ai_oauth.refresh_token;
-                *expires_at = file_creds.claude_ai_oauth.expires_at;
-                save_accounts(&store)?;
-            }
+    // Sync ALL token fields and metadata — Claude rotates refresh_token on every
+    // access-token refresh. We know the file belongs to this account because it
+    // is currently the active one (caller guarantees this).
+    if let Some(account) = store.accounts.iter_mut().find(|a| a.id == account_id) {
+        if account.sync_claude_credentials(&file_creds) {
+            save_accounts(&store)?;
         }
     }
 
