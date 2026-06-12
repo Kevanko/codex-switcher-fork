@@ -408,8 +408,8 @@ pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result
 }
 
 /// Sync a Claude account's stored tokens from the current .credentials.json file.
-/// If the file belongs to the same account (matching refresh_token) and has a fresher
-/// access_token, updates the stored copy so future switches use up-to-date credentials.
+/// Called right before switching away from an account — saves whatever Claude wrote
+/// to the file (including a rotated refresh_token) so the next switch back works.
 pub fn sync_claude_tokens_from_file(account_id: &str) -> Result<()> {
     use crate::auth::switcher::get_claude_credentials_file;
     use crate::types::ClaudeCredentialsFile;
@@ -428,11 +428,15 @@ pub fn sync_claude_tokens_from_file(account_id: &str) -> Result<()> {
         Err(_) => return Ok(()),
     };
 
+    // Sanity: file must have non-empty tokens before we trust it.
+    if file_creds.claude_ai_oauth.refresh_token.trim().is_empty()
+        || file_creds.claude_ai_oauth.access_token.trim().is_empty()
+    {
+        return Ok(());
+    }
+
     let mut store = load_accounts()?;
-    let account = store
-        .accounts
-        .iter_mut()
-        .find(|a| a.id == account_id);
+    let account = store.accounts.iter_mut().find(|a| a.id == account_id);
 
     if let Some(account) = account {
         if let AuthData::ClaudeOAuth {
@@ -442,12 +446,70 @@ pub fn sync_claude_tokens_from_file(account_id: &str) -> Result<()> {
             ..
         } = &mut account.auth_data
         {
-            if *refresh_token == file_creds.claude_ai_oauth.refresh_token
-                && file_creds.claude_ai_oauth.expires_at > *expires_at
-            {
+            // Always sync ALL token fields — Claude rotates refresh_token on every
+            // access-token refresh. We know the file belongs to this account because
+            // it is currently the active one (caller guarantees this).
+            let changed = *access_token != file_creds.claude_ai_oauth.access_token
+                || *refresh_token != file_creds.claude_ai_oauth.refresh_token
+                || *expires_at != file_creds.claude_ai_oauth.expires_at;
+
+            if changed {
                 *access_token = file_creds.claude_ai_oauth.access_token;
+                *refresh_token = file_creds.claude_ai_oauth.refresh_token;
                 *expires_at = file_creds.claude_ai_oauth.expires_at;
                 save_accounts(&store)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Sync a Codex (ChatGPT) account's stored tokens from the current ~/.codex/auth.json.
+/// Called right before switching away from an account so the stored copy stays fresh.
+pub fn sync_codex_tokens_from_file(account_id: &str) -> Result<()> {
+    use crate::auth::switcher::read_current_auth;
+
+    let auth = match read_current_auth()? {
+        Some(a) => a,
+        None => return Ok(()),
+    };
+    let tokens = match auth.tokens {
+        Some(t) => t,
+        None => return Ok(()), // API-key account — nothing to sync
+    };
+
+    let mut store = load_accounts()?;
+    let account = store.accounts.iter_mut().find(|a| a.id == account_id);
+
+    if let Some(account) = account {
+        if let AuthData::ChatGPT {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id: stored_account_id,
+        } = &mut account.auth_data
+        {
+            // Verify this is the same user before overwriting (match by refresh_token or account_id).
+            let same_by_refresh = *refresh_token == tokens.refresh_token;
+            let same_by_id = stored_account_id.is_some()
+                && tokens.account_id.is_some()
+                && *stored_account_id == tokens.account_id;
+
+            if same_by_refresh || same_by_id {
+                let changed = *id_token != tokens.id_token
+                    || *access_token != tokens.access_token
+                    || *refresh_token != tokens.refresh_token;
+
+                if changed {
+                    *id_token = tokens.id_token;
+                    *access_token = tokens.access_token;
+                    *refresh_token = tokens.refresh_token;
+                    if stored_account_id.is_none() {
+                        *stored_account_id = tokens.account_id;
+                    }
+                    save_accounts(&store)?;
+                }
             }
         }
     }
