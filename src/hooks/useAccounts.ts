@@ -16,12 +16,28 @@ function hydrateAccountUsage(account: AccountInfo): AccountWithUsage {
   };
 }
 
-// Pacing for the automatic 60s poll: the active accounts refresh every tick,
-// inactive ones much less often — hitting every account every minute trips
-// provider rate limits (429) when there are many accounts.
-const ACTIVE_USAGE_REFRESH_MS = 55_000;
-const INACTIVE_USAGE_REFRESH_MS = 240_000;
-const RATE_LIMIT_FRONTEND_BACKOFF_MS = 300_000;
+// Pacing for the automatic background poll. The active account is deliberately
+// polled GENTLY, not aggressively: its OAuth token is also used by the running
+// Codex CLI / Claude Code, which poll the same usage endpoint, so hammering it
+// every minute is exactly what trips a 429. Usage windows (5h/7d) move slowly,
+// so a few minutes of staleness in the background is fine — selecting an
+// account or pressing Refresh always fetches immediately.
+const ACTIVE_USAGE_REFRESH_MS = 150_000; // ~2.5 min
+const INACTIVE_USAGE_REFRESH_MS = 360_000; // ~6 min
+// Random per-account stagger added on top of the base interval so our polls do
+// not phase-lock with each other or with the external CLI's own 60s cycle.
+const USAGE_REFRESH_JITTER_MS = 60_000;
+const RATE_LIMIT_FRONTEND_BACKOFF_MS = 330_000; // > backend cooldown floor (300s)
+
+// Stable per-account jitter in [0, USAGE_REFRESH_JITTER_MS) derived from the id,
+// so an account's effective interval is consistent across ticks (no thrashing).
+function usageJitterForAccount(accountId: string): number {
+  let hash = 0;
+  for (let i = 0; i < accountId.length; i++) {
+    hash = (hash * 31 + accountId.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % USAGE_REFRESH_JITTER_MS;
+}
 
 function isNetworkError(msg: string): boolean {
   if (!navigator.onLine) return true;
@@ -56,6 +72,8 @@ export function useAccounts() {
   // Per-account pacing state for the automatic poll.
   const usageAttemptAtRef = useRef<Record<string, number>>({});
   const usageBlockedUntilRef = useRef<Record<string, number>>({});
+  // Debounce for OS "online" events, which fire on every adapter change on Windows.
+  const lastOnlineRefreshRef = useRef<number>(0);
 
   useEffect(() => {
     accountsRef.current = accounts;
@@ -150,11 +168,20 @@ export function useAccounts() {
           list = list.filter((account) => {
             if (now < (usageBlockedUntilRef.current[account.id] ?? 0)) return false;
             const lastAttempt = usageAttemptAtRef.current[account.id] ?? 0;
-            const minInterval = account.is_active
+            const base = account.is_active
               ? ACTIVE_USAGE_REFRESH_MS
               : INACTIVE_USAGE_REFRESH_MS;
+            const minInterval = base + usageJitterForAccount(account.id);
             return now - lastAttempt >= minInterval;
           });
+        } else {
+          // Manual/explicit refresh: never bypass an active 429 cooldown, or we
+          // just walk straight back into the rate limit.
+          const now = Date.now();
+          list = list.filter(
+            (account) => now >= (usageBlockedUntilRef.current[account.id] ?? 0)
+          );
+          if (list.length === 0) return;
         }
 
         if (list.length === 0) {
@@ -575,7 +602,8 @@ export function useAccounts() {
     loadAccounts().then((accountList) => refreshUsage(accountList));
 
     // Auto-refresh tick every 60 seconds; per-account pacing inside refreshUsage
-    // decides who actually gets fetched (active: every tick, inactive: ~4 min).
+    // decides who actually gets fetched (active ~3 min, inactive ~6 min, both
+    // jittered) so we don't out-poll the provider on the shared active token.
     const interval = setInterval(() => {
       refreshUsage(undefined, { auto: true }).catch(() => {});
     }, 60000);
@@ -583,10 +611,15 @@ export function useAccounts() {
     return () => clearInterval(interval);
   }, [loadAccounts, refreshUsage]);
 
-  // When the browser/OS signals the network is back, retry usage immediately.
+  // When the browser/OS signals the network is back, retry usage — but debounced,
+  // because Windows fires "online" on every adapter/VPN change, and respecting
+  // 429 cooldowns (manual refreshUsage path) so we don't walk back into a limit.
   useEffect(() => {
     const handleOnline = () => {
       setNetworkOffline(false);
+      const now = Date.now();
+      if (now - lastOnlineRefreshRef.current < 30_000) return;
+      lastOnlineRefreshRef.current = now;
       refreshUsage().catch(() => {});
     };
     const handleOffline = () => setNetworkOffline(true);
