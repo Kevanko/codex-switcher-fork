@@ -560,6 +560,27 @@ impl UsageInfo {
         info.rate_limited = Some(true);
         info
     }
+
+    /// A neutral, data-less snapshot — no usage values and no error. Used for a
+    /// parked (inactive) account that has never been fetched, so the UI shows an
+    /// empty bar instead of an error state.
+    pub fn empty(account_id: String) -> Self {
+        Self {
+            account_id,
+            plan_type: None,
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_resets_at: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            has_credits: None,
+            unlimited_credits: None,
+            credits_balance: None,
+            error: None,
+            rate_limited: None,
+        }
+    }
 }
 
 /// Warm-up execution summary across accounts

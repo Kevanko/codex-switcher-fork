@@ -12,8 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::auth::{
-    ensure_chatgpt_tokens_fresh, ensure_claude_tokens_fresh, load_accounts,
-    refresh_chatgpt_tokens, refresh_claude_tokens,
+    ensure_chatgpt_tokens_fresh, ensure_claude_tokens_fresh, load_accounts, refresh_chatgpt_tokens,
 };
 use crate::types::{
     AuthData, CreditStatusDetails, RateLimitDetails, RateLimitStatusPayload, RateLimitWindow,
@@ -311,6 +310,22 @@ fn extract_claude_access_token(account: &StoredAccount) -> Result<String> {
 }
 
 async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo> {
+    // "Powered-off PC" safety model: a parked (inactive) Claude account must
+    // NEVER be contacted by the switcher. Anthropic rotates and invalidates the
+    // refresh_token on every token refresh, so any request that needs a fresh
+    // token would risk refresh-token reuse detection and log the account out of
+    // ALL sessions. Inactive accounts therefore serve the last cached usage
+    // snapshot (which already carries the window reset timestamps the UI shows),
+    // with zero network I/O. Only the ACTIVE account — whose credential file is
+    // owned and kept fresh by the running Claude Code — is fetched live.
+    let store = load_accounts()?;
+    let is_active = store.active_claude_account_id.as_deref() == Some(account.id.as_str());
+    if !is_active {
+        return Ok(parked_claude_usage(account));
+    }
+
+    // Active account: re-read whatever Claude Code wrote to the live credentials
+    // file. ensure_claude_tokens_fresh syncs only — it never rotates the token.
     let fresh_account = match ensure_claude_tokens_fresh(account).await {
         Ok(acc) => acc,
         Err(err) => {
@@ -339,24 +354,16 @@ async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo
     let status = response.status();
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         println!(
-            "[Usage] Claude token rejected for account {}, retrying once",
+            "[Usage] Claude token rejected for account {}, re-syncing from live file",
             fresh_account.name
         );
-        // The active account's credential is owned by Claude Code — never rotate
-        // it ourselves; re-sync whatever the live file has. Inactive accounts are
-        // safe to refresh directly.
-        let store = load_accounts()?;
-        let is_active =
-            store.active_claude_account_id.as_deref() == Some(fresh_account.id.as_str());
-        let retried_account = if is_active {
-            let _ = crate::auth::storage::sync_claude_tokens_from_file(&fresh_account.id);
-            load_accounts()?
-                .accounts
-                .into_iter()
-                .find(|a| a.id == fresh_account.id)
-        } else {
-            refresh_claude_tokens(&fresh_account).await.ok()
-        };
+        // Never rotate the token ourselves — the active account's credential is
+        // owned by Claude Code. Re-read whatever the live file has and retry once.
+        let _ = crate::auth::storage::sync_claude_tokens_from_file(&fresh_account.id);
+        let retried_account = load_accounts()?
+            .accounts
+            .into_iter()
+            .find(|a| a.id == fresh_account.id);
 
         if let Some(retried) = retried_account {
             let retry_token = extract_claude_access_token(&retried)?;
@@ -376,6 +383,23 @@ async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo
     }
 
     parse_claude_usage_response(&fresh_account, response).await
+}
+
+/// Last-known usage for a parked (inactive) Claude account, served WITHOUT any
+/// network request so the account's refresh-token chain stays frozen — exactly
+/// like a powered-off PC. The cached snapshot already contains the window reset
+/// timestamps, so the UI keeps showing the last value and its reset countdown.
+fn parked_claude_usage(account: &StoredAccount) -> UsageInfo {
+    match &account.cached_usage {
+        Some(snapshot) if snapshot.error.is_none() => {
+            let mut snapshot = snapshot.clone();
+            snapshot.account_id = account.id.clone();
+            snapshot.rate_limited = None;
+            snapshot
+        }
+        // Never fetched yet (or last fetch errored): neutral empty bar, not an error.
+        _ => UsageInfo::empty(account.id.clone()),
+    }
 }
 
 async fn send_claude_usage_request(access_token: &str) -> Result<reqwest::Response> {
