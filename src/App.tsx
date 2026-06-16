@@ -27,6 +27,7 @@ import {
   KeyRound,
   Monitor,
   Moon,
+  PencilLine,
   RefreshCcw,
   Search,
   Settings2,
@@ -407,6 +408,7 @@ function AccountDetailPanel({
   onWarmup,
   onRefresh,
   onDelete,
+  onRename,
   onToggleAutoWarmup,
   onReauthorize,
   locale,
@@ -425,11 +427,48 @@ function AccountDetailPanel({
   onWarmup: () => void;
   onRefresh: () => void;
   onDelete: () => void;
+  onRename: (newName: string) => Promise<void>;
   onToggleAutoWarmup: () => void;
   onReauthorize?: () => void;
   locale: Locale;
   t: AppText;
 }) {
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(account.name);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  // Set when Escape is pressed so the resulting blur cancels instead of saving.
+  const cancelNameRef = useRef(false);
+
+  // Reset the editor when a different account is selected.
+  useEffect(() => {
+    setNameDraft(account.name);
+    setEditingName(false);
+  }, [account.id, account.name]);
+
+  useEffect(() => {
+    if (editingName) {
+      nameInputRef.current?.focus();
+      nameInputRef.current?.select();
+    }
+  }, [editingName]);
+
+  // Single commit path: Enter and Escape both blur the input, so save/cancel
+  // always flow through here exactly once (no Enter+blur double fire).
+  const commitName = () => {
+    setEditingName(false);
+    if (cancelNameRef.current) {
+      cancelNameRef.current = false;
+      setNameDraft(account.name);
+      return;
+    }
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === account.name) {
+      setNameDraft(account.name);
+      return;
+    }
+    void onRename(trimmed).catch(() => setNameDraft(account.name));
+  };
+
   const tone = getAccountHealthTone(account);
   const remaining = getRemainingPercent(account);
   const planVisual = getPlanVisual(account);
@@ -480,7 +519,31 @@ function AccountDetailPanel({
                 : <>{planVisual.label} · {t.account.currentAccount.replace("Текущий", "").trim() || "аккаунт"}</>
               }
             </div>
-            <div className="dhead-name">{account.name}</div>
+            <div className="dhead-name">
+              {editingName ? (
+                <input
+                  ref={nameInputRef}
+                  className="dhead-name-edit"
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onBlur={commitName}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); nameInputRef.current?.blur(); }
+                    else if (e.key === "Escape") { e.preventDefault(); cancelNameRef.current = true; nameInputRef.current?.blur(); }
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="dhead-name-btn"
+                  onClick={() => setEditingName(true)}
+                  title={t.account.rename}
+                >
+                  <span>{account.name}</span>
+                  <PencilLine size={15} className="edit-pencil" />
+                </button>
+              )}
+            </div>
 
             {account.email && (
               <div className="dhead-email">
@@ -662,9 +725,25 @@ function AccountDetailPanel({
               <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> Прогреть
             </button>
           )}
-          <button type="button" className="btn btn--ghost btn--md" onClick={onRefresh}>
-            <RefreshCcw size={14} /> Обновить
-          </button>
+          {(isCodex || account.is_active) ? (
+            <button type="button" className="btn btn--ghost btn--md" onClick={onRefresh}>
+              <RefreshCcw size={14} /> {locale_label("Обновить", "Refresh", locale)}
+            </button>
+          ) : (
+            <span
+              className="dfoot-note"
+              title={account.cached_usage_updated_at
+                ? locale_label("Обновлено: ", "Updated: ", locale) + new Date(account.cached_usage_updated_at).toLocaleString()
+                : undefined}
+            >
+              <Database size={13} />
+              {locale_label(
+                "Данные из кэша — обновляется только активный аккаунт",
+                "Cached data — only the active account refreshes",
+                locale
+              )}
+            </span>
+          )}
           {isCodex && (
             <button
               type="button"
@@ -933,6 +1012,7 @@ function App() {
     warmupAllAccounts,
     switchAccount,
     deleteAccount,
+    renameAccount,
     importFromFile,
     importClaudeFromFile,
     exportAccountsSlimText,
@@ -1637,8 +1717,9 @@ function App() {
               autoWarmupLabel={getAutoWarmupLabel(effectiveSelectedAccount)}
               onSwitch={() => void handleSwitch(effectiveSelectedAccount.id, effectiveSelectedAccount.provider)}
               onWarmup={() => void handleWarmupAccount(effectiveSelectedAccount.id, effectiveSelectedAccount.name)}
-              onRefresh={() => void refreshSingleUsage(effectiveSelectedAccount.id, { refreshMetadata: true })}
+              onRefresh={() => void refreshSingleUsage(effectiveSelectedAccount.id, { refreshMetadata: effectiveSelectedAccount.provider === "codex" })}
               onDelete={() => void handleDelete(effectiveSelectedAccount.id)}
+              onRename={(newName) => renameAccount(effectiveSelectedAccount.id, newName)}
               onToggleAutoWarmup={() => toggleAutoWarmupAccount(effectiveSelectedAccount.id)}
               onReauthorize={effectiveSelectedAccount.auth_mode === "chat_g_p_t" ? () => setReauthAccount(effectiveSelectedAccount) : undefined}
               locale={resolvedLanguage}
