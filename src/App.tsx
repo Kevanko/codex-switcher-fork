@@ -43,7 +43,7 @@ import {
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
 import { AddAccountModal, UpdateChecker, ClaudeTokenPanel } from "./components";
-import type { AccountWithUsage, UsageInfo } from "./types";
+import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
   importFullBackupFile,
@@ -1033,7 +1033,10 @@ function App() {
   const [activeProvider, setActiveProvider] = useState<ProviderTab>("codex");
   // Claude CLI long-lived token tab (separate from the provider account list).
   const [tabView, setTabView] = useState<"accounts" | "tokens">("accounts");
-  const [tokenCount, setTokenCount] = useState(0);
+  // Full Claude CLI token list, loaded at startup so the tab badge + stats are
+  // correct immediately (not only after the tab is first opened). The panel keeps
+  // this in sync as tokens are added / activated / deleted.
+  const [claudeTokens, setClaudeTokens] = useState<ClaudeTokenAccountInfo[]>([]);
   const [reauthAccount, setReauthAccount] = useState<AccountWithUsage | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -1122,6 +1125,14 @@ function App() {
   useEffect(() => {
     loadMaskedAccountIds().then((ids) => { if (ids.length > 0) setMaskedAccounts(new Set(ids)); });
   }, [loadMaskedAccountIds]);
+
+  // Prime the Claude CLI token list once on startup so the tab badge and stats
+  // reflect reality before the user ever opens the tab.
+  useEffect(() => {
+    invokeBackend<ClaudeTokenAccountInfo[]>("list_claude_token_accounts")
+      .then(setClaudeTokens)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const sync = () => setThemeMode(resolveThemePreference(themePreference));
@@ -1509,6 +1520,20 @@ function App() {
     };
   }, [accounts, activeProvider]);
 
+  // Stats for the Claude CLI tab: total tokens, how many are active, and expiry health.
+  const tokenSummary = useMemo(() => {
+    const now = Date.now();
+    const daysLeft = (iso: string) => Math.floor((new Date(iso).getTime() - now) / 86_400_000);
+    let active = 0, expiring = 0, expired = 0;
+    for (const tk of claudeTokens) {
+      if (tk.is_active) active += 1;
+      const d = daysLeft(tk.expires_at);
+      if (d < 0) expired += 1;
+      else if (d <= 30) expiring += 1;
+    }
+    return { total: claudeTokens.length, active, expiring, expired };
+  }, [claudeTokens]);
+
   const isBackendUnavailable = !isTauriRuntime() && typeof error === "string" && /404|Failed to fetch|NetworkError|ERR_/i.test(error);
 
   const shellStyle = useMemo(() => ({
@@ -1556,31 +1581,52 @@ function App() {
             <Sparkles size={13} /> Claude <span className="t-count">{providerCounts.claude}</span>
           </button>
           <button type="button" className={"tab" + (tabView === "tokens" ? " is-active" : "")} onClick={() => setTabView("tokens")} title="claude setup-token">
-            🔑 Claude CLI <span className="t-count">{tokenCount}</span>
+            🔑 Claude CLI <span className="t-count">{claudeTokens.length}</span>
           </button>
         </div>
 
         <div className="topbar-spacer" />
 
-        {/* Global stats */}
-        <div className="gstats">
-          <div className="gstat">
-            <span className="gstat-n">{summary.total}</span>
-            <span className="gstat-l">{locale_label("ВСЕГО", "TOTAL", resolvedLanguage)}</span>
+        {/* Global stats — token health on the Claude CLI tab, account health otherwise */}
+        {tabView === "tokens" ? (
+          <div className="gstats">
+            <div className="gstat">
+              <span className="gstat-n">{tokenSummary.total}</span>
+              <span className="gstat-l">{locale_label("ВСЕГО", "TOTAL", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--ok">
+              <span className="gstat-n">{tokenSummary.active}</span>
+              <span className="gstat-l">{locale_label("АКТИВЕН", "ACTIVE", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--warn">
+              <span className="gstat-n">{tokenSummary.expiring}</span>
+              <span className="gstat-l">{locale_label("ИСТЕКАЕТ", "EXPIRING", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--bad">
+              <span className="gstat-n">{tokenSummary.expired}</span>
+              <span className="gstat-l">{locale_label("ИСТЁК", "EXPIRED", resolvedLanguage)}</span>
+            </div>
           </div>
-          <div className="gstat gstat--ok">
-            <span className="gstat-n">{summary.availableCount}</span>
-            <span className="gstat-l">{locale_label("ДОСТУПНО", "AVAIL", resolvedLanguage)}</span>
+        ) : (
+          <div className="gstats">
+            <div className="gstat">
+              <span className="gstat-n">{summary.total}</span>
+              <span className="gstat-l">{locale_label("ВСЕГО", "TOTAL", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--ok">
+              <span className="gstat-n">{summary.availableCount}</span>
+              <span className="gstat-l">{locale_label("ДОСТУПНО", "AVAIL", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--warn">
+              <span className="gstat-n">{summary.nearLimitCount}</span>
+              <span className="gstat-l">{locale_label("У ЛИМИТА", "LIMIT", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--bad">
+              <span className="gstat-n">{summary.errorCount}</span>
+              <span className="gstat-l">{locale_label("ОШИБКИ", "ERRORS", resolvedLanguage)}</span>
+            </div>
           </div>
-          <div className="gstat gstat--warn">
-            <span className="gstat-n">{summary.nearLimitCount}</span>
-            <span className="gstat-l">{locale_label("У ЛИМИТА", "LIMIT", resolvedLanguage)}</span>
-          </div>
-          <div className="gstat gstat--bad">
-            <span className="gstat-n">{summary.errorCount}</span>
-            <span className="gstat-l">{locale_label("ОШИБКИ", "ERRORS", resolvedLanguage)}</span>
-          </div>
-        </div>
+        )}
 
         {/* Tools */}
         <div className="topbar-tools">
@@ -1622,7 +1668,7 @@ function App() {
       {/* ── Workbench ──────────────────────────────────────────────────────── */}
       {tabView === "tokens" ? (
         <div className="token-wrap">
-          <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onCountChange={setTokenCount} />
+          <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onTokensChange={setClaudeTokens} />
         </div>
       ) : (
       <div className="workbench">
