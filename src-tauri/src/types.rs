@@ -23,6 +23,14 @@ pub struct AccountsStore {
     /// Set of account IDs that are masked (hidden)
     #[serde(default)]
     pub masked_account_ids: Vec<String>,
+    /// Claude CLI long-lived token accounts (`claude setup-token`). Fully
+    /// separate from `accounts` — these authenticate via the
+    /// CLAUDE_CODE_OAUTH_TOKEN env var and never touch ~/.claude/.credentials.json.
+    #[serde(default)]
+    pub claude_token_accounts: Vec<ClaudeTokenAccount>,
+    /// Currently active Claude CLI token account ID.
+    #[serde(default)]
+    pub active_claude_token_id: Option<String>,
 }
 
 impl Default for AccountsStore {
@@ -33,12 +41,75 @@ impl Default for AccountsStore {
             active_account_id: None,
             active_claude_account_id: None,
             masked_account_ids: Vec::new(),
+            claude_token_accounts: Vec::new(),
+            active_claude_token_id: None,
         }
     }
 }
 
 fn default_accounts_store_version() -> u32 {
     1
+}
+
+/// A Claude CLI long-lived token account (from `claude setup-token`).
+///
+/// Unlike the OAuth `StoredAccount`s, the token here is STABLE — it never
+/// rotates and is not subject to reuse detection — and is consumed only via the
+/// `CLAUDE_CODE_OAUTH_TOKEN` environment variable. Switching between these is
+/// therefore completely safe and never risks a session revoke.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeTokenAccount {
+    pub id: String,
+    pub name: String,
+    /// The long-lived `CLAUDE_CODE_OAUTH_TOKEN` value.
+    pub token: String,
+    /// When the token was created/added.
+    pub created_at: DateTime<Utc>,
+    /// Hard expiry. `setup-token` lives exactly one year; for a pasted token we
+    /// best-estimate created_at + 365d.
+    pub expires_at: DateTime<Utc>,
+    /// Optional free-text plan label shown in the UI (e.g. "Max").
+    #[serde(default)]
+    pub plan_label: Option<String>,
+}
+
+/// UI-facing view of a token account — the secret is masked.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaudeTokenAccountInfo {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub is_active: bool,
+    /// Masked token for display, e.g. "sk-ant-…a1b2".
+    pub token_masked: String,
+    pub plan_label: Option<String>,
+}
+
+impl ClaudeTokenAccountInfo {
+    pub fn from_account(account: &ClaudeTokenAccount, is_active: bool) -> Self {
+        Self {
+            id: account.id.clone(),
+            name: account.name.clone(),
+            created_at: account.created_at,
+            expires_at: account.expires_at,
+            is_active,
+            token_masked: mask_token(&account.token),
+            plan_label: account.plan_label.clone(),
+        }
+    }
+}
+
+/// Mask a secret token for display: keep a short prefix and the last 4 chars.
+pub fn mask_token(token: &str) -> String {
+    let trimmed = token.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 10 {
+        return "•".repeat(chars.len().max(4));
+    }
+    let prefix: String = chars.iter().take(10).collect();
+    let suffix: String = chars.iter().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{prefix}…{suffix}")
 }
 
 /// A stored account with all its metadata and credentials
