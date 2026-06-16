@@ -16,11 +16,11 @@ function daysUntil(iso: string): number {
 
 interface Props {
   language: Lang;
-  /** Reports the current account count up to the tab badge. */
-  onCountChange?: (n: number) => void;
+  /** Reports the current token list up to the parent (tab badge + stats). */
+  onTokensChange?: (tokens: ClaudeTokenAccountInfo[]) => void;
 }
 
-export function ClaudeTokenPanel({ language, onCountChange }: Props) {
+export function ClaudeTokenPanel({ language, onTokensChange }: Props) {
   const lang = language;
   const [accounts, setAccounts] = useState<ClaudeTokenAccountInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,15 +29,15 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
   const [showCreate, setShowCreate] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const onCountRef = useRef(onCountChange);
-  onCountRef.current = onCountChange;
+  const onTokensRef = useRef(onTokensChange);
+  onTokensRef.current = onTokensChange;
 
   const load = useCallback(async () => {
     try {
       const list = await invokeBackend<ClaudeTokenAccountInfo[]>("list_claude_token_accounts");
       setAccounts(list);
       setError(null);
-      onCountRef.current?.(list.length);
+      onTokensRef.current?.(list);
     } catch (e) {
       setError(String(e));
     } finally {
