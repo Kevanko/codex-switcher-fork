@@ -58,6 +58,20 @@ export interface CodexProcessInfo {
   pids: number[];
 }
 
+/** A Claude CLI long-lived token account (`claude setup-token`). */
+export interface ClaudeTokenAccountInfo {
+  id: string;
+  name: string;
+  /** ISO timestamp */
+  created_at: string;
+  /** ISO timestamp — hard expiry (token TTL is 1 year). */
+  expires_at: string;
+  is_active: boolean;
+  /** Masked token for display, e.g. "sk-ant-…a1b2". */
+  token_masked: string;
+  plan_label: string | null;
+}
+
 export interface WarmupSummary {
   total_accounts: number;
   warmed_accounts: number;

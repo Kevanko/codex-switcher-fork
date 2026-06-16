@@ -41,7 +41,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AddAccountModal, UpdateChecker } from "./components";
+import { AddAccountModal, UpdateChecker, ClaudeTokenPanel } from "./components";
 import type { AccountWithUsage, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -951,6 +951,9 @@ function App() {
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [activeProvider, setActiveProvider] = useState<ProviderTab>("codex");
+  // Claude CLI long-lived token tab (separate from the provider account list).
+  const [tabView, setTabView] = useState<"accounts" | "tokens">("accounts");
+  const [tokenCount, setTokenCount] = useState(0);
   const [reauthAccount, setReauthAccount] = useState<AccountWithUsage | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -1466,11 +1469,14 @@ function App() {
 
         {/* Provider tabs */}
         <div className="tabs">
-          <button type="button" className={"tab" + (activeProvider === "codex" ? " is-active" : "")} onClick={() => setActiveProvider("codex")}>
+          <button type="button" className={"tab" + (tabView === "accounts" && activeProvider === "codex" ? " is-active" : "")} onClick={() => { setTabView("accounts"); setActiveProvider("codex"); }}>
             <Bot size={13} /> Codex <span className="t-count">{providerCounts.codex}</span>
           </button>
-          <button type="button" className={"tab" + (activeProvider === "claude" ? " is-active" : "")} onClick={() => setActiveProvider("claude")}>
+          <button type="button" className={"tab" + (tabView === "accounts" && activeProvider === "claude" ? " is-active" : "")} onClick={() => { setTabView("accounts"); setActiveProvider("claude"); }}>
             <Sparkles size={13} /> Claude <span className="t-count">{providerCounts.claude}</span>
+          </button>
+          <button type="button" className={"tab" + (tabView === "tokens" ? " is-active" : "")} onClick={() => setTabView("tokens")} title="claude setup-token">
+            🔑 Claude CLI <span className="t-count">{tokenCount}</span>
           </button>
         </div>
 
@@ -1534,6 +1540,11 @@ function App() {
       </div>
 
       {/* ── Workbench ──────────────────────────────────────────────────────── */}
+      {tabView === "tokens" ? (
+        <div className="workbench">
+          <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onCountChange={setTokenCount} />
+        </div>
+      ) : (
       <div className="workbench">
         {/* Left column: account list */}
         <div className="col-list">
@@ -1643,6 +1654,7 @@ function App() {
           )}
         </div>
       </div>
+      )}
 
       {/* ── Overlays ───────────────────────────────────────────────────────── */}
       {isSettingsOpen && (

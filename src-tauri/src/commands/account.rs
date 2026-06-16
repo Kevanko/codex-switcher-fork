@@ -740,6 +740,8 @@ async fn build_store_from_slim_payload(
         active_account_id,
         active_claude_account_id: None,
         masked_account_ids: Vec::new(),
+        claude_token_accounts: Vec::new(),
+        active_claude_token_id: None,
     })
 }
 
@@ -957,6 +959,8 @@ fn codex_only_store(store: &AccountsStore) -> AccountsStore {
         active_account_id,
         active_claude_account_id: None,
         masked_account_ids: store.masked_account_ids.clone(),
+        claude_token_accounts: store.claude_token_accounts.clone(),
+        active_claude_token_id: store.active_claude_token_id.clone(),
     }
 }
 
