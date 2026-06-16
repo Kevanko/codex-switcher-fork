@@ -26,7 +26,7 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const onCountRef = useRef(onCountChange);
@@ -88,21 +88,6 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
     }
   }, []);
 
-  const createViaSetupToken = useCallback(async () => {
-    const name = window.prompt(L(lang, "Имя для нового аккаунта:", "Name for the new account:"));
-    if (!name || !name.trim()) return;
-    setCreating(true);
-    setError(null);
-    try {
-      await invokeBackend("create_claude_token_account", { name: name.trim(), planLabel: null });
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setCreating(false);
-    }
-  }, [lang, load]);
-
   const active = accounts.find((a) => a.is_active) || null;
 
   return (
@@ -112,8 +97,8 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
         <div className="token-head">
           <h2><KeyRound size={15} /> {L(lang, "Claude CLI — долгоживущие токены", "Claude CLI — long-lived tokens")}</h2>
           <span style={{ flex: 1 }} />
-          <button type="button" className="chip chip--add" onClick={() => void createViaSetupToken()} disabled={creating} title="claude setup-token">
-            {creating ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} {L(lang, "Создать токен", "Create token")}
+          <button type="button" className="chip chip--add" onClick={() => setShowCreate(true)} title="claude setup-token">
+            <Plus size={13} /> {L(lang, "Создать токен", "Create token")}
           </button>
           <button type="button" className="chip chip--add" onClick={() => setShowAdd((v) => !v)}>
             <Plus size={13} /> {L(lang, "Добавить готовый", "Add existing")}
@@ -138,6 +123,15 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
 
         {showAdd && (
           <AddExistingForm lang={lang} onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); void load(); }} onError={setError} />
+        )}
+
+        {showCreate && (
+          <CreateTokenModal
+            lang={lang}
+            onClose={() => setShowCreate(false)}
+            onAdded={() => { setShowCreate(false); void load(); }}
+            onError={setError}
+          />
         )}
 
         {error && (
@@ -220,12 +214,14 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
 }
 
 function AddExistingForm({
-  lang, onClose, onAdded, onError,
+  lang, onClose, onAdded, onError, bare = false,
 }: {
   lang: Lang;
   onClose: () => void;
   onAdded: () => void;
   onError: (e: string) => void;
+  /** Drop the outer card styling when embedded inside a modal. */
+  bare?: boolean;
 }) {
   const [name, setName] = useState("");
   const [token, setToken] = useState("");
@@ -250,10 +246,12 @@ function AddExistingForm({
   }, [name, token, plan, onAdded, onError]);
 
   return (
-    <div style={{
-      display: "flex", flexDirection: "column", gap: 8, padding: 12,
-      border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-2)",
-    }}>
+    <div style={bare
+      ? { display: "flex", flexDirection: "column", gap: 8 }
+      : {
+          display: "flex", flexDirection: "column", gap: 8, padding: 12,
+          border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-2)",
+        }}>
       <div style={{ display: "flex", gap: 8 }}>
         <input className="ui-input" placeholder={L(lang, "Имя (напр. Work)", "Name (e.g. Work)")}
           value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 2 }} />
@@ -266,8 +264,70 @@ function AddExistingForm({
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button type="button" className="chip" onClick={onClose}>{L(lang, "Отмена", "Cancel")}</button>
         <button type="button" className="chip chip--add" disabled={saving || !name.trim() || !token.trim()} onClick={() => void submit()}>
-          {saving ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} {L(lang, "Добавить", "Add")}
+          {saving ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}{" "}
+          {bare ? L(lang, "Сохранить токен", "Save token") : L(lang, "Добавить", "Add")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Create token" flow: instead of spawning `claude setup-token` ourselves (which
+ * has no TTY in a GUI and was failing), show a short how-to and let the user paste
+ * the token the CLI prints. The paste path is the reliable, store-only backend call.
+ */
+function CreateTokenModal({
+  lang, onClose, onAdded, onError,
+}: {
+  lang: Lang;
+  onClose: () => void;
+  onAdded: () => void;
+  onError: (e: string) => void;
+}) {
+  const [cmdCopied, setCmdCopied] = useState(false);
+
+  const copyCmd = async () => {
+    try {
+      await navigator.clipboard.writeText("claude setup-token");
+      setCmdCopied(true);
+      window.setTimeout(() => setCmdCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable — the command is shown for manual copy anyway */
+    }
+  };
+
+  return (
+    <div className="config-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="config-panel fade-up" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="config-header">
+          <div>
+            <h2>{L(lang, "Создать токен Claude CLI", "Create a Claude CLI token")}</h2>
+            <p>{L(lang,
+              "Сгенерируйте долгоживущий токен командой и вставьте его сюда.",
+              "Generate a long-lived token with the CLI, then paste it here.")}</p>
+          </div>
+          <button type="button" className="icon-btn icon-btn--md" onClick={onClose} title={L(lang, "Закрыть", "Close")}>
+            <X size={16} />
+          </button>
+        </div>
+        <div className="config-body">
+          <ol className="token-steps">
+            <li>
+              {L(lang, "Откройте терминал и выполните:", "Open a terminal and run:")}
+              <div className="token-cmd">
+                <code>claude setup-token</code>
+                <button type="button" className="icon-btn icon-btn--xs" onClick={() => void copyCmd()} title={L(lang, "Копировать", "Copy")}>
+                  {cmdCopied ? <Check size={13} /> : <Copy size={13} />}
+                </button>
+              </div>
+            </li>
+            <li>{L(lang, "Войдите в аккаунт Claude (нужен Pro или Max).", "Sign in to Claude (Pro or Max required).")}</li>
+            <li>{L(lang, "Скопируйте выданный токен (начинается с sk-ant-).", "Copy the token it prints (starts with sk-ant-).")}</li>
+            <li>{L(lang, "Вставьте его ниже и задайте имя.", "Paste it below and give it a name.")}</li>
+          </ol>
+          <AddExistingForm lang={lang} bare onClose={onClose} onAdded={onAdded} onError={onError} />
+        </div>
       </div>
     </div>
   );

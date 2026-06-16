@@ -162,6 +162,14 @@ export function useAccounts() {
           ...(accountList ?? accountsRef.current),
         ];
 
+        // Parked (inactive) Claude accounts are frozen like a powered-off PC:
+        // never contacted, served from cache only. Skipping them here keeps their
+        // "last updated" timestamp honest (so the UI can truthfully say the data
+        // is stale) and guarantees zero network on their rotation-sensitive token.
+        list = list.filter(
+          (account) => !(account.provider === "claude" && !account.is_active)
+        );
+
         if (options?.auto) {
           // Automatic poll: skip accounts refreshed recently or cooling down after a 429.
           const now = Date.now();
