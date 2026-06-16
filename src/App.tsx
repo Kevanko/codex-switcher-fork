@@ -1541,7 +1541,7 @@ function App() {
 
       {/* ── Workbench ──────────────────────────────────────────────────────── */}
       {tabView === "tokens" ? (
-        <div className="workbench">
+        <div className="token-wrap">
           <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onCountChange={setTokenCount} />
         </div>
       ) : (

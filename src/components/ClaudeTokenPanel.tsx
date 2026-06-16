@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  KeyRound, Plus, Check, Copy, Trash2, RefreshCcw, AlertTriangle, Loader2, Pencil, X,
+  KeyRound, Plus, Check, Copy, Trash2, RefreshCcw, AlertTriangle, Loader2, Pencil, X, Power,
 } from "lucide-react";
 import { invokeBackend } from "../lib/platform";
 import type { ClaudeTokenAccountInfo } from "../types";
@@ -47,10 +47,10 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
-  const activate = useCallback(async (id: string) => {
+  const run = useCallback(async (id: string, fn: () => Promise<unknown>) => {
     setBusyId(id);
     try {
-      await invokeBackend("activate_claude_token_account", { id });
+      await fn();
       await load();
     } catch (e) {
       setError(String(e));
@@ -59,29 +59,19 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
     }
   }, [load]);
 
-  const remove = useCallback(async (id: string, name: string) => {
+  const activate = (id: string) => run(id, () => invokeBackend("activate_claude_token_account", { id }));
+  const deactivate = () => run("__off__", () => invokeBackend("deactivate_claude_token"));
+
+  const remove = (id: string, name: string) => {
     if (!window.confirm(L(lang, `Удалить токен-аккаунт «${name}»?`, `Delete token account "${name}"?`))) return;
-    setBusyId(id);
-    try {
-      await invokeBackend("delete_claude_token_account", { id });
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusyId(null);
-    }
-  }, [lang, load]);
+    void run(id, () => invokeBackend("delete_claude_token_account", { id }));
+  };
 
   const rename = useCallback(async (id: string, current: string) => {
     const next = window.prompt(L(lang, "Новое имя:", "New name:"), current);
     if (!next || next.trim() === current) return;
-    try {
-      await invokeBackend("rename_claude_token_account", { id, name: next.trim() });
-      await load();
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [lang, load]);
+    await run(id, () => invokeBackend("rename_claude_token_account", { id, name: next.trim() }));
+  }, [lang, run]);
 
   const copyExport = useCallback(async (id: string) => {
     try {
@@ -113,122 +103,117 @@ export function ClaudeTokenPanel({ language, onCountChange }: Props) {
     }
   }, [lang, load]);
 
+  const active = accounts.find((a) => a.is_active) || null;
+
   return (
-    <div className="token-panel" style={{ flex: 1, overflow: "auto", padding: "16px 18px" }}>
-      {/* Header / actions */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <KeyRound size={16} style={{ opacity: 0.8 }} />
-        <b style={{ fontFamily: "var(--mono)", fontSize: 13 }}>
-          {L(lang, "Claude CLI — долгоживущие токены", "Claude CLI — long-lived tokens")}
-        </b>
-        <span style={{ flex: 1 }} />
-        <button type="button" className="chip chip--add" onClick={() => void createViaSetupToken()} disabled={creating}
-          title="claude setup-token">
-          {creating ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}{" "}
-          {L(lang, "Создать токен", "Create token")}
-        </button>
-        <button type="button" className="chip chip--add" onClick={() => setShowAdd((v) => !v)}>
-          <Plus size={13} /> {L(lang, "Добавить готовый", "Add existing")}
-        </button>
-      </div>
-
-      {showAdd && (
-        <AddExistingForm
-          lang={lang}
-          onClose={() => setShowAdd(false)}
-          onAdded={() => { setShowAdd(false); void load(); }}
-          onError={setError}
-        />
-      )}
-
-      {error && (
-        <div style={{
-          display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 12px", marginBottom: 12,
-          background: "var(--bad)18", border: "1px solid var(--bad)55", borderRadius: 8,
-          color: "var(--bad)", fontFamily: "var(--mono)", fontSize: 12, whiteSpace: "pre-wrap",
-        }}>
-          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span style={{ flex: 1 }}>{error}</span>
-          <button type="button" className="icon-btn icon-btn--xs" onClick={() => setError(null)}><X size={12} /></button>
+    <div className="token-panel">
+      <div className="token-inner">
+        {/* Header / actions */}
+        <div className="token-head">
+          <h2><KeyRound size={15} /> {L(lang, "Claude CLI — долгоживущие токены", "Claude CLI — long-lived tokens")}</h2>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="chip chip--add" onClick={() => void createViaSetupToken()} disabled={creating} title="claude setup-token">
+            {creating ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} {L(lang, "Создать токен", "Create token")}
+          </button>
+          <button type="button" className="chip chip--add" onClick={() => setShowAdd((v) => !v)}>
+            <Plus size={13} /> {L(lang, "Добавить готовый", "Add existing")}
+          </button>
         </div>
-      )}
 
-      {/* Rows */}
-      {loading ? (
-        <div style={{ padding: "28px 0", textAlign: "center", color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
-          <RefreshCcw size={18} className="spin" />
-        </div>
-      ) : accounts.length === 0 ? (
-        <div style={{ padding: "28px 12px", textAlign: "center", color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.7 }}>
-          {L(lang, "Нет токен-аккаунтов.", "No token accounts yet.")}<br />
-          {L(lang,
-            "Создай через «claude setup-token» или вставь готовый токен.",
-            "Create one via “claude setup-token” or paste an existing token.")}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {accounts.map((a) => {
-            const days = daysUntil(a.expires_at);
-            const expiring = days <= 30;
-            const expired = days < 0;
-            return (
-              <div key={a.id} style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
-                borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12.5,
-                background: a.is_active ? "var(--accent)14" : "transparent",
-                border: a.is_active ? "1px solid var(--accent)55" : "1px solid transparent",
-              }}>
-                <span style={{
-                  width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                  background: a.is_active ? "var(--ok, #16a34a)" : "var(--text-3)",
-                }} />
-                <span style={{ fontWeight: 600, minWidth: 110 }}>{a.name}</span>
-                <span style={{ color: "var(--text-3)", minWidth: 54 }}>{a.plan_label || "—"}</span>
-                <span style={{ color: "var(--text-3)" }} title={a.token_masked}>{a.token_masked}</span>
-                <span style={{ flex: 1 }} />
-                <span style={{
-                  color: expired ? "var(--bad)" : expiring ? "var(--warn, #ca8a04)" : "var(--text-3)",
-                  display: "inline-flex", alignItems: "center", gap: 4,
-                }} title={new Date(a.expires_at).toLocaleDateString()}>
-                  {(expiring || expired) && <AlertTriangle size={12} />}
-                  {expired ? L(lang, "истёк", "expired") : L(lang, `${days}д`, `${days}d`)}
-                </span>
+        {/* Active banner + disable */}
+        {active && (
+          <div className="token-banner">
+            <KeyRound size={14} style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1 }}>
+              {L(lang, "Активен токен", "Active token")}: <b>{active.name}</b>{" "}
+              — {L(lang, "Claude CLI использует его вместо обычного входа.", "Claude CLI uses it instead of the regular login.")}
+            </span>
+            <button type="button" className="chip" disabled={busyId === "__off__"} onClick={() => void deactivate()}
+              title={L(lang, "Вернуться к обычным аккаунтам", "Return to regular accounts")}>
+              {busyId === "__off__" ? <Loader2 size={12} className="spin" /> : <Power size={12} />}{" "}
+              {L(lang, "Отключить", "Turn off")}
+            </button>
+          </div>
+        )}
 
-                {a.is_active ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--ok, #16a34a)" }}>
-                    <Check size={13} /> {L(lang, "активен", "active")}
+        {showAdd && (
+          <AddExistingForm lang={lang} onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); void load(); }} onError={setError} />
+        )}
+
+        {error && (
+          <div style={{
+            display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 12px",
+            background: "var(--bad)18", border: "1px solid var(--bad)55", borderRadius: 8,
+            color: "var(--bad)", font: "12px var(--mono)", whiteSpace: "pre-wrap",
+          }}>
+            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span style={{ flex: 1 }}>{error}</span>
+            <button type="button" className="icon-btn icon-btn--xs" onClick={() => setError(null)}><X size={12} /></button>
+          </div>
+        )}
+
+        {/* Rows */}
+        {loading ? (
+          <div className="token-empty"><RefreshCcw size={18} className="spin" /></div>
+        ) : accounts.length === 0 ? (
+          <div className="token-empty">
+            {L(lang, "Нет токен-аккаунтов.", "No token accounts yet.")}<br />
+            {L(lang,
+              "Создай через «claude setup-token» или вставь готовый токен — кнопки выше.",
+              "Create one via “claude setup-token” or paste an existing token — buttons above.")}
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {accounts.map((a) => {
+              const days = daysUntil(a.expires_at);
+              const expiring = days <= 30;
+              const expired = days < 0;
+              return (
+                <div key={a.id} className={"token-row" + (a.is_active ? " is-active" : "")}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: a.is_active ? "var(--ok, #16a34a)" : "var(--text-3)" }} />
+                  <span className="tr-name" title={a.name}>{a.name}</span>
+                  <span className="tr-dim">{a.plan_label || "—"}</span>
+                  <span className="tr-dim" title={a.token_masked}>{a.token_masked}</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: expired ? "var(--bad)" : expiring ? "var(--warn, #ca8a04)" : "var(--text-3)" }}
+                    title={new Date(a.expires_at).toLocaleDateString()}>
+                    {(expiring || expired) && <AlertTriangle size={12} />}
+                    {expired ? L(lang, "истёк", "expired") : L(lang, `${days} дн`, `${days}d`)}
                   </span>
-                ) : (
-                  <button type="button" className="chip" disabled={busyId === a.id} onClick={() => void activate(a.id)}>
-                    {busyId === a.id ? <Loader2 size={12} className="spin" /> : L(lang, "Активир.", "Activate")}
-                  </button>
-                )}
+                  <span className="tr-actions">
+                    {a.is_active ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--ok, #16a34a)", marginRight: 2 }}>
+                        <Check size={13} /> {L(lang, "активен", "active")}
+                      </span>
+                    ) : (
+                      <button type="button" className="chip" disabled={busyId === a.id} onClick={() => void activate(a.id)}>
+                        {busyId === a.id ? <Loader2 size={12} className="spin" /> : L(lang, "Активир.", "Activate")}
+                      </button>
+                    )}
+                    <button type="button" className="icon-btn icon-btn--xs" title={L(lang, "Копировать export", "Copy export")} onClick={() => void copyExport(a.id)}>
+                      {copiedId === a.id ? <Check size={13} /> : <Copy size={13} />}
+                    </button>
+                    <button type="button" className="icon-btn icon-btn--xs" title={L(lang, "Переименовать", "Rename")} onClick={() => void rename(a.id, a.name)}>
+                      <Pencil size={13} />
+                    </button>
+                    <button type="button" className="icon-btn icon-btn--xs" title={L(lang, "Удалить", "Delete")} onClick={() => remove(a.id, a.name)}>
+                      <Trash2 size={13} />
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-                <button type="button" className="icon-btn icon-btn--xs" title={L(lang, "Копировать export", "Copy export")}
-                  onClick={() => void copyExport(a.id)}>
-                  {copiedId === a.id ? <Check size={13} /> : <Copy size={13} />}
-                </button>
-                <button type="button" className="icon-btn icon-btn--xs" title={L(lang, "Переименовать", "Rename")}
-                  onClick={() => void rename(a.id, a.name)}>
-                  <Pencil size={13} />
-                </button>
-                <button type="button" className="icon-btn icon-btn--xs" title={L(lang, "Удалить", "Delete")}
-                  onClick={() => void remove(a.id, a.name)}>
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            );
-          })}
+        <div className="token-hint">
+          {L(lang,
+            "Активный токен подставляется в CLAUDE_CODE_OAUTH_TOKEN. Windows — для новых терминалов автоматически; macOS/Linux — «Копировать export» и вставить в shell.",
+            "The active token is injected into CLAUDE_CODE_OAUTH_TOKEN. Windows: new terminals pick it up automatically; macOS/Linux: use “Copy export” and paste it into your shell.")}
+          <br />
+          {L(lang,
+            "«Отключить» убирает токен и возвращает Claude к обычным аккаунтам (вкладка Claude). ⚠ = токен скоро истечёт.",
+            "“Turn off” removes the token and returns Claude to the regular accounts (Claude tab). ⚠ = token expiring soon.")}
         </div>
-      )}
-
-      <div style={{ marginTop: 14, color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11.5, lineHeight: 1.7 }}>
-        {L(lang,
-          "Активный токен подставляется в CLAUDE_CODE_OAUTH_TOKEN. На Windows — для новых терминалов автоматически; на macOS/Linux нажми «Копировать export» и вставь в свой shell.",
-          "The active token is injected into CLAUDE_CODE_OAUTH_TOKEN. On Windows it applies to new terminals automatically; on macOS/Linux use “Copy export” and paste it into your shell.")}
-        <br />
-        {L(lang, "⚠ = токен скоро истечёт — пересоздай через «claude setup-token».",
-          "⚠ = token expiring soon — regenerate via “claude setup-token”.")}
       </div>
     </div>
   );
@@ -266,8 +251,8 @@ function AddExistingForm({
 
   return (
     <div style={{
-      display: "flex", flexDirection: "column", gap: 8, padding: 12, marginBottom: 12,
-      border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2, #0000000a)",
+      display: "flex", flexDirection: "column", gap: 8, padding: 12,
+      border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-2)",
     }}>
       <div style={{ display: "flex", gap: 8 }}>
         <input className="ui-input" placeholder={L(lang, "Имя (напр. Work)", "Name (e.g. Work)")}
@@ -280,8 +265,7 @@ function AddExistingForm({
         style={{ fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }} />
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button type="button" className="chip" onClick={onClose}>{L(lang, "Отмена", "Cancel")}</button>
-        <button type="button" className="chip chip--add" disabled={saving || !name.trim() || !token.trim()}
-          onClick={() => void submit()}>
+        <button type="button" className="chip chip--add" disabled={saving || !name.trim() || !token.trim()} onClick={() => void submit()}>
           {saving ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} {L(lang, "Добавить", "Add")}
         </button>
       </div>
