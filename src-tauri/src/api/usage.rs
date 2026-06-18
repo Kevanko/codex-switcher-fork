@@ -214,6 +214,22 @@ pub async fn fetch_chatgpt_account_metadata(
 }
 
 async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInfo> {
+    // "Powered-off PC" safety model (same as Claude): a parked (inactive) Codex
+    // account must NEVER be contacted with a refreshable token by the switcher.
+    // OpenAI rotates refresh tokens with reuse detection, so any switcher-driven
+    // refresh of an account another client also holds forks the chain and logs
+    // that client out (`refresh_token_reused`). Inactive accounts therefore serve
+    // their last cached usage snapshot with zero network I/O; only the ACTIVE
+    // account — whose auth.json is owned and kept fresh by the running Codex CLI —
+    // is fetched live.
+    let store = load_accounts()?;
+    let is_active = store.active_account_id.as_deref() == Some(account.id.as_str());
+    if !is_active {
+        return Ok(parked_chatgpt_usage(account));
+    }
+
+    // Active account: re-read whatever the Codex CLI wrote to auth.json.
+    // ensure_chatgpt_tokens_fresh syncs only — it never rotates the token.
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
 
@@ -223,25 +239,53 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
     }
     if response.status() == StatusCode::UNAUTHORIZED {
         println!(
-            "[Usage] Unauthorized for account {}, refreshing token and retrying once",
+            "[Usage] Unauthorized for account {}, re-syncing from auth.json and retrying once",
             fresh_account.name
         );
-        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
-        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
-        let retry_response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
-        if let Some(limited) = handle_rate_limited_response(&refreshed_account.id, &retry_response)
-        {
-            return Ok(limited);
+        // Never rotate the token ourselves — the active account's credential is
+        // owned by the running Codex CLI. Re-read whatever the live file has and
+        // retry once; if the CLI hasn't refreshed it, surface a soft error.
+        let _ = crate::auth::storage::sync_codex_tokens_from_file(&fresh_account.id);
+        let retried_account = load_accounts()?
+            .accounts
+            .into_iter()
+            .find(|a| a.id == fresh_account.id);
+
+        if let Some(retried) = retried_account {
+            let (retry_token, retry_account_id) = extract_chatgpt_auth(&retried)?;
+            if retry_token != access_token {
+                let retry_response =
+                    send_chatgpt_usage_request(retry_token, retry_account_id).await?;
+                if let Some(limited) = handle_rate_limited_response(&retried.id, &retry_response) {
+                    return Ok(limited);
+                }
+                return parse_usage_response(&retried.id, &retried.name, retry_response).await;
+            }
         }
-        return parse_usage_response(
-            &refreshed_account.id,
-            &refreshed_account.name,
-            retry_response,
-        )
-        .await;
+
+        return Ok(UsageInfo::error(
+            fresh_account.id.clone(),
+            "Codex session token rejected — open Codex to refresh the login".to_string(),
+        ));
     }
 
     parse_usage_response(&fresh_account.id, &fresh_account.name, response).await
+}
+
+/// Last-known usage for a parked (inactive) Codex account, served WITHOUT any
+/// network request so the account's refresh-token chain stays frozen — exactly
+/// like a powered-off PC. Mirrors `parked_claude_usage`.
+fn parked_chatgpt_usage(account: &StoredAccount) -> UsageInfo {
+    match &account.cached_usage {
+        Some(snapshot) if snapshot.error.is_none() => {
+            let mut snapshot = snapshot.clone();
+            snapshot.account_id = account.id.clone();
+            snapshot.rate_limited = None;
+            snapshot
+        }
+        // Never fetched yet (or last fetch errored): neutral empty bar, not an error.
+        _ => UsageInfo::empty(account.id.clone()),
+    }
 }
 
 async fn parse_usage_response(

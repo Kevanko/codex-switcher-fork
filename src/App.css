@@ -31,7 +31,7 @@
   --accent-soft: color-mix(in oklab, var(--accent) 16%, transparent);
   --accent-line: color-mix(in oklab, var(--accent) 38%, transparent);
   --shadow: 0 1px 0 rgba(255,255,255,.02), 0 8px 30px -12px rgba(0,0,0,.7);
-  --grid-line: rgba(255,255,255,.022);
+  --grid-line: rgba(255,255,255,.05);
 }
 
 [data-theme="light"] {
@@ -267,6 +267,10 @@ input, textarea, select { font-family: inherit; }
   grid-template-columns: auto 1fr auto;
   align-items: center; gap: 10px;
   min-height: var(--row-h);
+  /* Rigid height: in the narrow single-column layout the list is a short flex
+     column, and without this the rows (and their selection outline) get
+     squashed vertically instead of the list scrolling. */
+  flex-shrink: 0;
   padding: 8px 10px 8px 12px;
   border: 1px solid transparent; border-radius: var(--r-md);
   background: transparent; text-align: left; width: 100%;
@@ -627,6 +631,11 @@ input, textarea, select { font-family: inherit; }
 }
 .ui-icon-button:hover { color: var(--text); background: var(--surface-2); border-color: var(--border-2); }
 .ui-icon-button.is-danger:hover { color: var(--bad); border-color: color-mix(in oklab, var(--bad) 36%, transparent); background: color-mix(in oklab, var(--bad) 10%, transparent); }
+/* Refreshing: highlight in the accent colour and keep the spinner crisp. */
+.ui-icon-button.is-busy { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, transparent); background: color-mix(in oklab, var(--accent) 10%, transparent); opacity: 1; }
+.ui-icon-button.is-busy:disabled { cursor: progress; }
+.btn.is-busy { color: var(--accent); opacity: 1; cursor: progress; }
+.btn.is-busy:disabled { opacity: 1; }
 
 .ui-segment-button {
   display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -687,7 +696,8 @@ input, textarea, select { font-family: inherit; }
   display: flex; align-items: center; gap: 9px;
   padding: 9px 15px; border-radius: var(--r-md);
   background: var(--surface); border: 1px solid var(--border-2);
-  box-shadow: var(--shadow); font-size: 12.5px; white-space: nowrap;
+  box-shadow: var(--shadow); font-size: 12.5px;
+  max-width: min(520px, 92vw); overflow-wrap: anywhere;
   animation: toast-in .22s cubic-bezier(.2,.7,.2,1);
   pointer-events: auto;
 }
@@ -734,8 +744,13 @@ input, textarea, select { font-family: inherit; }
   .col-list { border-right: 0; border-bottom: 1px solid var(--border); max-height: 40vh; }
   .dbody { grid-template-columns: 1fr; }
   .dbody-col + .dbody-col { border-left: 0; border-top: 1px solid var(--border); }
-  .gstats { display: none; }
 }
+/* The stats block needs ~1050px to sit next to the tabs + window controls.
+   Hide it earlier so it never overflows and pushes the window controls
+   (maximize / close) off the right edge. Everything else in the topbar stays
+   flex-shrink:0 (the blanket rule above), so brand, tabs and tools never
+   resize — only the flexible spacer absorbs width changes. */
+@media (max-width: 1080px) { .gstats { display: none; } }
 @media (max-width: 560px) {
   .detail { padding: 12px; }
   .dhead { flex-wrap: wrap; }

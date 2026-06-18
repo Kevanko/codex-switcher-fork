@@ -1,16 +1,14 @@
 //! ChatGPT and Claude OAuth token refresh helpers
 
 use anyhow::{Context, Result};
-use base64::Engine;
 use chrono::Utc;
 use tokio::time::{sleep, Duration};
 
 use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens};
-use crate::types::{parse_chatgpt_id_token_claims, AuthData, StoredAccount};
+use crate::types::{parse_chatgpt_id_token_claims, parse_jwt_expiry, AuthData, StoredAccount};
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const EXPIRY_SKEW_SECONDS: i64 = 60;
 
 /// Claude expiresAt is stored in milliseconds.
 const CLAUDE_EXPIRY_SKEW_MS: i64 = 120_000;
@@ -24,23 +22,57 @@ struct RefreshTokenResponse {
     refresh_token: Option<String>,
 }
 
-/// Ensure the account has a non-expired ChatGPT access token.
-/// Returns an updated account when a refresh was performed.
+/// "Powered-off PC" safety model for ChatGPT/Codex (mirrors the Claude model).
+///
+/// OpenAI rotates refresh tokens with reuse detection: presenting an already-
+/// rotated (one-shot) refresh token returns `refresh_token_reused` and logs that
+/// holder out. So the switcher must NEVER rotate a ChatGPT refresh token in the
+/// background — doing so for an account another client also holds (a running
+/// Codex CLI, the VS Code extension, or another machine) forks the chain and
+/// kicks that client out. OpenAI's own docs spell this out: "one auth.json per
+/// serialized stream; do not share it across concurrent jobs or machines".
+///
+/// - ACTIVE account: adopt whatever the running Codex CLI last wrote to
+///   auth.json, then — only if that token is still expired — do the ONE forward
+///   refresh. Safe: the active account is the single owner on this machine.
+/// - INACTIVE (parked) account: stays frozen, like a powered-off PC. Returned
+///   as-is; never rotated in the background (that's what forks the chain and
+///   logs out another holder).
 pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<StoredAccount> {
     match &account.auth_data {
-        AuthData::ApiKey { .. } => Ok(account.clone()),
-        AuthData::ClaudeOAuth { .. } => Ok(account.clone()),
-        AuthData::ChatGPT { access_token, .. } => {
-            if token_expired_or_near_expiry(access_token) {
-                println!(
-                    "[Auth] Access token expired/near expiry for account {}, refreshing",
-                    account.name
-                );
-                refresh_chatgpt_tokens(account).await
-            } else {
-                Ok(account.clone())
+        AuthData::ApiKey { .. } | AuthData::ClaudeOAuth { .. } => Ok(account.clone()),
+        AuthData::ChatGPT { .. } => {
+            let store = load_accounts()?;
+            let is_active = store.active_account_id.as_deref() == Some(account.id.as_str());
+            if !is_active {
+                // Parked account: never touch its token chain. Return it frozen.
+                return Ok(account.clone());
+            }
+
+            // Active: prefer whatever the Codex CLI wrote; refresh once only if
+            // that token is actually expired (switching into a long-parked
+            // account leaves its access token stale and unusable otherwise).
+            let _ = crate::auth::storage::sync_codex_tokens_from_file(&account.id);
+            let synced = load_accounts()?
+                .accounts
+                .into_iter()
+                .find(|a| a.id == account.id)
+                .unwrap_or_else(|| account.clone());
+            match &synced.auth_data {
+                AuthData::ChatGPT { access_token, .. } if chatgpt_token_expired(access_token) => {
+                    refresh_chatgpt_tokens(&synced).await
+                }
+                _ => Ok(synced),
             }
         }
+    }
+}
+
+/// True when the JWT access token is expired or within 60s of expiry.
+fn chatgpt_token_expired(access_token: &str) -> bool {
+    match parse_jwt_expiry(access_token) {
+        Some(exp) => exp <= Utc::now() + chrono::Duration::seconds(60),
+        None => false,
     }
 }
 
@@ -164,26 +196,6 @@ pub async fn ensure_claude_tokens_fresh(account: &StoredAccount) -> Result<Store
 
     // Parked account: never touch its token chain. Return it frozen.
     Ok(account.clone())
-}
-
-fn token_expired_or_near_expiry(access_token: &str) -> bool {
-    match parse_jwt_exp(access_token) {
-        Some(expiry) => expiry <= Utc::now().timestamp() + EXPIRY_SKEW_SECONDS,
-        None => false,
-    }
-}
-
-fn parse_jwt_exp(token: &str) -> Option<i64> {
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .ok()?;
-    let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    json.get("exp").and_then(|v| v.as_i64())
 }
 
 async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<RefreshTokenResponse> {

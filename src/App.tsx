@@ -25,6 +25,7 @@ import {
   EyeOff,
   FolderInput,
   KeyRound,
+  Loader2,
   Monitor,
   Moon,
   PencilLine,
@@ -425,7 +426,7 @@ function AccountDetailPanel({
   autoWarmupLabel: string;
   onSwitch: () => void;
   onWarmup: () => void;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   onDelete: () => void;
   onRename: (newName: string) => Promise<void>;
   onToggleAutoWarmup: () => void;
@@ -435,6 +436,7 @@ function AccountDetailPanel({
 }) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(account.name);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   // Set when Escape is pressed so the resulting blur cancels instead of saving.
   const cancelNameRef = useRef(false);
@@ -725,24 +727,38 @@ function AccountDetailPanel({
               <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> Прогреть
             </button>
           )}
-          {(isCodex || account.is_active) ? (
-            <button type="button" className="btn btn--ghost btn--md" onClick={onRefresh}>
-              <RefreshCcw size={14} /> {locale_label("Обновить", "Refresh", locale)}
+          {account.is_active ? (
+            <button
+              type="button"
+              className={"btn btn--ghost btn--md" + (isRefreshing ? " is-busy" : "")}
+              disabled={isRefreshing}
+              onClick={async () => {
+                if (isRefreshing) return;
+                setIsRefreshing(true);
+                try { await onRefresh(); }
+                finally { setIsRefreshing(false); }
+              }}
+            >
+              {isRefreshing
+                ? <Loader2 size={14} className="spin" />
+                : <RefreshCcw size={14} />}
+              {isRefreshing
+                ? locale_label("Обновление…", "Refreshing…", locale)
+                : locale_label("Обновить", "Refresh", locale)}
             </button>
           ) : (
-            <span
-              className="dfoot-note"
-              title={account.cached_usage_updated_at
-                ? locale_label("Обновлено: ", "Updated: ", locale) + new Date(account.cached_usage_updated_at).toLocaleString()
-                : undefined}
-            >
-              <Database size={13} />
-              {locale_label(
-                "Данные из кэша — обновляется только активный аккаунт",
-                "Cached data — only the active account refreshes",
+            <button
+              type="button"
+              className="btn btn--ghost btn--md"
+              disabled
+              title={locale_label(
+                "Данные из кэша — обновляется только активный аккаунт. Переключитесь, чтобы обновить.",
+                "Cached data — only the active account refreshes. Switch to update.",
                 locale
               )}
-            </span>
+            >
+              <Database size={14} /> {locale_label("Из кэша", "Cached", locale)}
+            </button>
           )}
           {isCodex && (
             <button
@@ -1763,7 +1779,21 @@ function App() {
               autoWarmupLabel={getAutoWarmupLabel(effectiveSelectedAccount)}
               onSwitch={() => void handleSwitch(effectiveSelectedAccount.id, effectiveSelectedAccount.provider)}
               onWarmup={() => void handleWarmupAccount(effectiveSelectedAccount.id, effectiveSelectedAccount.name)}
-              onRefresh={() => void refreshSingleUsage(effectiveSelectedAccount.id, { refreshMetadata: effectiveSelectedAccount.provider === "codex" })}
+              onRefresh={async () => {
+                try {
+                  // No refreshMetadata: that rotates the OAuth token from the
+                  // (often stale) stored copy and triggers refresh_token_reused.
+                  // get_usage already syncs the active account's token from the
+                  // live auth.json safely.
+                  const usage = await refreshSingleUsage(effectiveSelectedAccount.id);
+                  if (usage?.rate_limited) showWarmupToast(t.toast.refreshRateLimited, true);
+                  else if (usage?.error) showWarmupToast(t.toast.refreshFailed, true);
+                  else showWarmupToast(t.toast.refreshed);
+                } catch {
+                  // Backend errors can be a whole HTML page — show a short, fixed message.
+                  showWarmupToast(t.toast.refreshFailed, true);
+                }
+              }}
               onDelete={() => void handleDelete(effectiveSelectedAccount.id)}
               onRename={(newName) => renameAccount(effectiveSelectedAccount.id, newName)}
               onToggleAutoWarmup={() => toggleAutoWarmupAccount(effectiveSelectedAccount.id)}

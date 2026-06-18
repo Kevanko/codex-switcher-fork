@@ -162,12 +162,15 @@ export function useAccounts() {
           ...(accountList ?? accountsRef.current),
         ];
 
-        // Parked (inactive) Claude accounts are frozen like a powered-off PC:
-        // never contacted, served from cache only. Skipping them here keeps their
-        // "last updated" timestamp honest (so the UI can truthfully say the data
-        // is stale) and guarantees zero network on their rotation-sensitive token.
+        // Parked (inactive) OAuth accounts — Claude AND Codex — are frozen like a
+        // powered-off PC: never contacted, served from cache only. Both providers
+        // rotate refresh tokens with reuse detection, so a background refresh of an
+        // account another client also holds would log that client out. Skipping
+        // them here keeps their "last updated" timestamp honest (so the UI can
+        // truthfully say the data is stale) and guarantees zero network on their
+        // rotation-sensitive token. API-key accounts have no usage to fetch anyway.
         list = list.filter(
-          (account) => !(account.provider === "claude" && !account.is_active)
+          (account) => account.is_active || account.auth_mode === "api_key"
         );
 
         if (options?.auto) {

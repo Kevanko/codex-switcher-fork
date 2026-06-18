@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Loader2,
   PencilLine,
   RefreshCcw,
   ShieldCheck,
@@ -470,10 +471,12 @@ export function AccountCard({
               void handleRefresh();
             }}
             disabled={isRefreshing}
-            className="ui-icon-button"
+            className={"ui-icon-button" + (isRefreshing ? " is-busy" : "")}
             title={t.account.refreshUsage}
           >
-            <RefreshCcw size={16} className={isRefreshing ? "spin" : undefined} />
+            {isRefreshing
+              ? <Loader2 size={16} className="spin" />
+              : <RefreshCcw size={16} />}
           </button>
         )}
 
