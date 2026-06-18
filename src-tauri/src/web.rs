@@ -155,7 +155,7 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         }
         "get_usage" => {
             let args: AccountIdArgs = parse_args(payload)?;
-            to_json(get_usage(args.account_id).await?)
+            to_json(get_usage(args.account_id, None).await?)
         }
         "refresh_account_metadata" => {
             let args: AccountIdArgs = parse_args(payload)?;

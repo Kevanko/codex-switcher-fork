@@ -13,12 +13,12 @@ use futures::{stream, StreamExt};
 
 /// Get usage info for a specific account
 #[tauri::command]
-pub async fn get_usage(account_id: String) -> Result<UsageInfo, String> {
+pub async fn get_usage(account_id: String, force: Option<bool>) -> Result<UsageInfo, String> {
     let account = get_account(&account_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    let usage = get_account_usage(&account)
+    let usage = get_account_usage(&account, force.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())?;
     if usage.error.is_none() {
