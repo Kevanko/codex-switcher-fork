@@ -57,6 +57,14 @@ fn rate_limit_remaining(account_id: &str) -> Option<i64> {
     }
 }
 
+/// Drop an account's cooldown so the next request is allowed through (used by
+/// user-initiated refreshes).
+fn clear_rate_limit_cooldown(account_id: &str) {
+    if let Ok(mut map) = rate_limit_gate().lock() {
+        map.remove(account_id);
+    }
+}
+
 fn start_rate_limit_cooldown(account_id: &str, seconds: i64) {
     let seconds = seconds.clamp(
         RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS,
@@ -123,10 +131,15 @@ struct AccountsCheckEntitlement {
     expires_at: Option<DateTime<Utc>>,
 }
 
-/// Get usage information for an account
-pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
-    // Honor an active 429 cooldown without touching the network.
-    if let Some(remaining) = rate_limit_remaining(&account.id) {
+/// Get usage information for an account. `force` (a user-initiated refresh)
+/// ignores the local cooldown gate and tries the network for real, so a stale
+/// 429 cooldown never blocks the user until an app restart.
+pub async fn get_account_usage(account: &StoredAccount, force: bool) -> Result<UsageInfo> {
+    if force {
+        // Drop any local cooldown so the manual refresh actually hits the API.
+        clear_rate_limit_cooldown(&account.id);
+    } else if let Some(remaining) = rate_limit_remaining(&account.id) {
+        // Honor an active 429 cooldown without touching the network.
         println!(
             "[Usage] Account {} still cooling down ({remaining}s left), skipping fetch",
             account.name
@@ -827,7 +840,7 @@ pub async fn refresh_all_usage(accounts: &[StoredAccount]) -> Vec<UsageInfo> {
     let concurrency = accounts.len().min(10).max(1);
     let results: Vec<UsageInfo> = stream::iter(accounts.iter().cloned())
         .map(|account| async move {
-            match get_account_usage(&account).await {
+            match get_account_usage(&account, false).await {
                 Ok(info) => info,
                 Err(e) => {
                     println!("[Usage] Error for {}: {}", account.name, e);

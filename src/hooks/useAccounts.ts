@@ -306,7 +306,7 @@ export function useAccounts() {
 
   const refreshSingleUsage = useCallback(async (
     accountId: string,
-    options?: { refreshMetadata?: boolean }
+    options?: { refreshMetadata?: boolean; force?: boolean }
   ) => {
     try {
       if (options?.refreshMetadata) {
@@ -318,7 +318,7 @@ export function useAccounts() {
         prev.map((a) => a.id === accountId ? { ...a, usageLoading: true } : a)
       );
       usageAttemptAtRef.current[accountId] = Date.now();
-      const usage = await invokeBackend<UsageInfo>("get_usage", { accountId });
+      const usage = await invokeBackend<UsageInfo>("get_usage", { accountId, force: options?.force ?? false });
       setNetworkOffline(false);
       if (usage.rate_limited) {
         usageBlockedUntilRef.current[accountId] = Date.now() + RATE_LIMIT_FRONTEND_BACKOFF_MS;

@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
 import { AddAccountModal, UpdateChecker, ClaudeTokenPanel } from "./components";
+import { GravityGrid } from "./components/GravityGrid";
 import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -1246,23 +1247,37 @@ function App() {
     let unlisten: (() => void) | undefined;
     let saveTimer: number | undefined;
     const syncMax = async () => { try { setIsWindowMaximized(await currentWindow.isMaximized()); } catch {} };
+    // Enforce the minimum window size at runtime so a resize never clips the
+    // window controls (the topbar needs ~880px to fit the close button).
+    const MIN_W = 880, MIN_H = 540;
+    const enforceMin = async () => { try { await currentWindow.setMinSize(new LogicalSize(MIN_W, MIN_H)); } catch {} };
     const restoreSize = async () => {
       try {
         const saved = window.localStorage.getItem(WINDOW_SIZE_STORAGE_KEY);
         if (!saved) return;
         const p = JSON.parse(saved) as { width?: number; height?: number };
-        const w = Math.min(2200, Math.max(720, Math.round(p.width ?? 0)));
-        const h = Math.min(1400, Math.max(540, Math.round(p.height ?? 0)));
+        const w = Math.min(2200, Math.max(MIN_W, Math.round(p.width ?? 0)));
+        const h = Math.min(1400, Math.max(MIN_H, Math.round(p.height ?? 0)));
         if (w && h) await currentWindow.setSize(new LogicalSize(w, h));
       } catch {}
     };
+    void enforceMin();
     void syncMax();
     void restoreSize();
     currentWindow.onResized(() => {
       void syncMax();
+      // Borderless windows on Windows can be dragged below the configured min via
+      // startResizeDragging, which clips the window controls. Snap back to the min.
+      if (window.innerWidth < MIN_W || window.innerHeight < MIN_H) {
+        void currentWindow.setSize(new LogicalSize(Math.max(MIN_W, window.innerWidth), Math.max(MIN_H, window.innerHeight))).catch(() => {});
+      }
       if (saveTimer) window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => {
-        try { window.localStorage.setItem(WINDOW_SIZE_STORAGE_KEY, JSON.stringify({ width: window.innerWidth, height: window.innerHeight })); } catch {}
+        try {
+          window.localStorage.setItem(WINDOW_SIZE_STORAGE_KEY, JSON.stringify({
+            width: Math.max(MIN_W, window.innerWidth), height: Math.max(MIN_H, window.innerHeight),
+          }));
+        } catch {}
       }, 180);
     }).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => { if (saveTimer) window.clearTimeout(saveTimer); unlisten?.(); };
@@ -1569,7 +1584,10 @@ function App() {
   ];
 
   return (
-    <div className="app" data-theme={themeMode} data-density={cardDensity} style={shellStyle}>
+    <div className={"app" + (isWindowMaximized ? " is-maximized" : "")} data-theme={themeMode} data-density={cardDensity} style={shellStyle}>
+      {/* Interactive gravity-warp grid background */}
+      <GravityGrid theme={themeMode} accent={accentTheme.accent} />
+
       {/* Tauri resize handles */}
       {([
         ["North", "resize-handle is-n"], ["South", "resize-handle is-s"],
@@ -1648,13 +1666,13 @@ function App() {
         <div className="topbar-tools">
           <button
             type="button"
-            className={"icon-btn icon-btn--md" + (hideAllEmails ? " is-active" : "")}
+            className={"icon-btn icon-btn--md tool-collapsible" + (hideAllEmails ? " is-active" : "")}
             title={hideAllEmails ? locale_label("Показать почты", "Show emails", resolvedLanguage) : locale_label("Скрыть почты", "Hide emails", resolvedLanguage)}
             onClick={() => setHideAllEmails(v => !v)}
           >
             {hideAllEmails ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
-          <button type="button" className="icon-btn icon-btn--md" title={locale_label("Тема", "Theme", resolvedLanguage)}
+          <button type="button" className="icon-btn icon-btn--md tool-collapsible-2" title={locale_label("Тема", "Theme", resolvedLanguage)}
             onClick={() => setThemePreference(themeMode === "dark" ? "light" : "dark")}>
             {themeMode === "dark" ? <Moon size={16} /> : <Sun size={16} />}
           </button>
@@ -1785,7 +1803,7 @@ function App() {
                   // (often stale) stored copy and triggers refresh_token_reused.
                   // get_usage already syncs the active account's token from the
                   // live auth.json safely.
-                  const usage = await refreshSingleUsage(effectiveSelectedAccount.id);
+                  const usage = await refreshSingleUsage(effectiveSelectedAccount.id, { force: true });
                   if (usage?.rate_limited) showWarmupToast(t.toast.refreshRateLimited, true);
                   else if (usage?.error) showWarmupToast(t.toast.refreshFailed, true);
                   else showWarmupToast(t.toast.refreshed);
