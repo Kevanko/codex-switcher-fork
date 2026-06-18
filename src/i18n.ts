@@ -237,6 +237,9 @@ export const translations = {
       imported: "Imported",
       skipped: "skipped",
       total: "total",
+      refreshed: "Usage refreshed",
+      refreshFailed: "Couldn't refresh usage",
+      refreshRateLimited: "Too many requests (429) — couldn't refresh, last data kept",
     },
     update: {
       available: "Update available",
@@ -483,6 +486,9 @@ export const translations = {
       imported: "Импортировано",
       skipped: "пропущено",
       total: "всего",
+      refreshed: "Лимиты обновлены",
+      refreshFailed: "Не удалось обновить",
+      refreshRateLimited: "Слишком много запросов (429) — не обновлено, показаны последние данные",
     },
     update: {
       available: "Доступно обновление",
