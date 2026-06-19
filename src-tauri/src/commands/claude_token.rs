@@ -261,6 +261,8 @@ pub async fn activate_claude_token_account(id: String) -> Result<(), String> {
         .ok_or_else(|| format!("Token account not found: {id}"))?
         .token
         .clone();
+    // A gateway (GLM) env override would shadow this token — clear it first.
+    let _ = crate::commands::gateway::deactivate_active_gateway();
     store.active_claude_token_id = Some(id);
     save_accounts(&store).map_err(|e| e.to_string())?;
     apply_claude_token_env(Some(&token)).map_err(|e| e.to_string())

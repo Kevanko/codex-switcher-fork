@@ -72,6 +72,21 @@ export interface ClaudeTokenAccountInfo {
   plan_label: string | null;
 }
 
+/** An Anthropic-compatible gateway account (GLM via z.ai / OpenRouter / custom). */
+export interface GatewayAccountInfo {
+  id: string;
+  name: string;
+  /** Anthropic-compatible base URL, e.g. "https://api.z.ai/api/anthropic". */
+  base_url: string;
+  /** Pinned model id sent via ANTHROPIC_MODEL, e.g. "glm-5.2". */
+  model: string | null;
+  /** Masked key for display. */
+  key_masked: string;
+  is_active: boolean;
+  /** ISO timestamp */
+  created_at: string;
+}
+
 export interface WarmupSummary {
   total_accounts: number;
   warmed_accounts: number;

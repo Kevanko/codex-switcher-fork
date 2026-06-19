@@ -1,11 +1,12 @@
 //! Account management Tauri commands
 
 use crate::auth::{
-    add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    import_from_auth_json, import_from_auth_json_contents, import_from_claude_credentials,
-    import_from_claude_credentials_contents, load_accounts,
-    reconcile_active_account_with_current_auth, remove_account, save_accounts, set_active_account,
-    set_active_claude_account, switch_to_account, switch_to_claude_account, touch_account,
+    add_account, claude_token_expired, create_chatgpt_account_from_refresh_token,
+    get_active_account, import_from_auth_json, import_from_auth_json_contents,
+    import_from_claude_credentials, import_from_claude_credentials_contents, load_accounts,
+    reconcile_active_account_with_current_auth, refresh_claude_tokens, remove_account,
+    save_accounts, set_active_account, set_active_claude_account, switch_to_account,
+    switch_to_claude_account, touch_account,
 };
 use crate::commands::process::{
     restart_codex_process, snapshot_restart_target, terminate_codex_processes,
@@ -320,6 +321,9 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
     if account.provider == AccountProvider::Claude {
+        // A gateway (GLM) env override would shadow this OAuth login — clear it
+        // so Claude Code actually uses the account we're switching to.
+        let _ = crate::commands::gateway::deactivate_active_gateway();
         // Before switching, sync the currently active Claude account's tokens
         // from the live .credentials.json so our DB stays up-to-date.
         if let Some(active_claude_id) = store.active_claude_account_id.as_deref() {
@@ -334,7 +338,30 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
             .iter()
             .find(|a| a.id == account_id)
             .ok_or_else(|| format!("Account not found: {account_id}"))?;
-        switch_to_claude_account(account).map_err(|e| e.to_string())?;
+
+        // We're about to make this account active and nothing else on this
+        // machine owns its credential yet (Claude Code only refreshes whichever
+        // account is *currently* active) — the one safe window to refresh a
+        // stale token ourselves, so /usage works immediately instead of needing
+        // a manual `claude` session first. Best-effort: on failure we still
+        // switch with the (possibly stale) stored token, same as before.
+        let account = if let AuthData::ClaudeOAuth { expires_at, .. } = &account.auth_data {
+            if claude_token_expired(*expires_at) {
+                match refresh_claude_tokens(account).await {
+                    Ok(refreshed) => refreshed,
+                    Err(err) => {
+                        println!("[Auth] Pre-switch Claude token refresh failed: {err}");
+                        account.clone()
+                    }
+                }
+            } else {
+                account.clone()
+            }
+        } else {
+            account.clone()
+        };
+
+        switch_to_claude_account(&account).map_err(|e| e.to_string())?;
         set_active_claude_account(&account_id).map_err(|e| e.to_string())?;
         touch_account(&account_id).map_err(|e| e.to_string())?;
         return Ok(());
@@ -742,6 +769,8 @@ async fn build_store_from_slim_payload(
         masked_account_ids: Vec::new(),
         claude_token_accounts: Vec::new(),
         active_claude_token_id: None,
+        gateway_accounts: Vec::new(),
+        active_gateway_id: None,
     })
 }
 
@@ -961,6 +990,8 @@ fn codex_only_store(store: &AccountsStore) -> AccountsStore {
         masked_account_ids: store.masked_account_ids.clone(),
         claude_token_accounts: store.claude_token_accounts.clone(),
         active_claude_token_id: store.active_claude_token_id.clone(),
+        gateway_accounts: store.gateway_accounts.clone(),
+        active_gateway_id: store.active_gateway_id.clone(),
     }
 }
 

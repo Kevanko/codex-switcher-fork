@@ -154,8 +154,65 @@ pub async fn create_chatgpt_account_from_refresh_token(
     ))
 }
 
-fn claude_token_expired(expires_at_ms: i64) -> bool {
+pub fn claude_token_expired(expires_at_ms: i64) -> bool {
     expires_at_ms <= Utc::now().timestamp_millis() + CLAUDE_EXPIRY_SKEW_MS
+}
+
+const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+#[derive(Debug, serde::Deserialize)]
+struct ClaudeRefreshResponse {
+    access_token: String,
+    refresh_token: String,
+    expires_in: i64,
+}
+
+/// Force-refresh a Claude account's OAuth tokens. Anthropic rotates the
+/// refresh_token on every call with no grace period, so this must only ever be
+/// called in the one safe window: right before switching INTO a parked account,
+/// when nothing else on this machine can be concurrently holding/refreshing the
+/// same credential (Claude Code only owns whichever account is *currently*
+/// active in ~/.claude/.credentials.json — and that's not this one yet).
+pub async fn refresh_claude_tokens(account: &StoredAccount) -> Result<StoredAccount> {
+    let refresh_token = match &account.auth_data {
+        AuthData::ClaudeOAuth { refresh_token, .. } => refresh_token.clone(),
+        _ => return Ok(account.clone()),
+    };
+    if refresh_token.trim().is_empty() {
+        anyhow::bail!("Missing refresh token for account {}", account.name);
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(CLAUDE_TOKEN_URL)
+        .json(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CLAUDE_CLIENT_ID,
+        }))
+        .send()
+        .await
+        .context("Failed to send Claude token refresh request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Claude token refresh failed: {status} - {body}");
+    }
+
+    let refreshed: ClaudeRefreshResponse = response
+        .json()
+        .await
+        .context("Failed to parse Claude token refresh response")?;
+
+    let expires_at = Utc::now().timestamp_millis() + refreshed.expires_in * 1000;
+    super::storage::update_account_claude_tokens(
+        &account.id,
+        refreshed.access_token,
+        refreshed.refresh_token,
+        expires_at,
+    )
 }
 
 /// Ensure the ACTIVE Claude account's in-DB tokens reflect the live credentials

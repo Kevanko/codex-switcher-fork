@@ -31,6 +31,16 @@ pub struct AccountsStore {
     /// Currently active Claude CLI token account ID.
     #[serde(default)]
     pub active_claude_token_id: Option<String>,
+    /// Anthropic-compatible gateway accounts (GLM via z.ai/OpenRouter, etc.).
+    /// Like `claude_token_accounts`, fully separate from OAuth `accounts`: a
+    /// stable API key consumed by Claude Code via the `ANTHROPIC_BASE_URL` /
+    /// `ANTHROPIC_AUTH_TOKEN` env vars. Never rotates, never touches
+    /// ~/.claude/.credentials.json.
+    #[serde(default)]
+    pub gateway_accounts: Vec<GatewayAccount>,
+    /// Currently active gateway account ID.
+    #[serde(default)]
+    pub active_gateway_id: Option<String>,
 }
 
 impl Default for AccountsStore {
@@ -43,6 +53,8 @@ impl Default for AccountsStore {
             masked_account_ids: Vec::new(),
             claude_token_accounts: Vec::new(),
             active_claude_token_id: None,
+            gateway_accounts: Vec::new(),
+            active_gateway_id: None,
         }
     }
 }
@@ -96,6 +108,52 @@ impl ClaudeTokenAccountInfo {
             is_active,
             token_masked: mask_token(&account.token),
             plan_label: account.plan_label.clone(),
+        }
+    }
+}
+
+/// An Anthropic-compatible gateway account (GLM via z.ai / OpenRouter / custom).
+///
+/// The key is STABLE (no rotation, no reuse detection) and is consumed only via
+/// the `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (+ optional `ANTHROPIC_MODEL`)
+/// environment variables, so Claude Code routes to the gateway instead of
+/// Anthropic. Switching between these never risks a session revoke.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayAccount {
+    pub id: String,
+    pub name: String,
+    /// Anthropic-compatible base URL, e.g. `https://api.z.ai/api/anthropic`.
+    pub base_url: String,
+    /// The API key sent as `ANTHROPIC_AUTH_TOKEN`.
+    pub key: String,
+    /// Optional model id pinned via `ANTHROPIC_MODEL`, e.g. `glm-5.2`.
+    #[serde(default)]
+    pub model: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// UI-facing view of a gateway account — the key is masked.
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayAccountInfo {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub model: Option<String>,
+    pub key_masked: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+impl GatewayAccountInfo {
+    pub fn from_account(account: &GatewayAccount, is_active: bool) -> Self {
+        Self {
+            id: account.id.clone(),
+            name: account.name.clone(),
+            base_url: account.base_url.clone(),
+            model: account.model.clone(),
+            key_masked: mask_token(&account.key),
+            is_active,
+            created_at: account.created_at,
         }
     }
 }
