@@ -47,6 +47,7 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
     let active = false; // pointer present & inside
     let intensity = 0; // eased 0..1
     let raf = 0;
+    let running = false; // is the RAF loop currently scheduled?
 
     const build = () => {
       W = window.innerWidth; H = window.innerHeight;
@@ -70,22 +71,13 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
       }
     };
 
-    const edge = (a: number, b: number, t: number) => {
-      const prox = (br[a] + br[b]) * 0.5;
-      const m = prox * prox; // color mix stays tight around the actual cursor
-      const tw = reduce ? 0.5 : 0.5 + 0.5 * Math.sin(t * 0.0011 + ph[a] + ph[b]);
-      // Glow uses `prox` linearly (not squared) so the decaying afterglow trail
-      // stays visibly brighter for longer instead of vanishing almost instantly.
-      const alpha = Math.min(0.6, baseAlpha + tw * 0.05 + prox * 0.55);
-      const r = Math.round(line[0] + (acc[0] - line[0]) * m);
-      const g = Math.round(line[1] + (acc[1] - line[1]) * m);
-      const bl = Math.round(line[2] + (acc[2] - line[2]) * m);
-      ctx.strokeStyle = `rgba(${r},${g},${bl},${alpha})`;
-      ctx.beginPath();
-      ctx.moveTo(cx[a], cy[a]);
-      ctx.lineTo(cx[b], cy[b]);
-      ctx.stroke();
-    };
+    // Edges are bucketed by quantized colour + alpha so the whole grid draws in a
+    // few dozen stroke() calls instead of one per segment (~7500/frame) — the main
+    // cost win while the cursor moves. The quantization is invisible at these low
+    // alphas. ponytail: 24×10 buckets is plenty; bump only if banding ever shows.
+    const ALPHA_BUCKETS = 24;
+    const COLOR_BUCKETS = 10;
+    const NUM_BUCKETS = ALPHA_BUCKETS * COLOR_BUCKETS;
 
     const draw = (t: number) => {
       intensity += ((active ? 1 : 0) - intensity) * INTENSITY_EASE;
@@ -95,6 +87,7 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
 
       ctx.clearRect(0, 0, W, H);
       const s2 = SIGMA * SIGMA;
+      let maxBr = 0; // brightest edge this frame — drives idle-sleep detection
       for (let i = 0; i < ox.length; i++) {
         const dx = mx - ox[i], dy = my - oy[i];
         const f = 1 / (1 + (dx * dx + dy * dy) / s2);
@@ -110,16 +103,70 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
         // slowly — leaves a trail of recently-touched edges that fades over time.
         const target = f * intensity;
         br[i] = target > br[i] ? target : br[i] * TRAIL_DECAY;
+        if (br[i] > maxBr) maxBr = br[i];
       }
       ctx.lineWidth = 1;
+      // Collect every segment into its colour+alpha bucket...
+      const buckets: (Path2D | null)[] = new Array(NUM_BUCKETS).fill(null);
+      const addSeg = (a: number, b: number) => {
+        const prox = (br[a] + br[b]) * 0.5;
+        const m = prox * prox; // color mix stays tight around the actual cursor
+        const tw = reduce ? 0.5 : 0.5 + 0.5 * Math.sin(t * 0.0011 + ph[a] + ph[b]);
+        // Glow uses `prox` linearly (not squared) so the decaying afterglow trail
+        // stays visibly brighter for longer instead of vanishing almost instantly.
+        const alpha = Math.min(0.6, baseAlpha + tw * 0.05 + prox * 0.55);
+        let ai = (alpha / 0.6 * ALPHA_BUCKETS) | 0;
+        if (ai >= ALPHA_BUCKETS) ai = ALPHA_BUCKETS - 1;
+        let mi = (m * (COLOR_BUCKETS - 1) + 0.5) | 0;
+        if (mi >= COLOR_BUCKETS) mi = COLOR_BUCKETS - 1;
+        const key = mi * ALPHA_BUCKETS + ai;
+        let path = buckets[key];
+        if (!path) { path = new Path2D(); buckets[key] = path; }
+        path.moveTo(cx[a], cy[a]);
+        path.lineTo(cx[b], cy[b]);
+      };
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const i = r * cols + c;
-          if (c < cols - 1) edge(i, i + 1, t);
-          if (r < rows - 1) edge(i, i + cols, t);
+          if (c < cols - 1) addSeg(i, i + 1);
+          if (r < rows - 1) addSeg(i, i + cols);
         }
       }
-      if (!reduce) raf = requestAnimationFrame(draw);
+      // ...then stroke each non-empty bucket once with its representative style.
+      for (let key = 0; key < NUM_BUCKETS; key++) {
+        const path = buckets[key];
+        if (!path) continue;
+        const mi = (key / ALPHA_BUCKETS) | 0;
+        const ai = key % ALPHA_BUCKETS;
+        const m = COLOR_BUCKETS > 1 ? mi / (COLOR_BUCKETS - 1) : 0;
+        const alpha = (ai + 0.5) / ALPHA_BUCKETS * 0.6;
+        const cr = Math.round(line[0] + (acc[0] - line[0]) * m);
+        const cg = Math.round(line[1] + (acc[1] - line[1]) * m);
+        const cb = Math.round(line[2] + (acc[2] - line[2]) * m);
+        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+        ctx.stroke(path);
+      }
+      // Stop looping once the scene has fully settled (no cursor, intensity and
+      // afterglow both faded to nothing) or the window is hidden — this is what
+      // kills the idle/background CPU cost. onMove / visibility wake it back up.
+      const settled = !active && intensity < 0.001 && maxBr < 0.001;
+      if (reduce || settled || document.hidden) {
+        running = false;
+        raf = 0;
+        return;
+      }
+      raf = requestAnimationFrame(draw);
+    };
+
+    // Wake (or keep) the loop running. No-op if already scheduled or hidden.
+    const schedule = () => {
+      if (running || reduce || document.hidden) return;
+      running = true;
+      raf = requestAnimationFrame(draw);
+    };
+    const stop = () => {
+      running = false;
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
     };
 
     // Active only while the pointer is well inside the window — moving toward any
@@ -132,26 +179,31 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
       active =
         e.clientX > EDGE && e.clientX < window.innerWidth - EDGE &&
         e.clientY > topH && e.clientY < window.innerHeight - EDGE;
+      schedule(); // wake the loop if it had settled to sleep
     };
     const onLeave = () => { active = false; };
     const onOut = (e: MouseEvent) => { if (!e.relatedTarget) active = false; };
-    const onResize = () => { build(); if (reduce) draw(0); };
+    const onResize = () => { build(); if (reduce) draw(0); else schedule(); };
+    // Minimised / background / other-tab: pause entirely (the real CPU win).
+    const onVisibility = () => { if (document.hidden) stop(); else schedule(); };
 
     build();
-    if (reduce) draw(0); else raf = requestAnimationFrame(draw);
+    if (reduce) draw(0); else schedule();
     window.addEventListener("mousemove", onMove, { passive: true });
     window.addEventListener("mouseout", onOut);
     document.addEventListener("mouseleave", onLeave);
     window.addEventListener("blur", onLeave);
     window.addEventListener("resize", onResize);
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      cancelAnimationFrame(raf);
+      stop();
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseout", onOut);
       document.removeEventListener("mouseleave", onLeave);
       window.removeEventListener("blur", onLeave);
       window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [theme, accent]);
 
