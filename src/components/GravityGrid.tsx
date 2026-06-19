@@ -14,6 +14,7 @@ const EASE = 0.16; // per-vertex smoothing (gooey)
 const INTENSITY_EASE = 0.05; // smooth fade of the whole effect in / out
 const WOBBLE = 4; // idle wobble radius (px) so it never sits perfectly still
 const WOBBLE_SPEED = 0.0006; // idle wobble speed
+const TRAIL_DECAY = 0.965; // per-frame brightness decay once cursor moves on (~1.3s afterglow)
 const EDGE = 3; // treat the cursor as "leaving" within this many px of any edge
 const MARGIN = CELL * 4; // overscan so warped edges never reveal a boundary
 
@@ -71,9 +72,11 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
 
     const edge = (a: number, b: number, t: number) => {
       const prox = (br[a] + br[b]) * 0.5;
-      const m = prox * prox;
+      const m = prox * prox; // color mix stays tight around the actual cursor
       const tw = reduce ? 0.5 : 0.5 + 0.5 * Math.sin(t * 0.0011 + ph[a] + ph[b]);
-      const alpha = Math.min(0.6, baseAlpha + tw * 0.05 + m * 0.5);
+      // Glow uses `prox` linearly (not squared) so the decaying afterglow trail
+      // stays visibly brighter for longer instead of vanishing almost instantly.
+      const alpha = Math.min(0.6, baseAlpha + tw * 0.05 + prox * 0.55);
       const r = Math.round(line[0] + (acc[0] - line[0]) * m);
       const g = Math.round(line[1] + (acc[1] - line[1]) * m);
       const bl = Math.round(line[2] + (acc[2] - line[2]) * m);
@@ -103,7 +106,10 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
         const ty = oy[i] + rx * sn + ry * cs;
         cx[i] += (tx - cx[i]) * EASE;
         cy[i] += (ty - cy[i]) * EASE;
-        br[i] = f * intensity;
+        // Afterglow: jump up instantly with the cursor, but only ever decay
+        // slowly — leaves a trail of recently-touched edges that fades over time.
+        const target = f * intensity;
+        br[i] = target > br[i] ? target : br[i] * TRAIL_DECAY;
       }
       ctx.lineWidth = 1;
       for (let r = 0; r < rows; r++) {

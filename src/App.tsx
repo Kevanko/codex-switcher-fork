@@ -43,7 +43,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AddAccountModal, UpdateChecker, ClaudeTokenPanel } from "./components";
+import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, GatewayPanel } from "./components";
 import { GravityGrid } from "./components/GravityGrid";
 import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo } from "./types";
 import {
@@ -1703,6 +1703,7 @@ function App() {
       {tabView === "tokens" ? (
         <div className="token-wrap">
           <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onTokensChange={setClaudeTokens} />
+          <GatewayPanel language={resolvedLanguage === "ru" ? "ru" : "en"} />
         </div>
       ) : (
       <div className="workbench">

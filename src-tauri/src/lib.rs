@@ -10,12 +10,14 @@ use commands::{
     activate_claude_token_account, add_account_from_file, add_claude_account_from_active_session,
     add_claude_account_from_file, add_claude_token_account, cancel_login, check_claude_file_status,
     check_codex_processes, clear_claude_active_session, complete_login, complete_reauth_login,
-    create_claude_token_account, deactivate_claude_token, delete_account,
-    delete_claude_token_account, export_accounts_full_encrypted_file, export_accounts_slim_text,
-    get_active_account_info, get_claude_token_secret, get_masked_account_ids, get_usage,
-    import_accounts_full_encrypted_file, import_accounts_slim_text, list_accounts,
-    list_claude_token_accounts, refresh_account_metadata, refresh_all_accounts_usage,
-    refresh_tray_menu, rename_account, rename_claude_token_account, set_masked_account_ids,
+    activate_gateway_account, add_gateway_account, create_claude_token_account,
+    deactivate_claude_token, deactivate_gateway, delete_account, delete_claude_token_account,
+    delete_gateway_account, export_accounts_full_encrypted_file, export_accounts_slim_text,
+    get_active_account_info, get_claude_token_secret, get_gateway_key_secret,
+    get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
+    import_accounts_slim_text, list_accounts, list_claude_token_accounts, list_gateway_accounts,
+    refresh_account_metadata, refresh_all_accounts_usage, refresh_tray_menu, rename_account,
+    rename_claude_token_account, rename_gateway_account, set_masked_account_ids,
     set_tray_mode_enabled, setup_tray, start_login, switch_account,
     update_active_claude_account_from_file, warmup_account, warmup_all_accounts,
 };
@@ -80,6 +82,14 @@ pub fn run() {
             activate_claude_token_account,
             deactivate_claude_token,
             get_claude_token_secret,
+            // Anthropic-compatible gateway accounts (GLM via z.ai/OpenRouter)
+            list_gateway_accounts,
+            add_gateway_account,
+            rename_gateway_account,
+            delete_gateway_account,
+            activate_gateway_account,
+            deactivate_gateway,
+            get_gateway_key_secret,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
