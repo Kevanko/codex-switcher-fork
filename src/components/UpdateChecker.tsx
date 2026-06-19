@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
-import { ArrowUpCircle, Download, RefreshCcw, X } from "lucide-react";
+import { ArrowUpCircle, Download, Loader2, RefreshCcw, X } from "lucide-react";
 import { isTauriRuntime } from "../lib/platform";
 import { translations, type Locale } from "../i18n";
 
@@ -131,7 +131,7 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
               onClick={handleDownloadAndInstall}
               disabled={installing}
             >
-              <Download size={16} className={installing ? "spin" : undefined} />
+              {installing ? <Loader2 size={16} className="spin" /> : <Download size={16} />}
               {installing ? t.downloading : t.install}
             </button>
           </>

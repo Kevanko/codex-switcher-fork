@@ -127,7 +127,8 @@ export function GatewayPanel({ language, onGatewaysChange }: Props) {
         {error && (
           <div style={{
             display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 12px",
-            background: "var(--bad)18", border: "1px solid var(--bad)55", borderRadius: 8,
+            background: "color-mix(in oklab, var(--bad) 10%, transparent)",
+            border: "1px solid color-mix(in oklab, var(--bad) 36%, transparent)", borderRadius: 8,
             color: "var(--bad)", font: "12px var(--mono)", whiteSpace: "pre-wrap",
           }}>
             <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
