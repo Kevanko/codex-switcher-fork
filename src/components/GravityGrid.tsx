@@ -14,6 +14,15 @@ const EASE = 0.16; // per-vertex smoothing (gooey)
 const INTENSITY_EASE = 0.05; // smooth fade of the whole effect in / out
 const WOBBLE = 4; // idle wobble radius (px) so it never sits perfectly still
 const WOBBLE_SPEED = 0.0006; // idle wobble speed
+// Endless "suck-in" without winding the connected grid into a knot:
+//   • the funnel breathes — its depth pulses so it keeps re-narrowing inward;
+//   • rings of glow stream continuously toward the cursor.
+const PUMP = 0.18; // funnel-depth breathing — the looping inward pull
+const PUMP_SPEED = 0.0023; // breathing speed
+const FLOW_WAVE = 150; // px between successive inward-streaming glow rings
+const FLOW_SPEED = 0.004; // how fast the glow rings collapse toward the cursor
+const FLOW_GLOW = 0.5; // glow-ring contrast (0..1)
+const FLOW_K = (Math.PI * 2) / FLOW_WAVE; // spatial frequency of the rings
 const TRAIL_DECAY = 0.965; // per-frame brightness decay once cursor moves on (~1.3s afterglow)
 const EDGE = 3; // treat the cursor as "leaving" within this many px of any edge
 const MARGIN = CELL * 4; // overscan so warped edges never reveal a boundary
@@ -84,24 +93,30 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
       // Idle wobble so the funnel keeps gently moving when the cursor is still.
       const mx = mouse.x + Math.cos(t * WOBBLE_SPEED) * WOBBLE * intensity;
       const my = mouse.y + Math.sin(t * WOBBLE_SPEED) * WOBBLE * intensity;
+      // Funnel breathing (geometry keeps re-narrowing) + inward-marching glow
+      // phase. Both loop forever, neither winds the connected grid into a knot.
+      const pump = 1 + PUMP * Math.sin(t * PUMP_SPEED) * intensity;
+      const flow = t * FLOW_SPEED;
 
       ctx.clearRect(0, 0, W, H);
       const s2 = SIGMA * SIGMA;
       let maxBr = 0; // brightest edge this frame — drives idle-sleep detection
       for (let i = 0; i < ox.length; i++) {
         const dx = mx - ox[i], dy = my - oy[i];
-        const f = 1 / (1 + (dx * dx + dy * dy) / s2);
-        const k = Math.pow(f, FALLOFF) * STRENGTH * intensity; // fades in/out smoothly
+        const r2 = dx * dx + dy * dy;
+        const f = 1 / (1 + r2 / s2);
+        const k = Math.pow(f, FALLOFF) * STRENGTH * intensity * pump; // breathes in/out
         const rx = dx * k, ry = dy * k;
-        const ang = f * (1 - f) * SWIRL * intensity;
+        const ang = f * (1 - f) * SWIRL * intensity; // gentle static curl (no wind-up)
         const cs = Math.cos(ang), sn = Math.sin(ang);
         const tx = ox[i] + rx * cs - ry * sn;
         const ty = oy[i] + rx * sn + ry * cs;
         cx[i] += (tx - cx[i]) * EASE;
         cy[i] += (ty - cy[i]) * EASE;
-        // Afterglow: jump up instantly with the cursor, but only ever decay
-        // slowly — leaves a trail of recently-touched edges that fades over time.
-        const target = f * intensity;
+        // Afterglow + an inward-streaming glow ring (bright band that contracts
+        // toward the cursor over time) — this is what reads as "endlessly sucked in".
+        const ring = 0.5 + 0.5 * Math.sin(Math.sqrt(r2) * FLOW_K + flow);
+        const target = f * intensity * (1 - FLOW_GLOW + FLOW_GLOW * ring);
         br[i] = target > br[i] ? target : br[i] * TRAIL_DECAY;
         if (br[i] > maxBr) maxBr = br[i];
       }
