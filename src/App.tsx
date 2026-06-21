@@ -77,6 +77,7 @@ const ACCENT_STORAGE_KEY = "codex-switcher-accent";
 const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
 const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
 const TRAY_MODE_STORAGE_KEY = "codex-switcher-tray-mode";
+const ACTIVE_TAB_STORAGE_KEY = "codex-switcher-active-tab";
 const AUTO_WARMUP_ALL_STORAGE_KEY = "codex-switcher-auto-warmup-all";
 const AUTO_WARMUP_ACCOUNTS_STORAGE_KEY = "codex-switcher-auto-warmup-accounts";
 const AUTO_WARMUP_LEDGER_STORAGE_KEY = "codex-switcher-auto-warmup-last-success";
@@ -158,6 +159,16 @@ function readStoredAutoWarmupLedger(): AutoWarmupLedger {
         .filter((e): e is [string, { lastSuccessfulWarmupAt: number }] => Boolean(e))
     );
   } catch { return {}; }
+}
+
+// The active tab is the (tabView, activeProvider) pair flattened to one stored key.
+function readActiveTab(): { tabView: "accounts" | "tokens"; activeProvider: ProviderTab } {
+  try {
+    const s = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    if (s === "tokens") return { tabView: "tokens", activeProvider: "codex" };
+    if (s === "claude") return { tabView: "accounts", activeProvider: "claude" };
+  } catch {}
+  return { tabView: "accounts", activeProvider: "codex" };
 }
 
 function resolveThemePreference(p: ThemePreference): ThemeMode {
@@ -666,9 +677,10 @@ function AccountDetailPanel({
                     </span>
                   </div>
                   <span className="meter" style={{ height: 6 }}>
+                    {/* Fill = remaining (drains as used), matching the % label and the list-row meter. */}
                     <span
                       className={"meter-fill meter-fill--" + (item.tone === "danger" ? "red" : item.tone === "warning" ? "amber" : "accent")}
-                      style={{ width: (item.remaining !== null ? Math.min(100, Math.max(2, 100 - item.remaining)) : 2) + "%" }}
+                      style={{ width: (item.remaining !== null ? Math.min(100, Math.max(2, item.remaining)) : 2) + "%" }}
                     />
                   </span>
                   {item.resetsAt && (
@@ -1047,9 +1059,9 @@ function App() {
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [activeProvider, setActiveProvider] = useState<ProviderTab>("codex");
+  const [activeProvider, setActiveProvider] = useState<ProviderTab>(() => readActiveTab().activeProvider);
   // Claude CLI long-lived token tab (separate from the provider account list).
-  const [tabView, setTabView] = useState<"accounts" | "tokens">("accounts");
+  const [tabView, setTabView] = useState<"accounts" | "tokens">(() => readActiveTab().tabView);
   // Full Claude CLI token list, loaded at startup so the tab badge + stats are
   // correct immediately (not only after the tab is first opened). The panel keeps
   // this in sync as tokens are added / activated / deleted.
@@ -1176,6 +1188,9 @@ function App() {
 
   useEffect(() => { document.documentElement.lang = resolvedLanguage; }, [resolvedLanguage]);
 
+  useEffect(() => {
+    try { window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabView === "tokens" ? "tokens" : activeProvider); } catch {}
+  }, [tabView, activeProvider]);
   useEffect(() => { try { window.localStorage.setItem(ACCENT_STORAGE_KEY, accentPreset); } catch {} }, [accentPreset]);
   useEffect(() => { try { window.localStorage.setItem(CARD_DENSITY_STORAGE_KEY, cardDensity); } catch {} }, [cardDensity]);
   useEffect(() => {

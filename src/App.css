@@ -474,8 +474,8 @@ input, textarea, select { font-family: inherit; }
 }
 
 /* ── METER ─────────────────────────────────────────────────────────────────── */
-.meter { width: 100%; background: var(--surface-3); border-radius: 20px; overflow: hidden; }
-.meter-fill { height: 100%; border-radius: 20px; transition: width .4s ease; min-width: 2px; }
+.meter { display: block; width: 100%; background: var(--surface-3); border-radius: 20px; overflow: hidden; }
+.meter-fill { display: block; height: 100%; border-radius: 20px; transition: width .4s ease; min-width: 2px; }
 .meter-fill--accent { background: var(--accent); }
 .meter-fill--green { background: var(--ok); }
 .meter-fill--amber { background: var(--warn); }
