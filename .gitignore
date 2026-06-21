@@ -16,6 +16,7 @@ dist-ssr
 backups/
 qa-*.png
 tmp-*.png
+.playwright-mcp/
 
 # Release artifacts
 latest.json
