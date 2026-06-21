@@ -1,6 +1,6 @@
 [package]
 name = "codex-switcher"
-version = "0.3.6"
+version = "0.3.7"
 description = "Unofficial desktop fork for local Codex account switching and usage tracking"
 authors = ["lampese"]
 edition = "2021"
