@@ -119,7 +119,32 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
         fs::set_permissions(&path, perms)?;
     }
 
+    // Sweep any orphaned temp files from earlier crashes / killed processes. The
+    // write→rename above is interrupted often during dev restarts, and a failed
+    // rename (AV lock) also leaves one behind, so without this they pile up.
+    sweep_stale_temp_files(&path, ".accounts.json.tmp-");
+
     Ok(())
+}
+
+/// Best-effort removal of leftover `<prefix>*` temp siblings of `final_path`
+/// (excluding the just-written file). Never errors — cleanup is opportunistic.
+pub(crate) fn sweep_stale_temp_files(final_path: &std::path::Path, prefix: &str) {
+    let Some(dir) = final_path.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Serializes every `load → mutate → save` cycle against accounts.json.
@@ -568,4 +593,34 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
         store.masked_account_ids = ids;
         Ok(((), true))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sweep_stale_temp_files;
+    use std::fs;
+
+    #[test]
+    fn sweep_removes_only_prefixed_siblings() {
+        let dir = std::env::temp_dir().join(format!("cs-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let keep = dir.join("accounts.json");
+        let stale_a = dir.join(".accounts.json.tmp-111");
+        let stale_b = dir.join(".accounts.json.tmp-222");
+        let unrelated = dir.join("notes.txt");
+        for p in [&keep, &stale_a, &stale_b, &unrelated] {
+            fs::write(p, "x").unwrap();
+        }
+
+        sweep_stale_temp_files(&keep, ".accounts.json.tmp-");
+
+        assert!(keep.exists(), "final file must survive");
+        assert!(unrelated.exists(), "non-matching files must survive");
+        assert!(!stale_a.exists(), "stale temp must be removed");
+        assert!(!stale_b.exists(), "stale temp must be removed");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

@@ -321,9 +321,11 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
     if account.provider == AccountProvider::Claude {
-        // A gateway (GLM) env override would shadow this OAuth login — clear it
-        // so Claude Code actually uses the account we're switching to.
-        let _ = crate::commands::gateway::deactivate_active_gateway();
+        // A gateway (GLM) key, a CLI token, or even a stray ANTHROPIC_API_KEY left
+        // by some other tool would shadow this OAuth login ("connectors disabled …
+        // takes precedence"). Wipe every override so Claude Code actually uses the
+        // account we're switching to via ~/.claude/.credentials.json.
+        let _ = crate::commands::gateway::clear_claude_auth_overrides();
         // Before switching, sync the currently active Claude account's tokens
         // from the live .credentials.json so our DB stays up-to-date.
         if let Some(active_claude_id) = store.active_claude_account_id.as_deref() {

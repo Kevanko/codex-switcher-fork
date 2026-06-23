@@ -21,13 +21,28 @@ use uuid::Uuid;
 use crate::auth::storage::{get_config_dir, load_accounts, save_accounts};
 use crate::types::{GatewayAccount, GatewayAccountInfo};
 
-/// The env vars a gateway account drives. Kept in one place so activate/clear
-/// stay symmetric.
-const GATEWAY_ENV_VARS: [&str; 3] = [
-    "ANTHROPIC_BASE_URL",
+/// Every env var that can override Claude Code's `~/.claude/.credentials.json`
+/// account selection. The app owns all of them: each Claude-auth switch wipes the
+/// whole set first, then re-sets only what the chosen mode needs. A stray
+/// `ANTHROPIC_API_KEY` (left by a GLM/z.ai installer or a shared-folder shell)
+/// otherwise makes Claude Code warn "connectors disabled … takes precedence" and
+/// silently use the wrong auth.
+#[cfg(windows)]
+const CLAUDE_OVERRIDE_ENV_VARS: [&str; 5] = [
+    "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
     "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
 ];
+
+/// Delete every Claude-auth override env var (Windows registry, `HKCU`).
+#[cfg(windows)]
+pub(crate) fn clear_all_override_env() {
+    for var in CLAUDE_OVERRIDE_ENV_VARS {
+        del_env(var);
+    }
+}
 
 /// Path to the 0600 file mirroring the active gateway env (Unix shims / export).
 fn active_gateway_file() -> Result<PathBuf> {
@@ -74,23 +89,15 @@ fn apply_gateway_env(account: Option<&GatewayAccount>) -> Result<()> {
 
 #[cfg(windows)]
 fn apply_windows_env(account: Option<&GatewayAccount>) -> Result<()> {
-    match account {
-        Some(acc) => {
-            let model = acc.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
-            setx("ANTHROPIC_BASE_URL", &acc.base_url)?;
-            setx("ANTHROPIC_AUTH_TOKEN", &acc.key)?;
-            match model {
-                Some(m) => setx("ANTHROPIC_MODEL", m)?,
-                None => del_env("ANTHROPIC_MODEL"),
-            }
-            // A lingering long-lived Claude token would fight the gateway key —
-            // remove it so `claude` uses the gateway cleanly.
-            del_env("CLAUDE_CODE_OAUTH_TOKEN");
-        }
-        None => {
-            for var in GATEWAY_ENV_VARS {
-                del_env(var);
-            }
+    // Wipe every Claude-auth override first (including a stray ANTHROPIC_API_KEY
+    // and any lingering CLI token) so nothing survives the switch, then set only
+    // what the gateway mode needs.
+    clear_all_override_env();
+    if let Some(acc) = account {
+        setx("ANTHROPIC_BASE_URL", &acc.base_url)?;
+        setx("ANTHROPIC_AUTH_TOKEN", &acc.key)?;
+        if let Some(model) = acc.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            setx("ANTHROPIC_MODEL", model)?;
         }
     }
     Ok(())
@@ -135,6 +142,26 @@ pub fn deactivate_active_gateway() -> Result<()> {
     }
     save_accounts(&store)?;
     apply_gateway_env(None)
+}
+
+/// Force Claude Code back to plain `~/.claude/.credentials.json`: drop the active
+/// gateway / CLI-token store pointers and their mirror files, and wipe EVERY
+/// auth-override env var. Unlike `deactivate_active_gateway`, this does NOT
+/// early-return when the store shows nothing active — a stray `ANTHROPIC_API_KEY`
+/// set outside the app (GLM/z.ai installer, shared-folder shell) must be cleared
+/// too. Called when a regular Claude OAuth account becomes active.
+pub fn clear_claude_auth_overrides() -> Result<()> {
+    let mut store = load_accounts()?;
+    let changed =
+        store.active_gateway_id.take().is_some() | store.active_claude_token_id.take().is_some();
+    if changed {
+        save_accounts(&store)?;
+    }
+    let _ = fs::remove_file(active_gateway_file()?);
+    let _ = fs::remove_file(get_config_dir()?.join("claude-active-token"));
+    #[cfg(windows)]
+    clear_all_override_env();
+    Ok(())
 }
 
 fn to_info(store_active: Option<&str>, account: &GatewayAccount) -> GatewayAccountInfo {

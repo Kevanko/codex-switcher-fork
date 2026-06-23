@@ -61,31 +61,21 @@ fn apply_windows_env(token: Option<&str>) -> Result<()> {
     use std::process::Command;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    match token {
-        Some(t) => {
-            // Persist a user-level env var so new shells inherit it. setx caps the
-            // value at ~1024 chars, which is far above any OAuth token length.
-            let status = Command::new("setx")
-                .creation_flags(CREATE_NO_WINDOW)
-                .args(["CLAUDE_CODE_OAUTH_TOKEN", t])
-                .status()
-                .context("Failed to run setx for CLAUDE_CODE_OAUTH_TOKEN")?;
-            if !status.success() {
-                anyhow::bail!("setx returned a non-zero exit status");
-            }
-        }
-        None => {
-            // Remove the persisted user env var (ignore "not found").
-            let _ = Command::new("reg")
-                .creation_flags(CREATE_NO_WINDOW)
-                .args([
-                    "delete",
-                    "HKCU\\Environment",
-                    "/F",
-                    "/V",
-                    "CLAUDE_CODE_OAUTH_TOKEN",
-                ])
-                .status();
+    // Wipe every Claude-auth override first (gateway keys + any stray
+    // ANTHROPIC_API_KEY), so the CLI token isn't shadowed and deactivation leaves
+    // a truly clean environment.
+    crate::commands::gateway::clear_all_override_env();
+
+    if let Some(t) = token {
+        // Persist a user-level env var so new shells inherit it. setx caps the
+        // value at ~1024 chars, which is far above any OAuth token length.
+        let status = Command::new("setx")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["CLAUDE_CODE_OAUTH_TOKEN", t])
+            .status()
+            .context("Failed to run setx for CLAUDE_CODE_OAUTH_TOKEN")?;
+        if !status.success() {
+            anyhow::bail!("setx returned a non-zero exit status");
         }
     }
     Ok(())

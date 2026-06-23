@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::auth::{
-    ensure_chatgpt_tokens_fresh, ensure_claude_tokens_fresh, load_accounts, refresh_chatgpt_tokens,
+    claude_token_expired, ensure_chatgpt_tokens_fresh, ensure_claude_tokens_fresh, load_accounts,
+    refresh_chatgpt_tokens, refresh_claude_tokens, switch_to_claude_account,
 };
 use crate::types::{
     AuthData, CreditStatusDetails, RateLimitDetails, RateLimitStatusPayload, RateLimitWindow,
@@ -169,7 +170,7 @@ pub async fn get_account_usage(account: &StoredAccount, force: bool) -> Result<U
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
-        AuthData::ClaudeOAuth { .. } => get_usage_with_claude_auth(account).await,
+        AuthData::ClaudeOAuth { .. } => get_usage_with_claude_auth(account, force).await,
     }
 }
 
@@ -366,7 +367,16 @@ fn extract_claude_access_token(account: &StoredAccount) -> Result<String> {
     }
 }
 
-async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo> {
+/// True when a Claude account's stored OAuth access token is expired (or within
+/// the refresh skew). Non-Claude accounts return false.
+fn claude_account_token_expired(account: &StoredAccount) -> bool {
+    matches!(
+        &account.auth_data,
+        AuthData::ClaudeOAuth { expires_at, .. } if claude_token_expired(*expires_at)
+    )
+}
+
+async fn get_usage_with_claude_auth(account: &StoredAccount, force: bool) -> Result<UsageInfo> {
     // "Powered-off PC" safety model: a parked (inactive) Claude account must
     // NEVER be contacted by the switcher. Anthropic rotates and invalidates the
     // refresh_token on every token refresh, so any request that needs a fresh
@@ -400,6 +410,33 @@ async fn get_usage_with_claude_auth(account: &StoredAccount) -> Result<UsageInfo
                 format!("Claude token refresh failed: {message}"),
             ));
         }
+    };
+
+    // On a user-initiated refresh (force), if the live credential file token is
+    // ALSO still expired, Claude Code isn't running to refresh it — and an expired
+    // refresh chain means no other holder is using it concurrently. That makes us
+    // the sole owner right now, exactly like the switch-in window, so we do the ONE
+    // forward refresh ourselves and write it back to .credentials.json. This
+    // replaces the old workaround of opening `claude` and typing `/usage` by hand;
+    // it stays OFF the background polling path to avoid cross-machine token
+    // rotation.
+    let fresh_account = if force && claude_account_token_expired(&fresh_account) {
+        match refresh_claude_tokens(&fresh_account).await {
+            Ok(refreshed) => {
+                if let Err(err) = switch_to_claude_account(&refreshed) {
+                    println!(
+                        "[Usage] Refreshed active Claude token but failed to write .credentials.json: {err}"
+                    );
+                }
+                refreshed
+            }
+            Err(err) => {
+                println!("[Usage] Active Claude token forward-refresh failed: {err}");
+                fresh_account
+            }
+        }
+    } else {
+        fresh_account
     };
 
     let access_token = extract_claude_access_token(&fresh_account)?;

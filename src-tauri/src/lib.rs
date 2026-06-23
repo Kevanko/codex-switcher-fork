@@ -29,6 +29,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Reconcile the Claude-auth environment with the selected state on
+            // launch: if neither a gateway nor a CLI token is active, wipe any
+            // stray override env var (a leftover ANTHROPIC_API_KEY from another
+            // tool / shared folder, or vars left by a previous crash) so a regular
+            // OAuth account isn't silently shadowed ("connectors disabled … takes
+            // precedence"). Best-effort, off the UI thread.
+            std::thread::spawn(|| {
+                if let Ok(store) = crate::auth::load_accounts() {
+                    if store.active_gateway_id.is_none()
+                        && store.active_claude_token_id.is_none()
+                    {
+                        let _ = crate::commands::gateway::clear_claude_auth_overrides();
+                    }
+                }
+            });
+
             #[cfg(desktop)]
             setup_tray(app)?;
             #[cfg(desktop)]
