@@ -228,6 +228,10 @@ pub fn switch_to_claude_account(account: &StoredAccount) -> Result<()> {
         fs::set_permissions(&credentials_path, perms)?;
     }
 
+    // Same orphan sweep as save_accounts: a killed process or failed rename can
+    // leave `.credentials.json.tmp-*` behind.
+    crate::auth::storage::sweep_stale_temp_files(&credentials_path, ".credentials.json.tmp-");
+
     Ok(())
 }
 
