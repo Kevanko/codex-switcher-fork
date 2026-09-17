@@ -21,8 +21,26 @@ pub async fn get_usage(account_id: String, force: Option<bool>) -> Result<UsageI
     let usage = get_account_usage(&account, force.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())?;
-    if usage.error.is_none() {
+    // A replayed snapshot must not refresh its own timestamp, or "last updated"
+    // would claim we reached an account we could not reach.
+    if usage.error.is_none() && usage.from_cache != Some(true) {
         let _ = update_account_usage_cache(&account_id, &usage);
+        // The rate-limit endpoint reports the plan the account is on *right now*.
+        // Persist it so a downgrade (Team seat revoked, Plus lapsed) shows up
+        // everywhere — list, tray, card — instead of the label frozen at the
+        // moment the account was added. This is a plain metadata write: unlike
+        // refresh_account_metadata it touches no token.
+        if let Some(plan) = usage.plan_type.as_deref() {
+            if !plan.is_empty() && account.plan_type.as_deref() != Some(plan) {
+                let _ = update_account_metadata(
+                    &account_id,
+                    None,
+                    None,
+                    Some(plan.to_string()),
+                    None,
+                );
+            }
+        }
     }
     Ok(usage)
 }

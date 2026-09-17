@@ -14,6 +14,8 @@ dist-ssr
 
 # Local QA artifacts
 backups/
+# Recovery scratch: may hold carved copies of the credential store
+.recovery/
 qa-*.png
 tmp-*.png
 .playwright-mcp/

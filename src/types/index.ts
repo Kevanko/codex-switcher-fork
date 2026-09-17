@@ -37,6 +37,10 @@ export interface UsageInfo {
   error: string | null;
   /** True when the failure is a transient rate limit (429) — show yellow, keep old data. */
   rate_limited?: boolean | null;
+  /** Machine-readable cause behind `error`, so the UI can explain it in words. */
+  error_kind?: string | null;
+  /** These numbers are a replay of the last good snapshot: the live request was refused. */
+  from_cache?: boolean | null;
 }
 
 export interface OAuthLoginInfo {
@@ -85,6 +89,46 @@ export interface GatewayAccountInfo {
   is_active: boolean;
   /** ISO timestamp */
   created_at: string;
+}
+
+/** A Z.ai plan as ZCode last reported it. */
+export interface ZcodePlanEntry {
+  name: string;
+  status: string;
+  /** Unix seconds */
+  ends_at: number | null;
+}
+
+/** Remaining model tokens on one entitlement. */
+export interface ZcodeBalance {
+  show_name: string;
+  total_units: number | null;
+  used_units: number | null;
+  remaining_units: number | null;
+}
+
+export interface ZcodePlanInfo {
+  plans: ZcodePlanEntry[];
+  balances: ZcodeBalance[];
+  /** ISO timestamp of when these figures were read. */
+  captured_at: string | null;
+  /** Coding Plan tier: "lite" / "pro" / "max". */
+  level: string | null;
+  /** Official MCP quota for the tier — tool calls, not coding tokens. */
+  mcp_used: number | null;
+  mcp_limit: number | null;
+  /** Unix seconds */
+  mcp_next_refresh_at: number | null;
+}
+
+/** A local, same-device Z.ai / ZCode sign-in snapshot. */
+export interface ZcodeAccountInfo {
+  id: string;
+  name: string;
+  is_active: boolean;
+  /** ISO timestamp */
+  created_at: string;
+  plan: ZcodePlanInfo | null;
 }
 
 export interface WarmupSummary {

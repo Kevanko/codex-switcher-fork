@@ -4,3 +4,4 @@ export { AddAccountModal } from "./AddAccountModal";
 export { UpdateChecker } from "./UpdateChecker";
 export { ClaudeTokenPanel } from "./ClaudeTokenPanel";
 export { GatewayPanel } from "./GatewayPanel";
+export { ZcodePanel } from "./ZcodePanel";

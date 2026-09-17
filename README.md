@@ -14,6 +14,7 @@ The app keeps account metadata and cached usage locally, writes the selected pro
 - Adds Claude accounts by importing an existing `.credentials.json`.
 - Switches the active Codex account — terminates running Codex processes and restarts them with the new credentials.
 - Writes Claude credentials to `~/.claude/.credentials.json` (restart Claude Code CLI to apply).
+- Switches Z.ai / ZCode sign-ins by snapshotting `~/.zcode/v2` — closes ZCode, swaps the snapshot in, starts it again.
 - Shows cached limit usage for Free, Plus, Pro, and Team-style Codex accounts.
 - Tracks 5-hour and 7-day reset windows with progress bars.
 - Global email hide toggle in the top bar — one click masks all account emails at once.

@@ -6,9 +6,6 @@ use std::process::Command;
 use anyhow::Context;
 
 #[cfg(windows)]
-use std::collections::HashSet;
-
-#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
@@ -20,13 +17,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 struct WindowsCodexProcess {
     name: String,
     process_id: u32,
-    parent_process_id: u32,
     #[serde(default)]
     executable_path: String,
     #[serde(default)]
     command_line: String,
-    #[serde(default)]
-    main_window_title: String,
 }
 
 #[derive(Debug, Clone)]
@@ -229,35 +223,11 @@ pub fn snapshot_restart_target() -> anyhow::Result<(Vec<u32>, Option<CodexRestar
     #[cfg(windows)]
     {
         let processes = query_windows_codex_processes()?;
-        let mut active_roots = processes
-            .iter()
-            .filter(|process| is_windows_codex_root_process(process))
-            .filter(|process| {
-                let command = process.command_line.to_ascii_lowercase();
-                if is_ide_plugin_process(&command) {
-                    return false;
-                }
-
-                let has_window = !process.main_window_title.trim().is_empty();
-                let has_renderer =
-                    windows_has_descendant_matching(process.process_id, &processes, |child| {
-                        child
-                            .command_line
-                            .to_ascii_lowercase()
-                            .contains("--type=renderer")
-                    });
-                let has_app_server =
-                    windows_has_descendant_matching(process.process_id, &processes, |child| {
-                        let command = child.command_line.to_ascii_lowercase();
-                        command.contains("resources\\codex.exe") && command.contains("app-server")
-                    });
-
-                has_window || has_renderer || has_app_server
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-
-        active_roots.sort_by_key(|process| process.process_id);
+        // Same predicate as check_codex_processes. The two used to disagree:
+        // the detector counted every Codex root, this one only counted roots
+        // with a window/renderer/app-server child. A headless Codex CLI was
+        // therefore reported as running but never terminated or restarted.
+        let (active_roots, _) = windows_active_codex_roots(&processes);
         let restart_target = active_roots.first().map(|process| CodexRestartTarget {
             executable_path: (!process.executable_path.trim().is_empty())
                 .then(|| process.executable_path.clone()),
@@ -292,12 +262,22 @@ pub fn terminate_codex_processes(pids: &[u32]) -> anyhow::Result<()> {
         {
             let status = Command::new("taskkill")
                 .creation_flags(CREATE_NO_WINDOW)
-                .args(["/F", "/PID", &pid.to_string()])
+                // Electron's renderer and utility children otherwise survive
+                // their root and can keep the old account session alive.
+                .args(["/F", "/T", "/PID", &pid.to_string()])
                 .status()?;
             if !status.success() {
                 anyhow::bail!("Failed to terminate Codex process {pid}");
             }
         }
+    }
+
+    // taskkill/kill return before the process tree has finished tearing down, and
+    // restarting into a dying instance makes the new Codex bail on the
+    // single-instance lock (or read a half-written auth.json).
+    // ponytail: fixed settle delay; poll the pid list instead if it ever proves short.
+    if !pids.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(800));
     }
 
     Ok(())
@@ -375,46 +355,50 @@ pub fn restart_codex_process(target: Option<&CodexRestartTarget>) -> anyhow::Res
     Ok(false)
 }
 
+/// Single source of truth for "which Codex processes are live right now",
+/// shared by the detector and by the switch/terminate/restart path.
+///
+/// A window-less Codex root is still a live instance — a headless CLI in a
+/// terminal, a tray-minimized desktop app, an Electron restart in flight — so
+/// every root counts. Only IDE-plugin trees are ignored.
 #[cfg(windows)]
-fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
-    let processes = query_windows_codex_processes()?;
-
-    let mut active_pids = Vec::new();
-    let mut ignored_count = 0;
+fn windows_active_codex_roots(
+    processes: &[WindowsCodexProcess],
+) -> (Vec<WindowsCodexProcess>, usize) {
+    let mut active = Vec::new();
+    let mut ignored = 0;
 
     for process in processes
         .iter()
         .filter(|process| is_windows_codex_root_process(process))
     {
-        let command = process.command_line.to_ascii_lowercase();
-        if is_ide_plugin_process(&command) {
-            ignored_count += 1;
+        if is_ide_plugin_process(&process.command_line.to_ascii_lowercase()) {
+            ignored += 1;
             continue;
         }
-
-        let has_window = !process.main_window_title.trim().is_empty();
-        let has_renderer =
-            windows_has_descendant_matching(process.process_id, &processes, |child| {
-                child
-                    .command_line
-                    .to_ascii_lowercase()
-                    .contains("--type=renderer")
-            });
-        let has_app_server =
-            windows_has_descendant_matching(process.process_id, &processes, |child| {
-                let command = child.command_line.to_ascii_lowercase();
-                command.contains("resources\\codex.exe") && command.contains("app-server")
-            });
-
-        if has_window || has_renderer || has_app_server {
-            active_pids.push(process.process_id);
-        } else {
-            // Ignore stale helper trees left behind after the window has already closed.
-            ignored_count += 1;
-        }
+        active.push(process.clone());
     }
 
-    active_pids.sort_unstable();
+    // Desktop roots first: relaunching the packaged app by its AppUserModelId is
+    // silent, while relaunching a CLI opens a console window. Ordering here is
+    // what `snapshot_restart_target` reads as "the" restart target.
+    active.sort_by_key(|process| {
+        (
+            !is_windows_codex_desktop_process(process),
+            process.process_id,
+        )
+    });
+    (active, ignored)
+}
+
+#[cfg(windows)]
+fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
+    let processes = query_windows_codex_processes()?;
+    let (active_roots, ignored_count) = windows_active_codex_roots(&processes);
+    let mut active_pids = active_roots
+        .into_iter()
+        .map(|process| process.process_id)
+        .collect::<Vec<_>>();
     active_pids.dedup();
 
     Ok((active_pids, ignored_count))
@@ -423,25 +407,14 @@ fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
 #[cfg(windows)]
 fn query_windows_codex_processes() -> anyhow::Result<Vec<WindowsCodexProcess>> {
     const POWERSHELL_SCRIPT: &str = r#"
-$windowTitles = @{}
-Get-Process -Name Codex -ErrorAction SilentlyContinue | ForEach-Object {
-  $windowTitles[[uint32]$_.Id] = $_.MainWindowTitle
-}
-
 Get-CimInstance Win32_Process |
-  Where-Object { $_.Name -ieq 'Codex.exe' -or $_.Name -ieq 'codex.exe' } |
+  Where-Object { $_.Name -ieq 'codex.exe' -or $_.Name -ieq 'ChatGPT.exe' } |
   ForEach-Object {
     [PSCustomObject]@{
       Name = $_.Name
       ProcessId = [uint32]$_.ProcessId
-      ParentProcessId = [uint32]$_.ParentProcessId
       ExecutablePath = if ($_.ExecutablePath) { $_.ExecutablePath } else { '' }
       CommandLine = if ($_.CommandLine) { $_.CommandLine } else { '' }
-      MainWindowTitle = if ($windowTitles.ContainsKey([uint32]$_.ProcessId)) {
-        [string]$windowTitles[[uint32]$_.ProcessId]
-      } else {
-        ''
-      }
     }
   } |
   ConvertTo-Json -Compress
@@ -493,14 +466,53 @@ fn query_windows_codex_processes_from_output(
 }
 
 #[cfg(windows)]
+/// True for a process that owns a Codex session, as opposed to one of its
+/// children.
+///
+/// Two shapes exist on Windows and they look nothing alike:
+///
+/// * the **desktop app** — an MSIX package whose main process is `ChatGPT.exe`
+///   under `...\OpenAI.Codex_<version>__<publisher>\app\`. Electron's renderer
+///   and utility children carry `--type=`, so only the main process survives
+///   this filter. Older unpackaged builds shipped it as `Codex.exe`.
+/// * the **CLI** — a bare `codex.exe` in a terminal.
+///
+/// Everything the desktop app spawns to do the actual work is skipped: it runs
+/// `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe ... app-server`, which is named
+/// `codex.exe` and has no `--type=`. Treating that core as a root is what made
+/// switching relaunch it directly and pop a console window.
 fn is_windows_codex_root_process(process: &WindowsCodexProcess) -> bool {
     let name = process.name.to_ascii_lowercase();
     let command = process.command_line.to_ascii_lowercase();
+    let executable = process.executable_path.to_ascii_lowercase();
 
+    if command.contains("--type=") {
+        return false;
+    }
+
+    if is_windows_codex_desktop_process(process) {
+        return true;
+    }
+
+    // No "codex-switcher" guard: the switcher's own binary is
+    // codex-switcher.exe, which `name == "codex.exe"` already excludes, while
+    // such a guard would drop a real Codex CLI whose arguments merely mention a
+    // path containing "codex-switcher".
     name == "codex.exe"
-        && !command.contains("codex-switcher")
-        && !command.contains("--type=")
+        && !command.contains("app-server")
         && !command.contains("resources\\codex.exe")
+        && !executable.contains("\\openai\\codex\\bin\\")
+}
+
+/// True for the Codex desktop app's main process (see above).
+#[cfg(windows)]
+fn is_windows_codex_desktop_process(process: &WindowsCodexProcess) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let executable = process.executable_path.to_ascii_lowercase();
+
+    // `ChatGPT.exe` alone is not enough — the plain ChatGPT desktop app shares
+    // the binary name. The package identity is what marks it as Codex.
+    (name == "chatgpt.exe" || name == "codex.exe") && executable.contains("openai.codex")
 }
 
 #[cfg(windows)]
@@ -529,7 +541,7 @@ fn get_windows_codex_app_user_model_id(process: &WindowsCodexProcess) -> Option<
 fn find_windows_codex_app_user_model_id() -> anyhow::Result<Option<String>> {
     const POWERSHELL_SCRIPT: &str = r#"
 Get-StartApps |
-  Where-Object { $_.Name -ieq 'Codex' -or $_.Name -like '*Codex*' } |
+  Where-Object { $_.AppID -like 'OpenAI.Codex*' -or $_.AppID -like 'OpenAI.ChatGPT*' } |
   Select-Object -First 1 -ExpandProperty AppID
 "#;
 
@@ -557,36 +569,4 @@ fn is_ide_plugin_process(command: &str) -> bool {
     command.contains(".antigravity")
         || command.contains("openai.chatgpt")
         || command.contains(".vscode")
-}
-
-#[cfg(windows)]
-fn windows_has_descendant_matching<F>(
-    root_pid: u32,
-    processes: &[WindowsCodexProcess],
-    mut predicate: F,
-) -> bool
-where
-    F: FnMut(&WindowsCodexProcess) -> bool,
-{
-    let mut queue = vec![root_pid];
-    let mut visited = HashSet::new();
-
-    while let Some(parent_pid) = queue.pop() {
-        for process in processes
-            .iter()
-            .filter(|process| process.parent_process_id == parent_pid)
-        {
-            if !visited.insert(process.process_id) {
-                continue;
-            }
-
-            if predicate(process) {
-                return true;
-            }
-
-            queue.push(process.process_id);
-        }
-    }
-
-    false
 }

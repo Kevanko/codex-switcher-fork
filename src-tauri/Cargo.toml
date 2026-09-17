@@ -1,6 +1,6 @@
 [package]
 name = "codex-switcher"
-version = "0.3.8"
+version = "0.3.9"
 description = "Unofficial desktop fork for local Codex account switching and usage tracking"
 authors = ["lampese"]
 edition = "2021"
@@ -18,6 +18,7 @@ tauri = { version = "2.10", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2.6"
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -7,6 +7,7 @@ pub mod oauth;
 pub mod process;
 pub mod tray;
 pub mod usage;
+pub mod zcode;
 
 pub use account::*;
 pub use claude_token::*;
@@ -15,3 +16,4 @@ pub use oauth::*;
 pub use process::*;
 pub use tray::*;
 pub use usage::*;
+pub use zcode::*;
