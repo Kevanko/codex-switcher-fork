@@ -99,3 +99,47 @@ export function hasRecoverableAuthError(usage: UsageInfo | undefined): boolean {
     message
   );
 }
+
+/**
+ * Why an account cannot be used, if it cannot.
+ *
+ * Only faults that block sign-in are persistent: those grey the account out and
+ * sink it to the bottom. A lapsed subscription is deliberately NOT one of them —
+ * the account still works, it just lost its crown, which the plan badge already
+ * says on its own.
+ */
+export type AccountFaultKind =
+  | "auth_revoked"
+  | "auth_expired"
+  | "unreachable"
+  | "forbidden"
+  | "server"
+  | "http";
+
+const PERSISTENT_FAULTS: AccountFaultKind[] = ["auth_revoked", "forbidden", "unreachable"];
+
+export function getAccountFault(account: AccountWithUsage): AccountFaultKind | null {
+  const usage = account.usage;
+
+  // A 429 is the provider asking us to wait, not a broken account.
+  if (usage?.rate_limited) return null;
+
+  // We asked and were turned away, so these figures are a replay of an older
+  // snapshot. Whatever credential we hold is no longer accepted.
+  if (usage?.from_cache) return "unreachable";
+
+  if (usage?.error) {
+    const kind = usage.error_kind;
+    if (kind && kind !== "rate_limited") return kind as AccountFaultKind;
+    // Snapshots cached by an older build carry a message but no kind.
+    return hasRecoverableAuthError(usage) ? "auth_revoked" : "http";
+  }
+
+  return null;
+}
+
+/** True for a fault that stops the account being usable until it is fixed. */
+export function isAccountDead(account: AccountWithUsage): boolean {
+  const fault = getAccountFault(account);
+  return fault !== null && PERSISTENT_FAULTS.includes(fault);
+}

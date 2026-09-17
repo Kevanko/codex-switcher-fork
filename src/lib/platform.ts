@@ -43,6 +43,29 @@ export async function openExternalUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+/** `~/<relative>`, or undefined when the home directory cannot be resolved. */
+async function homePath(relative: string): Promise<string | undefined> {
+  try {
+    const { homeDir, join } = await import("@tauri-apps/api/path");
+    return await join(await homeDir(), relative);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function pickZcodeCredentialsFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: "ZCode credentials", extensions: ["json"] }],
+    title: "Select ZCode credentials.json",
+    defaultPath: await homePath(".zcode/v2/credentials.json"),
+  });
+  if (!selected || Array.isArray(selected)) return null;
+  return selected;
+}
+
 export async function pickAuthJsonFile(): Promise<FileSource | null> {
   if (isTauriRuntime()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -50,6 +73,7 @@ export async function pickAuthJsonFile(): Promise<FileSource | null> {
       multiple: false,
       filters: [{ name: "JSON", extensions: ["json"] }],
       title: "Select auth.json file",
+      defaultPath: await homePath(".codex/auth.json"),
     });
 
     if (!selected || Array.isArray(selected)) return null;
@@ -66,7 +90,7 @@ export async function pickClaudeCredentialsFile(): Promise<FileSource | null> {
       multiple: false,
       filters: [{ name: "Claude credentials", extensions: ["json"] }],
       title: "Select .credentials.json file",
-      defaultPath: "C:\\Users\\NM\\.claude\\.credentials.json",
+      defaultPath: await homePath(".claude/.credentials.json"),
     });
 
     if (!selected || Array.isArray(selected)) return null;

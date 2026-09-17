@@ -41,6 +41,10 @@ pub struct AccountsStore {
     /// Currently active gateway account ID.
     #[serde(default)]
     pub active_gateway_id: Option<String>,
+    #[serde(default)]
+    pub zcode_accounts: Vec<ZcodeAccount>,
+    #[serde(default)]
+    pub active_zcode_account_id: Option<String>,
 }
 
 impl Default for AccountsStore {
@@ -55,8 +59,34 @@ impl Default for AccountsStore {
             active_claude_token_id: None,
             gateway_accounts: Vec::new(),
             active_gateway_id: None,
+            zcode_accounts: Vec::new(),
+            active_zcode_account_id: None,
         }
     }
+}
+
+/// Local, same-device ZCode sign-in snapshot. Credentials are encrypted by
+/// ZCode itself; the switcher stores the two files verbatim and never parses
+/// or transmits their secrets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZcodeAccount {
+    pub id: String,
+    pub name: String,
+    pub credentials_json: String,
+    pub config_json: String,
+    pub created_at: DateTime<Utc>,
+    /// Plan and token balances as they stood when this snapshot was last live.
+    #[serde(default)]
+    pub plan: Option<ZcodePlanInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ZcodeAccountInfo {
+    pub id: String,
+    pub name: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub plan: Option<ZcodePlanInfo>,
 }
 
 fn default_accounts_store_version() -> u32 {
@@ -660,6 +690,17 @@ pub struct UsageInfo {
     /// should keep showing the last known data with a warning, not an error.
     #[serde(default)]
     pub rate_limited: Option<bool>,
+    /// Machine-readable cause, so the UI can say what actually happened instead
+    /// of printing a raw "API error: 403 Forbidden". One of: `auth_revoked`,
+    /// `auth_expired`, `forbidden`, `server`, `http`, `rate_limited`.
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    /// True when these numbers are a replayed snapshot because the live request
+    /// was refused — we asked and were turned away. Distinct from an error: the
+    /// figures are real, just old, and the UI must say so rather than pretend the
+    /// account is healthy.
+    #[serde(default)]
+    pub from_cache: Option<bool>,
 }
 
 impl UsageInfo {
@@ -678,6 +719,8 @@ impl UsageInfo {
             credits_balance: None,
             error: Some(error),
             rate_limited: None,
+            error_kind: None,
+            from_cache: None,
         }
     }
 
@@ -687,6 +730,7 @@ impl UsageInfo {
             format!("Rate limited (429), retrying in ~{retry_in_seconds}s"),
         );
         info.rate_limited = Some(true);
+        info.error_kind = Some("rate_limited".to_string());
         info
     }
 
@@ -708,6 +752,8 @@ impl UsageInfo {
             credits_balance: None,
             error: None,
             rate_limited: None,
+            error_kind: None,
+            from_cache: None,
         }
     }
 }
@@ -870,4 +916,57 @@ mod tests {
 
         assert_eq!(account.provider, AccountProvider::Codex);
     }
+}
+
+/// What ZCode itself knows about the signed-in Z.ai plan: which plans are
+/// active, when they end, and how many model tokens are left on each.
+///
+/// ZCode encrypts `credentials.json` with a device-bound key, so the switcher
+/// cannot call the billing API on a snapshot's behalf. It reads the numbers
+/// ZCode already fetched instead, which also means a parked snapshot honestly
+/// shows the figures from the moment it was captured.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ZcodePlanInfo {
+    #[serde(default)]
+    pub plans: Vec<ZcodePlanEntry>,
+    #[serde(default)]
+    pub balances: Vec<ZcodeBalance>,
+    pub captured_at: Option<DateTime<Utc>>,
+    /// Coding Plan tier, e.g. "lite" / "pro" / "max". Comes from a different
+    /// endpoint than the token grants, which is why an account can show a tier
+    /// while `balances` is empty.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Official MCP quota for the tier — tool calls, not coding tokens.
+    #[serde(default)]
+    pub mcp_used: Option<i64>,
+    #[serde(default)]
+    pub mcp_limit: Option<i64>,
+    /// Unix seconds; when the MCP quota rolls over.
+    #[serde(default)]
+    pub mcp_next_refresh_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZcodePlanEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    /// Unix seconds; the plan's end of validity.
+    #[serde(default)]
+    pub ends_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZcodeBalance {
+    /// Model the quota applies to, e.g. "GLM-5.3-Flash".
+    #[serde(default)]
+    pub show_name: String,
+    #[serde(default)]
+    pub total_units: Option<i64>,
+    #[serde(default)]
+    pub used_units: Option<i64>,
+    #[serde(default)]
+    pub remaining_units: Option<i64>,
 }

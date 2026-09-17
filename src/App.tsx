@@ -15,10 +15,12 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  Boxes,
   Check,
   ChevronDown,
   Clock,
   Copy,
+  Crown,
   Database,
   Download,
   Eye,
@@ -38,14 +40,15 @@ import {
   Trash2,
   Upload,
   UserRound,
+  Users,
   WifiOff,
   X,
   Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, GatewayPanel } from "./components";
+import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, GatewayPanel, ZcodePanel } from "./components";
 import { GravityGrid } from "./components/GravityGrid";
-import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo } from "./types";
+import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
 import {
   exportFullBackupFile,
   importFullBackupFile,
@@ -54,10 +57,20 @@ import {
 } from "./lib/platform";
 import { getPlanVisual } from "./lib/accountVisuals";
 import {
+  colorHex,
+  loadAccountLooks,
+  saveAccountLooks,
+  type AccountLook,
+} from "./lib/accountLooks";
+import { LookIcon, LookPicker } from "./components/AccountLookPicker";
+import {
+  getAccountFault,
   getEffectiveRemainingPercent,
   getUsageRemaining,
   getVisibleLimitWindows,
   hasRecoverableAuthError,
+  isAccountDead,
+  type AccountFaultKind,
 } from "./lib/usageModel";
 import {
   getSystemLocale,
@@ -162,10 +175,11 @@ function readStoredAutoWarmupLedger(): AutoWarmupLedger {
 }
 
 // The active tab is the (tabView, activeProvider) pair flattened to one stored key.
-function readActiveTab(): { tabView: "accounts" | "tokens"; activeProvider: ProviderTab } {
+function readActiveTab(): { tabView: "accounts" | "tokens" | "zai"; activeProvider: ProviderTab } {
   try {
     const s = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
     if (s === "tokens") return { tabView: "tokens", activeProvider: "codex" };
+    if (s === "zai") return { tabView: "zai", activeProvider: "codex" };
     if (s === "claude") return { tabView: "accounts", activeProvider: "claude" };
   } catch {}
   return { tabView: "accounts", activeProvider: "codex" };
@@ -249,6 +263,20 @@ function formatAuthTokenCountdown(expiresAt: string | null | undefined, locale: 
   return { label: `${t.account.authTokenRefreshIn} ${countdown}`, tone: remainingMs <= 5 * 60 * 1000 ? "warning" : "muted" };
 }
 
+// "How long until the subscription renews" for the detail panel. The value comes
+// from the account entitlement (or, as a fallback, the ChatGPT id_token claims),
+// so it is available for parked accounts too — no network, no token refresh.
+function formatSubscriptionRenewal(expiresAt: string | null | undefined, locale: Locale): string {
+  if (!expiresAt) return "—";
+  const at = new Date(expiresAt).getTime();
+  if (!Number.isFinite(at)) return "—";
+  const date = new Date(at).toLocaleDateString(locale === "ru" ? "ru-RU" : "en-GB");
+  const days = Math.ceil((at - Date.now()) / 86_400_000);
+  if (days < 0) return locale_label(`истекла ${date}`, `expired ${date}`, locale);
+  if (days === 0) return locale_label(`сегодня · ${date}`, `today · ${date}`, locale);
+  return locale_label(`через ${days} дн · ${date}`, `in ${days}d · ${date}`, locale);
+}
+
 function formatLastUsed(lastUsedAt: string | null): string {
   if (!lastUsedAt) return "—";
   const diff = Math.floor((Date.now() - new Date(lastUsedAt).getTime()) / 1000);
@@ -277,10 +305,6 @@ function getRowStatus(account: AccountWithUsage): StatusFilter {
   const r = getRemainingPercent(account);
   if (r !== null && r <= 0) return "limit";
   return "ready";
-}
-
-function getInitials(name: string): string {
-  return name.replace(/[^a-zA-Zа-яА-Я0-9]/g, "").slice(0, 2).toUpperCase() || "··";
 }
 
 function getMeterTone(remaining: number | null): string {
@@ -319,6 +343,77 @@ function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
   }));
 }
 
+// ── Plan insignia ─────────────────────────────────────────────────────────────
+// Rank gets metal, not another blue-to-purple SaaS ladder: a hollow glacier
+// crown for Plus, a solid gold one for Pro, two verdigris figures for Team.
+// Free and API-key accounts get nothing — absence is what makes the paid rows
+// readable at a glance.
+function PlanMark({ account, size = 13 }: { account: AccountWithUsage; size?: number }) {
+  const { insignia, tone, label } = getPlanVisual(account);
+  if (!insignia) return null;
+  const cls = "acc-mark acc-mark--" + (tone === "pro" ? "pro" : tone === "team" ? "team" : "plus");
+  return (
+    <span className={cls} title={label} aria-label={label}>
+      {insignia === "team"
+        ? <Users size={size} />
+        : <Crown size={size} fill={insignia === "crown-solid" ? "currentColor" : "none"} />}
+    </span>
+  );
+}
+
+// What went wrong, in words the person can act on. Keyed off the backend's
+// error_kind so the UI never has to show a raw "API error: 403 Forbidden".
+function describeFault(
+  kind: AccountFaultKind,
+  locale: Locale
+): { short: string; detail: string } {
+  const ru = locale === "ru";
+  switch (kind) {
+    case "auth_revoked":
+      return {
+        short: ru ? "Вход отозван" : "Signed out",
+        detail: ru
+          ? "OpenAI отклонила сессию. Авторизуйся в этом аккаунте заново."
+          : "OpenAI rejected the session. Sign in to this account again.",
+      };
+    case "forbidden":
+      return {
+        short: ru ? "Нет доступа" : "No access",
+        detail: ru
+          ? "Доступ к аккаунту закрыт — обычно это исключение из организации или блокировка."
+          : "Access to this account is closed — usually removal from an organisation, or a ban.",
+      };
+    case "unreachable":
+      return {
+        short: ru ? "Не пускает" : "Locked out",
+        detail: ru
+          ? "Сохранённый вход больше не принимают. Показаны последние цифры, которые удалось получить — авторизуйся в этом аккаунте заново."
+          : "The saved sign-in is no longer accepted. These are the last figures we managed to fetch — sign in to this account again.",
+      };
+    case "auth_expired":
+      return {
+        short: ru ? "Токен истёк" : "Token expired",
+        detail: ru
+          ? "Токен доступа устарел. Переключись на этот аккаунт, чтобы Codex обновил его."
+          : "The access token went stale. Switch to this account so Codex refreshes it.",
+      };
+    case "server":
+      return {
+        short: ru ? "Сбой OpenAI" : "OpenAI is down",
+        detail: ru
+          ? "OpenAI отвечает ошибкой. Данные показаны из кэша, повтор будет автоматически."
+          : "OpenAI is returning an error. Showing cached data; this retries on its own.",
+      };
+    default:
+      return {
+        short: ru ? "Ошибка запроса" : "Request failed",
+        detail: ru
+          ? "Не удалось получить данные об использовании."
+          : "Could not read usage data for this account.",
+      };
+  }
+}
+
 // ── Account Row (left panel list item) ────────────────────────────────────────
 function AccountListRow({
   account,
@@ -326,19 +421,27 @@ function AccountListRow({
   isActiveAcc,
   masked,
   onClick,
+  onContextMenu,
+  look,
+  locale,
 }: {
   account: AccountWithUsage;
   selected: boolean;
   isActiveAcc: boolean;
   masked: boolean;
   onClick: () => void;
+  onContextMenu: (event: React.MouseEvent) => void;
+  look: AccountLook | undefined;
+  locale: Locale;
 }) {
   const tone = getAccountHealthTone(account);
   const remaining = getRemainingPercent(account);
   const planVisual = getPlanVisual(account);
-  const initials = account.provider === "claude" ? "CL" : getInitials(account.name);
+  const dead = isAccountDead(account);
+  const fault = getAccountFault(account);
   const dotColor = account.is_active ? "var(--accent)" : getDotColor(tone);
-  const isPulse = account.is_active || tone === "warning";
+  const isPulse = (account.is_active || tone === "warning") && !dead;
+  const tint = colorHex(look?.color);
 
   const maskEmail = (email: string) => {
     if (!masked) return email;
@@ -354,38 +457,37 @@ function AccountListRow({
         "acc-row",
         selected ? "is-selected" : "",
         isActiveAcc ? "is-active-acc" : "",
+        dead ? "is-dead" : "",
       ].join(" ")}
+      data-tier={planVisual.premium && planVisual.colorVar ? planVisual.tone : undefined}
+      data-tinted={tint ? "" : undefined}
+      style={tint ? ({ "--tint": tint } as CSSProperties) : undefined}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
-      <span className="acc-avatar">
-        {initials}
+      <span className="acc-gutter">
         <span
           className={"st-dot" + (isPulse ? " st-dot--pulse" : "")}
-          style={{ width: 9, height: 9, background: dotColor, color: dotColor }}
+          style={{ width: 7, height: 7, background: dotColor, color: dotColor }}
         />
       </span>
       <span className="acc-main">
         <span className="acc-top">
+          <LookIcon icon={look?.icon} color={tint} />
           <span className="acc-name">{account.name}</span>
-          <span className={"tag " + (planVisual.premium ? "tag--accent" : "tag--neutral")}>
-            {planVisual.shortLabel}
-          </span>
+          <PlanMark account={account} />
         </span>
         {account.email && (
           <span className="acc-sub">{maskEmail(account.email)}</span>
         )}
       </span>
       <span className="acc-right">
-        {account.usage?.error ? (
-          account.usage?.rate_limited ? (
-            <span className="acc-pct" style={{ color: "var(--warn)", fontSize: 10 }}>
-              НЕ ОБНОВЛЕНО
-            </span>
-          ) : (
-            <span className="acc-pct" style={{ color: "var(--bad)", fontSize: 11 }}>
-              СБОЙ
-            </span>
-          )
+        {fault ? (
+          <span className="acc-fault">{describeFault(fault, locale).short}</span>
+        ) : isRateLimitedUsage(account) ? (
+          <span className="acc-fault" style={{ color: "var(--warn)" }}>
+            {locale_label("не обновлено", "not refreshed", locale)}
+          </span>
         ) : (
           <>
             <span className="acc-pct" style={{ color: remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
@@ -406,9 +508,110 @@ function AccountListRow({
   );
 }
 
+// ── Right-click menu ──────────────────────────────────────────────────────────
+// Everything the detail panel can do, reachable without leaving the list.
+function AccountContextMenu({
+  account,
+  x,
+  y,
+  masked,
+  locale,
+  t,
+  onClose,
+  onSwitch,
+  onRefresh,
+  onRename,
+  onCopyEmail,
+  onToggleMask,
+  onReauthorize,
+  onDelete,
+  look,
+  onLookChange,
+}: {
+  account: AccountWithUsage;
+  x: number;
+  y: number;
+  masked: boolean;
+  locale: Locale;
+  t: AppText;
+  onClose: () => void;
+  onSwitch: () => void;
+  onRefresh: () => void;
+  onRename: () => void;
+  onCopyEmail: () => void;
+  onToggleMask: () => void;
+  /** Sign in again as this same account, keeping its name and history. */
+  onReauthorize?: () => void;
+  onDelete: () => void;
+  look: AccountLook | undefined;
+  onLookChange: (next: AccountLook) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+
+  // Flip the menu back inside the window when it is opened near an edge.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    setPos({
+      left: Math.max(6, Math.min(x, window.innerWidth - width - 6)),
+      top: Math.max(6, Math.min(y, window.innerHeight - height - 6)),
+    });
+  }, [x, y]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const run = (fn: () => void) => () => { onClose(); fn(); };
+
+  return (
+    <>
+      <div className="ctx-scrim" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
+      <div className="ctx" ref={ref} style={{ left: pos.left, top: pos.top }} role="menu">
+        <div className="ctx-head">{account.name}</div>
+        <button type="button" className="ctx-item" role="menuitem" disabled={account.is_active} onClick={run(onSwitch)}>
+          <Zap size={14} /> {account.is_active ? t.account.active : t.sidebar.switch}
+        </button>
+        <button type="button" className="ctx-item" role="menuitem" onClick={run(onRename)}>
+          <PencilLine size={14} /> {t.account.rename}
+        </button>
+        <button type="button" className="ctx-item" role="menuitem" onClick={run(onRefresh)}>
+          <RefreshCcw size={14} /> {locale_label("Обновить лимиты", "Refresh limits", locale)}
+        </button>
+        {onReauthorize && (
+          <button type="button" className="ctx-item" role="menuitem" onClick={run(onReauthorize)}>
+            <KeyRound size={14} /> {locale_label("Войти заново", "Sign in again", locale)}
+          </button>
+        )}
+        <div className="ctx-sep" />
+        <button type="button" className="ctx-item" role="menuitem" disabled={!account.email} onClick={run(onCopyEmail)}>
+          <Copy size={14} /> {t.account.copyEmail}
+        </button>
+        <button type="button" className="ctx-item" role="menuitem" disabled={!account.email} onClick={run(onToggleMask)}>
+          {masked ? <Eye size={14} /> : <EyeOff size={14} />}
+          {masked ? locale_label("Показать почту", "Show email", locale) : locale_label("Скрыть почту", "Hide email", locale)}
+        </button>
+        <div className="ctx-sep" />
+
+        <LookPicker look={look} ru={locale === "ru"} onChange={onLookChange} />
+
+        <div className="ctx-sep" />
+        <button type="button" className="ctx-item ctx-item--danger" role="menuitem" onClick={run(onDelete)}>
+          <Trash2 size={14} /> {t.account.delete || locale_label("Удалить", "Delete", locale)}
+        </button>
+      </div>
+    </>
+  );
+}
+
 // ── Account Detail Panel (right panel) ────────────────────────────────────────
 function AccountDetailPanel({
   account,
+  look,
   masked,
   onToggleMask,
   onCopyEmail,
@@ -424,10 +627,13 @@ function AccountDetailPanel({
   onRename,
   onToggleAutoWarmup,
   onReauthorize,
+  renameRequest,
+  onRenameRequestHandled,
   locale,
   t,
 }: {
   account: AccountWithUsage;
+  look: AccountLook | undefined;
   masked: boolean;
   onToggleMask: () => void;
   onCopyEmail: () => void;
@@ -443,6 +649,9 @@ function AccountDetailPanel({
   onRename: (newName: string) => Promise<void>;
   onToggleAutoWarmup: () => void;
   onReauthorize?: () => void;
+  /** Account id whose name the list asked to edit (right-click → Rename). */
+  renameRequest?: string | null;
+  onRenameRequestHandled: () => void;
   locale: Locale;
   t: AppText;
 }) {
@@ -466,6 +675,15 @@ function AccountDetailPanel({
     }
   }, [editingName]);
 
+  // Declared after the reset effect above so a rename asked for from the list
+  // survives the "different account selected" reset that runs first.
+  useEffect(() => {
+    if (renameRequest && renameRequest === account.id) {
+      setEditingName(true);
+      onRenameRequestHandled();
+    }
+  }, [renameRequest, account.id, onRenameRequestHandled]);
+
   // Single commit path: Enter and Escape both blur the input, so save/cancel
   // always flow through here exactly once (no Enter+blur double fire).
   const commitName = () => {
@@ -486,8 +704,15 @@ function AccountDetailPanel({
   const tone = getAccountHealthTone(account);
   const remaining = getRemainingPercent(account);
   const planVisual = getPlanVisual(account);
-  const initials = account.provider === "claude" ? "CL" : getInitials(account.name);
   const isCodex = account.provider === "codex";
+  const dead = isAccountDead(account);
+  const fault = getAccountFault(account);
+  const faultText = fault ? describeFault(fault, locale) : null;
+  const subscriptionEnded = Boolean(
+    isCodex &&
+      account.subscription_expires_at &&
+      new Date(account.subscription_expires_at).getTime() < Date.now()
+  );
   const resetItems = getActiveResetItems(account, locale);
   const tokenExpiry = formatAuthTokenCountdown(account.auth_token_expires_at, locale);
   const needsReauth = account.auth_mode === "chat_g_p_t" && hasRecoverableAuthError(account.usage);
@@ -514,17 +739,18 @@ function AccountDetailPanel({
 
   return (
     <div className="detail">
-      <div className="dcard">
+      <div
+        className={"dcard" + (dead ? " is-dead" : "")}
+        data-tinted={colorHex(look?.color) ? "" : undefined}
+        style={colorHex(look?.color) ? ({ "--tint": colorHex(look?.color) } as CSSProperties) : undefined}
+      >
         <div className={barClass} />
 
         <div className="dhead">
-          <div className="dhead-id">
-            {initials}
-            <span
-              className={"st-dot" + (account.is_active ? " st-dot--pulse" : "")}
-              style={{ width: 11, height: 11, background: dotColor, color: dotColor }}
-            />
-          </div>
+          <span
+            className={"st-dot" + (account.is_active && !dead ? " st-dot--pulse" : "")}
+            style={{ width: 9, height: 9, marginTop: 7, background: dotColor, color: dotColor, flexShrink: 0 }}
+          />
 
           <div className="dhead-main">
             <div className="dhead-eyebrow">
@@ -547,15 +773,19 @@ function AccountDetailPanel({
                   }}
                 />
               ) : (
-                <button
-                  type="button"
-                  className="dhead-name-btn"
-                  onClick={() => setEditingName(true)}
-                  title={t.account.rename}
-                >
-                  <span>{account.name}</span>
-                  <PencilLine size={15} className="edit-pencil" />
-                </button>
+                <span className="dhead-name-row">
+                  <LookIcon icon={look?.icon} size={18} color={colorHex(look?.color)} />
+                  <button
+                    type="button"
+                    className="dhead-name-btn"
+                    onClick={() => setEditingName(true)}
+                    title={t.account.rename}
+                  >
+                    <span>{account.name}</span>
+                    <PencilLine size={15} className="edit-pencil" />
+                  </button>
+                  <PlanMark account={account} size={18} />
+                </span>
               )}
             </div>
 
@@ -576,10 +806,20 @@ function AccountDetailPanel({
               {account.is_active && (
                 <span className="tag tag--accent">
                   <span className="tag-dot" style={{ background: "var(--accent)" }} />
-                  АКТИВНЫЙ
+                  {locale_label("АКТИВНЫЙ", "ACTIVE", locale)}
                 </span>
               )}
-              <span className={"tag " + (planVisual.premium ? "tag--accent" : "tag--neutral")}>
+              {/* The plan badge wears its own metal, not the app accent — the
+                  accent is reserved for "this is the account in use". */}
+              <span
+                className="tag"
+                style={planVisual.colorVar ? {
+                  color: `var(${planVisual.colorVar})`,
+                  borderColor: `color-mix(in oklab, var(${planVisual.colorVar}) 40%, transparent)`,
+                  background: `color-mix(in oklab, var(${planVisual.colorVar}) 12%, transparent)`,
+                } : undefined}
+              >
+                <PlanMark account={account} size={11} />
                 {planVisual.label}
               </span>
               <span className="tag tag--neutral">
@@ -588,7 +828,7 @@ function AccountDetailPanel({
               </span>
               {autoWarmupEnabled && (
                 <span className="tag tag--accent">
-                  <Zap size={11} /> АВТОПРОГРЕВ
+                  <Zap size={11} /> {locale_label("АВТОПРОГРЕВ", "AUTO WARM-UP", locale)}
                 </span>
               )}
               {account.auth_mode === "chat_g_p_t" && tokenExpiry.tone !== "muted" && (
@@ -622,12 +862,17 @@ function AccountDetailPanel({
         </div>
 
         {/* Banners */}
-        {account.usage?.error && !isRateLimitedUsage(account) && !needsReauth && (
-          <div className="banner banner--bad">
-            <AlertTriangle size={17} />
+        {faultText && !isRateLimitedUsage(account) && (
+          <div className={"banner banner--" + (dead ? "bad" : "warn")} title={account.usage?.error ?? undefined}>
+            {fault === "auth_revoked" || fault === "auth_expired" ? <KeyRound size={17} /> : <AlertTriangle size={17} />}
             <div className="banner-txt">
-              {t.states.failedAccounts} · <strong style={{ fontFamily: "var(--mono)" }}>{account.usage.error}</strong>
+              <strong>{faultText.short}.</strong> {faultText.detail}
             </div>
+            {needsReauth && onReauthorize && (
+              <button type="button" className="btn btn--danger btn--sm" onClick={onReauthorize}>
+                <KeyRound size={13} /> {t.account.refreshLogin}
+              </button>
+            )}
           </div>
         )}
         {isRateLimitedUsage(account) && !needsReauth && (
@@ -642,18 +887,7 @@ function AccountDetailPanel({
             </div>
           </div>
         )}
-        {needsReauth && (
-          <div className="banner banner--bad">
-            <KeyRound size={17} />
-            <div className="banner-txt">{t.account.refreshLogin}</div>
-            {onReauthorize && (
-              <button type="button" className="btn btn--danger btn--sm" onClick={onReauthorize}>
-                <KeyRound size={13} /> {t.account.refreshLogin}
-              </button>
-            )}
-          </div>
-        )}
-        {!account.usage?.error && !needsReauth && remaining !== null && remaining <= 0 && (
+        {!account.usage?.error && !fault && !needsReauth && remaining !== null && remaining <= 0 && (
           <div className="banner banner--warn">
             <AlertTriangle size={17} />
             <div className="banner-txt">{t.account.criticalLimit} — {t.account.waitingUsage}</div>
@@ -664,7 +898,13 @@ function AccountDetailPanel({
         <div className="dbody">
           <div className="dbody-col">
             <div className="sec-label">
-              <span className="sec-label-txt"><span className="sec-label-mark">//</span>{locale_label("Лимиты использования", "Usage limits", locale)}</span>
+              <span className="sec-label-txt">
+                <span className="sec-label-mark">//</span>
+                {fault === "unreachable" && account.cached_usage_updated_at
+                  ? locale_label("Лимиты на ", "Limits as of ", locale) +
+                    new Date(account.cached_usage_updated_at).toLocaleDateString(locale === "ru" ? "ru-RU" : "en-GB")
+                  : locale_label("Лимиты использования", "Usage limits", locale)}
+              </span>
               <span className="sec-label-rule" />
             </div>
             <div className="limit-block">
@@ -695,38 +935,74 @@ function AccountDetailPanel({
                 </div>
               )}
             </div>
-            {!isCodex && (
-              <div className="meta">
-                <div className="meta-row">
-                  <span className="meta-key">{locale_label("Подписка", "Subscription", locale)}</span>
-                  <span className="meta-val">{account.claude_subscription_type || account.plan_type || "—"}</span>
-                </div>
+            <div className="meta">
+              <div className="meta-row">
+                <span className="meta-key">{locale_label("Подписка", "Subscription", locale)}</span>
+                <span className="meta-val" style={planVisual.colorVar ? { color: `var(${planVisual.colorVar})` } : undefined}>
+                  {isCodex
+                    ? planVisual.label
+                    : (account.claude_subscription_type || account.plan_type || "—")}
+                </span>
               </div>
-            )}
+              {isCodex && (
+                <div className="meta-row">
+                  <span className="meta-key">
+                    {subscriptionEnded
+                      ? locale_label("Закончилась", "Ended", locale)
+                      : locale_label("Продление", "Renews", locale)}
+                  </span>
+                  <span className="meta-val" style={subscriptionEnded ? { color: "var(--text-3)" } : undefined}>
+                    {formatSubscriptionRenewal(account.subscription_expires_at, locale)}
+                  </span>
+                </div>
+              )}
+              {isCodex && account.usage?.credits_balance && (
+                <div className="meta-row">
+                  <span className="meta-key">{locale_label("Кредиты", "Credits", locale)}</span>
+                  <span className="meta-val">
+                    {account.usage.unlimited_credits ? "∞" : account.usage.credits_balance}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="dbody-col">
             <div className="sec-label">
-              <span className="sec-label-txt"><span className="sec-label-mark">//</span>Параметры</span>
+              <span className="sec-label-txt"><span className="sec-label-mark">//</span>{locale_label("Параметры", "Details", locale)}</span>
               <span className="sec-label-rule" />
             </div>
             <div className="meta">
               <div className="meta-row">
-                <span className="meta-key">Токен</span>
+                <span className="meta-key">{locale_label("Токен", "Token", locale)}</span>
                 <span className="meta-val" style={{ color: !isCodex ? undefined : tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
                   {isCodex ? tokenExpiry.label : "OAuth / автообновление"}
                 </span>
               </div>
               <div className="meta-row">
-                <span className="meta-key">Уровень лимита</span>
+                <span className="meta-key">{locale_label("Уровень лимита", "Limit tier", locale)}</span>
                 <span className="meta-val">{limitLevel}</span>
               </div>
+              {/* Codex exposes no organisation, and echoing the plan here just
+                  repeated the row above it. */}
+              {!isCodex && (
+                <div className="meta-row">
+                  <span className="meta-key">{locale_label("Организация", "Organisation", locale)}</span>
+                  <span className="meta-val">{orgValue}</span>
+                </div>
+              )}
+              {isCodex && account.usage?.primary_window_minutes && (
+                <div className="meta-row">
+                  <span className="meta-key">{locale_label("Окно лимита", "Limit window", locale)}</span>
+                  <span className="meta-val">
+                    {account.usage.primary_window_minutes >= 1440
+                      ? `${Math.round(account.usage.primary_window_minutes / 1440)}${locale_label("д", "d", locale)}`
+                      : `${Math.round(account.usage.primary_window_minutes / 60)}${locale_label("ч", "h", locale)}`}
+                  </span>
+                </div>
+              )}
               <div className="meta-row">
-                <span className="meta-key">Организация</span>
-                <span className="meta-val">{isCodex ? (account.plan_type || "—") : orgValue}</span>
-              </div>
-              <div className="meta-row">
-                <span className="meta-key">Был активен</span>
+                <span className="meta-key">{locale_label("Был активен", "Last used", locale)}</span>
                 <span className="meta-val">{formatLastUsed(account.last_used_at)}</span>
               </div>
             </div>
@@ -737,10 +1013,12 @@ function AccountDetailPanel({
         <div className="dfoot">
           {isCodex && (
             <button type="button" className="btn btn--ghost btn--md" onClick={onWarmup} disabled={warmingUp}>
-              <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> Прогреть
+              <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> {locale_label("Прогреть", "Warm up", locale)}
             </button>
           )}
-          {account.is_active ? (
+          {/* Parked Codex accounts refresh too: a usage GET uses the stored access
+              token and never rotates anything. Only parked Claude stays frozen. */}
+          {account.is_active || isCodex ? (
             <button
               type="button"
               className={"btn btn--ghost btn--md" + (isRefreshing ? " is-busy" : "")}
@@ -765,8 +1043,8 @@ function AccountDetailPanel({
               className="btn btn--ghost btn--md"
               disabled
               title={locale_label(
-                "Данные из кэша — обновляется только активный аккаунт. Переключитесь, чтобы обновить.",
-                "Cached data — only the active account refreshes. Switch to update.",
+                "Данные из кэша — припаркованный Claude-аккаунт заморожен. Переключитесь, чтобы обновить.",
+                "Cached data — a parked Claude account stays frozen. Switch to update.",
                 locale
               )}
             >
@@ -1053,6 +1331,8 @@ function App() {
     loadMaskedAccountIds,
     saveMaskedAccountIds,
     checkClaudeFileStatus,
+    checkCodexFileStatus,
+    addCodexFromActiveSession,
     addClaudeFromActiveSession,
     updateActiveClaudeFromFile,
     clearClaudeActiveSession,
@@ -1061,7 +1341,7 @@ function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [activeProvider, setActiveProvider] = useState<ProviderTab>(() => readActiveTab().activeProvider);
   // Claude CLI long-lived token tab (separate from the provider account list).
-  const [tabView, setTabView] = useState<"accounts" | "tokens">(() => readActiveTab().tabView);
+  const [tabView, setTabView] = useState<"accounts" | "tokens" | "zai">(() => readActiveTab().tabView);
   // Full Claude CLI token list, loaded at startup so the tab badge + stats are
   // correct immediately (not only after the tab is first opened). The panel keeps
   // this in sync as tokens are added / activated / deleted.
@@ -1090,6 +1370,8 @@ function App() {
   const [autoWarmupRunningIds, setAutoWarmupRunningIds] = useState<Set<string>>(new Set());
   const [warmupToast, setWarmupToast] = useState<{ message: string; isError: boolean } | null>(null);
   const [claudeUnknownToast, setClaudeUnknownToast] = useState(false);
+  const [codexUnknownToast, setCodexUnknownToast] = useState(false);
+  const codexFileStatusRef = useRef<string | null>(null);
   const [copiedEmailAccountId, setCopiedEmailAccountId] = useState<string | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
@@ -1116,6 +1398,10 @@ function App() {
   const [hideAllEmails, setHideAllEmails] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [selectedId, setSelectedId] = useState<Record<ProviderTab, string | null>>({ codex: null, claude: null });
+  const [zcodeAccounts, setZcodeAccounts] = useState<ZcodeAccountInfo[]>([]);
+  const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [renameRequestId, setRenameRequestId] = useState<string | null>(null);
+  const [accountLooks, setAccountLooks] = useState<Record<string, AccountLook>>(() => loadAccountLooks());
 
   const deferredSearchQuery = useDeferredValue(accountSearchQuery);
   const accountsDataRef = useRef<AccountWithUsage[]>([]);
@@ -1127,6 +1413,16 @@ function App() {
 
   const accentTheme = accentPresets[accentPreset];
   const t = translations[resolvedLanguage];
+
+  const updateAccountLook = useCallback((accountId: string, next: AccountLook) => {
+    setAccountLooks((prev) => {
+      const merged = { ...prev };
+      if (next.color || next.icon) merged[accountId] = next;
+      else delete merged[accountId];
+      saveAccountLooks(merged);
+      return merged;
+    });
+  }, []);
 
   const copyAccountEmail = useCallback((account: AccountWithUsage) => {
     if (!account.email) return;
@@ -1161,6 +1457,9 @@ function App() {
     invokeBackend<ClaudeTokenAccountInfo[]>("list_claude_token_accounts")
       .then(setClaudeTokens)
       .catch(() => {});
+    invokeBackend<ZcodeAccountInfo[]>("list_zcode_accounts")
+      .then(setZcodeAccounts)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1189,7 +1488,7 @@ function App() {
   useEffect(() => { document.documentElement.lang = resolvedLanguage; }, [resolvedLanguage]);
 
   useEffect(() => {
-    try { window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabView === "tokens" ? "tokens" : activeProvider); } catch {}
+    try { window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabView === "tokens" ? "tokens" : tabView === "zai" ? "zai" : activeProvider); } catch {}
   }, [tabView, activeProvider]);
   useEffect(() => { try { window.localStorage.setItem(ACCENT_STORAGE_KEY, accentPreset); } catch {} }, [accentPreset]);
   useEffect(() => { try { window.localStorage.setItem(CARD_DENSITY_STORAGE_KEY, cardDensity); } catch {} }, [cardDensity]);
@@ -1256,6 +1555,31 @@ function App() {
       window.removeEventListener("focus", onFocus);
     };
   }, [checkClaudeFileStatus]);
+
+  // Same watch for Codex: a login done inside Codex itself should be offered
+  // for adding, not silently ignored.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    const check = async () => {
+      const status = await checkCodexFileStatus();
+      if (cancelled) return;
+      // Only notify on the transition into "unknown" so a dismissed toast stays dismissed.
+      if (status === "unknown" && codexFileStatusRef.current !== "unknown") {
+        setCodexUnknownToast(true);
+      }
+      codexFileStatusRef.current = status;
+    };
+    void check();
+    const id = window.setInterval(() => { void check(); }, 60_000);
+    const onFocus = () => { void check(); };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [checkCodexFileStatus]);
 
   useEffect(() => {
     if (!isTauriRuntime() || isMacOs || !currentWindow) return;
@@ -1328,6 +1652,16 @@ function App() {
       );
     } finally { setSwitchingId(null); }
   };
+
+  // Names the app picks itself are deliberately dull and numbered — the person
+  // renames them to something meaningful, and a placeholder must never collide.
+  const nextAutoAccountName = useCallback(() => {
+    const taken = new Set(accounts.map((a) => a.name.trim().toLowerCase()));
+    for (let n = 1; ; n++) {
+      const candidate = `Account ${n}`;
+      if (!taken.has(candidate.toLowerCase())) return candidate;
+    }
+  }, [accounts]);
 
   const handleDelete = async (accountId: string) => {
     try { await deleteAccount(accountId); } catch (err) { console.error("Failed to delete:", err); }
@@ -1519,6 +1853,10 @@ function App() {
   const sortedListAccounts = useMemo(() => {
     const statusOrder: Record<string, number> = { ready: 0, limit: 1, error: 2 };
     return [...filteredByStatus].sort((a, b) => {
+      // Accounts that need the person to fix something sink below everything
+      // else, even below the active one — they cannot be used as they are.
+      const aDead = isAccountDead(a), bDead = isAccountDead(b);
+      if (aDead !== bDead) return aDead ? 1 : -1;
       if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
       const aS = getRowStatus(a), bS = getRowStatus(b);
       const od = (statusOrder[aS] ?? 3) - (statusOrder[bS] ?? 3);
@@ -1539,7 +1877,8 @@ function App() {
       const found = accounts.find((a) => a.id === id);
       if (found) return found;
     }
-    return activeAccount ?? accounts.find((a) => a.provider === activeProvider) ?? null;
+    const usable = accounts.filter((a) => a.provider === activeProvider && !isAccountDead(a));
+    return activeAccount ?? usable[0] ?? accounts.find((a) => a.provider === activeProvider) ?? null;
   }, [selectedId, activeProvider, accounts, activeAccount]);
 
   const providerCounts = useMemo(() => ({
@@ -1632,12 +1971,26 @@ function App() {
           <button type="button" className={"tab" + (tabView === "tokens" ? " is-active" : "")} onClick={() => setTabView("tokens")} title="claude setup-token">
             🔑 Claude CLI <span className="t-count">{claudeTokens.length}</span>
           </button>
+          <button type="button" className={"tab" + (tabView === "zai" ? " is-active" : "")} onClick={() => setTabView("zai")} title="Z.ai Coding Plan / ZCode">
+            <Boxes size={13} /> Z.ai / ZCode <span className="t-count">{zcodeAccounts.length}</span>
+          </button>
         </div>
 
         <div className="topbar-spacer" />
 
         {/* Global stats — token health on the Claude CLI tab, account health otherwise */}
-        {tabView === "tokens" ? (
+        {tabView === "zai" ? (
+          <div className="gstats">
+            <div className="gstat">
+              <span className="gstat-n">{zcodeAccounts.length}</span>
+              <span className="gstat-l">{locale_label("ВСЕГО", "TOTAL", resolvedLanguage)}</span>
+            </div>
+            <div className="gstat gstat--ok">
+              <span className="gstat-n">{zcodeAccounts.filter((a) => a.is_active).length}</span>
+              <span className="gstat-l">{locale_label("АКТИВЕН", "ACTIVE", resolvedLanguage)}</span>
+            </div>
+          </div>
+        ) : tabView === "tokens" ? (
           <div className="gstats">
             <div className="gstat">
               <span className="gstat-n">{tokenSummary.total}</span>
@@ -1718,8 +2071,17 @@ function App() {
       {tabView === "tokens" ? (
         <div className="token-wrap">
           <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onTokensChange={setClaudeTokens} />
+          {/* Both panels feed Claude Code the same way (env-var auth override), so
+              they belong together — the Z.ai tab is about ZCode sign-ins. */}
           <GatewayPanel language={resolvedLanguage === "ru" ? "ru" : "en"} />
         </div>
+      ) : tabView === "zai" ? (
+        <ZcodePanel
+          language={resolvedLanguage === "ru" ? "ru" : "en"}
+          onAccountsChange={setZcodeAccounts}
+          looks={accountLooks}
+          onLookChange={updateAccountLook}
+        />
       ) : (
       <div className="workbench">
         {/* Left column: account list */}
@@ -1791,7 +2153,14 @@ function App() {
                   selected={effectiveSelectedAccount?.id === account.id}
                   isActiveAcc={account.is_active}
                   masked={hideAllEmails || maskedAccounts.has(account.id)}
+                  look={accountLooks[account.id]}
+                  locale={resolvedLanguage}
                   onClick={() => setSelectedId((prev) => ({ ...prev, [activeProvider]: account.id }))}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setSelectedId((prev) => ({ ...prev, [activeProvider]: account.id }));
+                    setContextMenu({ id: account.id, x: event.clientX, y: event.clientY });
+                  }}
                 />
               ))
             )}
@@ -1803,6 +2172,7 @@ function App() {
           {effectiveSelectedAccount ? (
             <AccountDetailPanel
               account={effectiveSelectedAccount}
+              look={accountLooks[effectiveSelectedAccount.id]}
               masked={hideAllEmails || maskedAccounts.has(effectiveSelectedAccount.id)}
               onToggleMask={() => toggleMask(effectiveSelectedAccount.id)}
               onCopyEmail={() => copyAccountEmail(effectiveSelectedAccount)}
@@ -1832,6 +2202,8 @@ function App() {
               onRename={(newName) => renameAccount(effectiveSelectedAccount.id, newName)}
               onToggleAutoWarmup={() => toggleAutoWarmupAccount(effectiveSelectedAccount.id)}
               onReauthorize={effectiveSelectedAccount.auth_mode === "chat_g_p_t" ? () => setReauthAccount(effectiveSelectedAccount) : undefined}
+              renameRequest={renameRequestId}
+              onRenameRequestHandled={() => setRenameRequestId(null)}
               locale={resolvedLanguage}
               t={t}
             />
@@ -1848,6 +2220,30 @@ function App() {
       )}
 
       {/* ── Overlays ───────────────────────────────────────────────────────── */}
+      {contextMenu && (() => {
+        const target = accounts.find((a) => a.id === contextMenu.id);
+        if (!target) return null;
+        return (
+          <AccountContextMenu
+            account={target}
+            x={contextMenu.x}
+            y={contextMenu.y}
+            masked={hideAllEmails || maskedAccounts.has(target.id)}
+            locale={resolvedLanguage}
+            t={t}
+            onClose={() => setContextMenu(null)}
+            onSwitch={() => void handleSwitch(target.id, target.provider)}
+            onRefresh={() => { void refreshSingleUsage(target.id, { force: true }).catch(() => showWarmupToast(t.toast.refreshFailed, true)); }}
+            onRename={() => setRenameRequestId(target.id)}
+            onCopyEmail={() => copyAccountEmail(target)}
+            onToggleMask={() => toggleMask(target.id)}
+            onReauthorize={target.auth_mode === "chat_g_p_t" ? () => setReauthAccount(target) : undefined}
+            onDelete={() => void handleDelete(target.id)}
+            look={accountLooks[target.id]}
+            onLookChange={(next) => updateAccountLook(target.id, next)}
+          />
+        );
+      })()}
       {isSettingsOpen && (
         <SettingsPanel
           themePreference={themePreference}
@@ -1937,6 +2333,36 @@ function App() {
             <span>{warmupToast.message}</span>
           </div>
         )}
+        {codexUnknownToast && (() => {
+          const ru = resolvedLanguage === "ru";
+          const autoName = nextAutoAccountName();
+          return (
+            <div className="toast toast--warn" style={{ gap: 10 }}>
+              <AlertTriangle size={16} style={{ color: "var(--warn)", flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                {ru ? "Найден аккаунт Codex, которого нет в списке" : "Codex is signed into an account that is not in the list"}
+              </span>
+              <button
+                type="button"
+                className="ui-action-button"
+                style={{ flexShrink: 0 }}
+                onClick={() => {
+                  setCodexUnknownToast(false);
+                  addCodexFromActiveSession(autoName)
+                    .then(() => showWarmupToast(ru ? `Добавлен «${autoName}» — переименуй по правому клику` : `Added “${autoName}” — rename it from the right-click menu`))
+                    .catch((err) => showWarmupToast(formatWarmupError(err), true));
+                }}
+              >
+                {ru ? `Добавить как «${autoName}»` : `Add as “${autoName}”`}
+              </button>
+              <button
+                type="button"
+                style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", padding: "0 2px", flexShrink: 0 }}
+                onClick={() => setCodexUnknownToast(false)}
+              >✕</button>
+            </div>
+          );
+        })()}
         {claudeUnknownToast && (() => {
           const activeClaudeName = accounts.find(a => a.provider === "claude" && a.is_active)?.name;
           const ru = resolvedLanguage === "ru";

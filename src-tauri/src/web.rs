@@ -136,6 +136,16 @@ fn handle_request(mut request: Request, runtime: &Runtime, dist_dir: &Path) -> a
 async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, String> {
     match command {
         "list_accounts" => to_json(list_accounts().await?),
+        // ZCode snapshots, so the local bridge can restore a Z.ai sign-in too.
+        "list_zcode_accounts" => to_json(crate::commands::list_zcode_accounts().await?),
+        "capture_zcode_account" => {
+            let name = payload
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            to_json(crate::commands::capture_zcode_account(name).await?)
+        }
         "get_active_account_info" => to_json(get_active_account_info().await?),
         "add_account_from_file" => {
             let args: FileImportArgs = parse_args(payload)?;

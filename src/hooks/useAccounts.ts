@@ -162,16 +162,16 @@ export function useAccounts() {
           ...(accountList ?? accountsRef.current),
         ];
 
-        // Parked (inactive) OAuth accounts — Claude AND Codex — are frozen like a
-        // powered-off PC: never contacted, served from cache only. Both providers
-        // rotate refresh tokens with reuse detection, so a background refresh of an
-        // account another client also holds would log that client out. Skipping
-        // them here keeps their "last updated" timestamp honest (so the UI can
-        // truthfully say the data is stale) and guarantees zero network on their
-        // rotation-sensitive token. API-key accounts have no usage to fetch anyway.
-        list = list.filter(
-          (account) => account.is_active || account.auth_mode === "api_key"
-        );
+        // Parked (inactive) *Claude* accounts are frozen like a powered-off PC:
+        // never contacted, served from cache only. Anthropic rotates refresh
+        // tokens with reuse detection, so refreshing an account another client
+        // also holds logs that client out of everything (see PROBLEMS.md).
+        //
+        // Codex is different: get_usage_with_chatgpt_auth reads a parked account
+        // with its stored *access* token and never touches the token endpoint —
+        // a usage GET rotates nothing. So parked Codex accounts keep showing live
+        // remaining quota and reset windows instead of an empty card.
+        list = list.filter((account) => account.provider !== "claude");
 
         if (options?.auto) {
           // Automatic poll: skip accounts refreshed recently or cooling down after a 429.
@@ -289,7 +289,11 @@ export function useAccounts() {
             return {
               ...account,
               cached_usage: usage,
-              cached_usage_updated_at: new Date().toISOString(),
+              // A replayed snapshot keeps the timestamp of the fetch that
+              // actually produced it, so "limits as of <date>" stays truthful.
+              cached_usage_updated_at: usage.from_cache
+                ? account.cached_usage_updated_at
+                : new Date().toISOString(),
               usage,
               usageWarning: Boolean(usage.rate_limited),
               usageLoading: false,
@@ -333,7 +337,9 @@ export function useAccounts() {
           return {
             ...a,
             cached_usage: usage,
-            cached_usage_updated_at: new Date().toISOString(),
+            cached_usage_updated_at: usage.from_cache
+              ? a.cached_usage_updated_at
+              : new Date().toISOString(),
             usage,
             usageWarning: Boolean(usage.rate_limited),
             usageLoading: false,
@@ -570,6 +576,32 @@ export function useAccounts() {
     }
   }, []);
 
+  const checkCodexFileStatus = useCallback(async (): Promise<
+    "file_not_found" | "matched" | "unknown"
+  > => {
+    try {
+      return await invokeBackend<"file_not_found" | "matched" | "unknown">(
+        "check_codex_file_status"
+      );
+    } catch (err) {
+      console.error("Failed to check Codex file status:", err);
+      return "matched";
+    }
+  }, []);
+
+  const addCodexFromActiveSession = useCallback(
+    async (name: string) => {
+      const account = await invokeBackend<AccountInfo>(
+        "add_codex_account_from_active_session",
+        { name }
+      );
+      const accountList = await loadAccounts();
+      await refreshUsage(accountList);
+      return account;
+    },
+    [loadAccounts, refreshUsage]
+  );
+
   const addClaudeFromActiveSession = useCallback(
     async (name: string) => {
       const account = await invokeBackend<AccountInfo>(
@@ -668,6 +700,8 @@ export function useAccounts() {
     loadMaskedAccountIds,
     saveMaskedAccountIds,
     checkClaudeFileStatus,
+    checkCodexFileStatus,
+    addCodexFromActiveSession,
     addClaudeFromActiveSession,
     updateActiveClaudeFromFile,
     clearClaudeActiveSession,

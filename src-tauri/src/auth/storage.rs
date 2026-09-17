@@ -27,7 +27,18 @@ pub fn load_accounts() -> Result<AccountsStore> {
     let path = get_accounts_file()?;
 
     if !path.exists() {
-        return Ok(AccountsStore::default());
+        // A missing store is normally a first run. But if a .bak is sitting next
+        // to it, the file was lost rather than never created — recover instead
+        // of silently handing back an empty store the next save would cement.
+        let backup_path = path.with_extension("json.bak");
+        if backup_path.exists() {
+            println!("[Storage] accounts.json missing, restoring from accounts.json.bak");
+            fs::copy(&backup_path, &path).with_context(|| {
+                format!("Failed to restore accounts file from {}", backup_path.display())
+            })?;
+        } else {
+            return Ok(AccountsStore::default());
+        }
     }
 
     let content = fs::read_to_string(&path)
@@ -98,11 +109,19 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
         )
     })?;
 
+    // Keep the outgoing file as .bak before it is replaced. This store holds
+    // credentials that cannot be re-derived from anything else on the machine,
+    // so one generation of history is cheap insurance.
     if path.exists() {
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to replace accounts file: {}", path.display()))?;
+        let _ = fs::copy(&path, path.with_extension("json.bak"));
     }
 
+    // Rename straight over the destination. There used to be a remove_file here
+    // first, which opened a window where the real file was already gone and the
+    // replacement not yet in place: anything that interrupted the process in
+    // between (a kill, a crash, an antivirus grabbing the temp file) destroyed
+    // the store outright. std::fs::rename replaces an existing file on Windows
+    // as well as on Unix, so the removal was never needed.
     fs::rename(&temp_path, &path).with_context(|| {
         format!(
             "Failed to move temporary accounts file {} to {}",
@@ -486,11 +505,15 @@ pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result
             .find(|a| a.id == account_id)
             .context("Account not found")?;
 
+        // The timestamp records the last time we actually got an answer, not the
+        // last time the numbers happened to change — an account parked at 100%
+        // used reports identical figures for days, and treating that as "stale"
+        // would be indistinguishable from an account that stopped answering.
         let should_update = account.cached_usage.as_ref() != Some(usage);
         if should_update {
             account.cached_usage = Some(usage.clone());
-            account.cached_usage_updated_at = Some(Utc::now());
         }
+        account.cached_usage_updated_at = Some(Utc::now());
 
         Ok((account.clone(), should_update))
     })

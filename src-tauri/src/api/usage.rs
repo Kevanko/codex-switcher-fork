@@ -167,6 +167,8 @@ pub async fn get_account_usage(account: &StoredAccount, force: bool) -> Result<U
                 credits_balance: None,
                 error: Some("Usage info not available for API key accounts".to_string()),
                 rate_limited: None,
+                error_kind: None,
+                from_cache: None,
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
@@ -228,18 +230,36 @@ pub async fn fetch_chatgpt_account_metadata(
 }
 
 async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInfo> {
-    // "Powered-off PC" safety model (same as Claude): a parked (inactive) Codex
-    // account must NEVER be contacted with a refreshable token by the switcher.
-    // OpenAI rotates refresh tokens with reuse detection, so any switcher-driven
-    // refresh of an account another client also holds forks the chain and logs
-    // that client out (`refresh_token_reused`). Inactive accounts therefore serve
-    // their last cached usage snapshot with zero network I/O; only the ACTIVE
-    // account — whose auth.json is owned and kept fresh by the running Codex CLI —
-    // is fetched live.
+    // A usage GET does not rotate an OAuth refresh token.  We may therefore read
+    // a parked account with its stored *access* token, but must never refresh or
+    // sync that account here: a refresh-token exchange can invalidate another
+    // client holding the same session.
     let store = load_accounts()?;
     let is_active = store.active_account_id.as_deref() == Some(account.id.as_str());
     if !is_active {
-        return Ok(parked_chatgpt_usage(account));
+        let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
+        let response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+        if let Some(limited) = handle_rate_limited_response(&account.id, &response) {
+            return Ok(limited);
+        }
+        if response.status() == StatusCode::UNAUTHORIZED {
+            // An expired access token is normal for a parked session — only the
+            // running Codex refreshes it, and we must not rotate it ourselves.
+            // Serve the last good card. But a 401 on a token that has NOT
+            // expired means the session itself was revoked (logged out, banned,
+            // password reset), and hiding that behind stale cache is exactly why
+            // a dead account kept showing a healthy bar.
+            if chatgpt_access_token_expired(account) {
+                return Ok(parked_chatgpt_usage(account));
+            }
+            let mut info = UsageInfo::error(
+                account.id.clone(),
+                "Codex session rejected (401) on a token that has not expired".to_string(),
+            );
+            info.error_kind = Some("auth_revoked".to_string());
+            return Ok(info);
+        }
+        return parse_usage_response(&account.id, &account.name, response).await;
     }
 
     // Active account: re-read whatever the Codex CLI wrote to auth.json.
@@ -286,6 +306,21 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
     parse_usage_response(&fresh_account.id, &fresh_account.name, response).await
 }
 
+/// True when this account's stored ChatGPT access token is already past its
+/// expiry. Used to tell "parked session went stale" apart from "session was
+/// revoked".
+fn chatgpt_access_token_expired(account: &StoredAccount) -> bool {
+    match &account.auth_data {
+        AuthData::ChatGPT { access_token, .. } => {
+            crate::types::parse_jwt_expiry(access_token)
+                // An unreadable token tells us nothing; treat it as expired so we
+                // fall back to cache rather than accusing a live account.
+                .is_none_or(|expires_at| expires_at <= chrono::Utc::now())
+        }
+        _ => true,
+    }
+}
+
 /// Last-known usage for a parked (inactive) Codex account, served WITHOUT any
 /// network request so the account's refresh-token chain stays frozen — exactly
 /// like a powered-off PC. Mirrors `parked_claude_usage`.
@@ -295,11 +330,29 @@ fn parked_chatgpt_usage(account: &StoredAccount) -> UsageInfo {
             let mut snapshot = snapshot.clone();
             snapshot.account_id = account.id.clone();
             snapshot.rate_limited = None;
+            // We tried and were refused. Mark the replay so the UI can age it
+            // instead of passing month-old numbers off as current.
+            snapshot.from_cache = Some(true);
             snapshot
         }
         // Never fetched yet (or last fetch errored): neutral empty bar, not an error.
         _ => UsageInfo::empty(account.id.clone()),
     }
+}
+
+/// Turn an HTTP failure into a cause the UI can explain in the user's language.
+/// The raw status text is kept in `error` for the log/tooltip, but `error_kind`
+/// is what decides the wording and whether the account is treated as dead.
+fn classified_http_error(account_id: &str, status: StatusCode) -> UsageInfo {
+    let kind = match status {
+        StatusCode::UNAUTHORIZED => "auth_revoked",
+        StatusCode::FORBIDDEN => "forbidden",
+        _ if status.is_server_error() => "server",
+        _ => "http",
+    };
+    let mut info = UsageInfo::error(account_id.to_string(), format!("API error: {status}"));
+    info.error_kind = Some(kind.to_string());
+    info
 }
 
 async fn parse_usage_response(
@@ -313,10 +366,7 @@ async fn parse_usage_response(
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         println!("[Usage] Error response: {body}");
-        return Ok(UsageInfo::error(
-            account_id.to_string(),
-            format!("API error: {status}"),
-        ));
+        return Ok(classified_http_error(account_id, status));
     }
 
     let body_text = response
@@ -554,6 +604,8 @@ async fn parse_claude_usage_response(
         credits_balance: None,
         error: None,
         rate_limited: None,
+        error_kind: None,
+        from_cache: None,
     };
 
     println!(
@@ -854,6 +906,8 @@ fn convert_payload_to_usage_info(account_id: &str, payload: RateLimitStatusPaylo
         credits_balance: credits.and_then(|c| c.balance),
         error: None,
         rate_limited: None,
+        error_kind: None,
+        from_cache: None,
     }
 }
 

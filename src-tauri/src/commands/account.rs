@@ -104,6 +104,30 @@ pub async fn check_claude_file_status() -> Result<String, String> {
     }
 }
 
+/// Is the Codex session in ~/.codex/auth.json one we already store?
+///
+/// The same three-way answer as check_claude_file_status, so a login done in
+/// Codex itself can be offered for adding instead of quietly going unnoticed.
+#[tauri::command]
+pub async fn check_codex_file_status() -> Result<String, String> {
+    use crate::auth::switcher::read_current_auth;
+
+    let Some(_) = read_current_auth().map_err(|e| e.to_string())? else {
+        return Ok("file_not_found".to_string());
+    };
+    match reconcile_active_account_with_current_auth().map_err(|e| e.to_string())? {
+        Some(_) => Ok("matched".to_string()),
+        None => Ok("unknown".to_string()),
+    }
+}
+
+/// Add whatever Codex is signed into right now as a new account.
+#[tauri::command]
+pub async fn add_codex_account_from_active_session(name: String) -> Result<AccountInfo, String> {
+    let path = crate::auth::switcher::get_codex_auth_file().map_err(|e| e.to_string())?;
+    add_account_from_file(path.to_string_lossy().to_string(), name).await
+}
+
 /// Delete ~/.claude/.credentials.json so the user can log in to a different account.
 /// Does NOT touch accounts.json — stored accounts are preserved.
 #[tauri::command]
@@ -773,6 +797,8 @@ async fn build_store_from_slim_payload(
         active_claude_token_id: None,
         gateway_accounts: Vec::new(),
         active_gateway_id: None,
+        zcode_accounts: Vec::new(),
+        active_zcode_account_id: None,
     })
 }
 
@@ -994,6 +1020,8 @@ fn codex_only_store(store: &AccountsStore) -> AccountsStore {
         active_claude_token_id: store.active_claude_token_id.clone(),
         gateway_accounts: store.gateway_accounts.clone(),
         active_gateway_id: store.active_gateway_id.clone(),
+        zcode_accounts: store.zcode_accounts.clone(),
+        active_zcode_account_id: store.active_zcode_account_id.clone(),
     }
 }
 

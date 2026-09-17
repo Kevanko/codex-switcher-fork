@@ -9,6 +9,9 @@
   --r-lg: 10px;
   --fs: 13.5px;
   --row-h: 60px;
+  --tier-plus: #5bb8e5;
+  --tier-pro:  #d4a11e;
+  --tier-team: #3fae92;
   --mono: "IBM Plex Mono", "Cascadia Code", ui-monospace, monospace;
   --sans: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
@@ -35,6 +38,10 @@
 }
 
 [data-theme="light"] {
+  /* Same metals, darkened so they hold contrast on white. */
+  --tier-plus: #1f84b8;
+  --tier-pro:  #9a7208;
+  --tier-team: #1c806a;
   --bg: #e9ecef;
   --bg-2: #eef1f4;
   --surface: #ffffff;
@@ -216,8 +223,11 @@ input, textarea, select { font-family: inherit; }
 .col-detail { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
 /* ── CLAUDE CLI TOKEN TAB ─────────────────────────────────────────────────── */
-.token-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.token-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }
+/* One scroll region for the whole tab so stacked panels flow instead of each
+   getting its own half-height scrollbar. */
+.token-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.token-panel { padding: 18px 20px; }
+.token-panel + .token-panel { border-top: 1px solid var(--border); }
 .token-inner { width: 100%; max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 .token-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .token-head h2 { font: 600 13px/1 var(--mono); margin: 0; display: flex; align-items: center; gap: 8px; }
@@ -286,7 +296,7 @@ input, textarea, select { font-family: inherit; }
 .acc-row {
   position: relative;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 8px 1fr auto;
   align-items: center; gap: 10px;
   min-height: var(--row-h);
   /* Rigid height: in the narrow single-column layout the list is a short flex
@@ -307,29 +317,63 @@ input, textarea, select { font-family: inherit; }
 }
 .acc-row.is-active-acc { background: var(--accent-soft); }
 
-.acc-avatar {
-  width: 34px; height: 34px; border-radius: var(--r-sm);
-  display: grid; place-items: center;
-  border: 1px solid var(--border-2); background: var(--surface-2);
-  font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text-2);
-  position: relative; flex-shrink: 0;
+/* The name already identifies the account, so the old initials tile carried no
+   information. The reclaimed column is now a bare status gutter. */
+.acc-gutter { width: 8px; display: grid; place-items: center; flex-shrink: 0; }
+
+/* Rank insignia, drawn immediately after the name. */
+.acc-mark { flex-shrink: 0; display: inline-flex; line-height: 0; }
+.acc-mark--plus { color: var(--tier-plus); }
+.acc-mark--pro  { color: var(--tier-pro); }
+.acc-mark--team { color: var(--tier-team); }
+
+/* "Обводка" — a paid row is outlined in its own metal, and carries a matching
+   left rule. Free rows stay unmarked so the ranked ones read at a glance. */
+.acc-row[data-tier] { border-color: color-mix(in oklab, var(--tier) 30%, transparent); }
+.acc-row[data-tier]::after {
+  content: ""; position: absolute; left: -1px; top: 8px; bottom: 8px; width: 2px;
+  background: var(--tier); border-radius: 2px; opacity: .85;
 }
-.acc-avatar .st-dot {
-  position: absolute; right: -3px; bottom: -3px;
-  border: 2px solid var(--bg-2); border-radius: 50%;
+.acc-row[data-tier="plus"] { --tier: var(--tier-plus); }
+.acc-row[data-tier="pro"]  { --tier: var(--tier-pro); }
+.acc-row[data-tier="team"] { --tier: var(--tier-team); }
+.acc-row[data-tier]:hover  { border-color: color-mix(in oklab, var(--tier) 52%, transparent); }
+/* Selection outranks tier: its accent rule replaces the metal one. */
+.acc-row.is-selected::after { display: none; }
+
+/* A personal highlight overrides the tier outline: the person chose it, so it
+   is the stronger signal. Selection and the active account still win over both. */
+.acc-row[data-tinted] {
+  border-color: color-mix(in oklab, var(--tint) 34%, transparent);
+  background: color-mix(in oklab, var(--tint) 7%, transparent);
+}
+.acc-row[data-tinted]:hover { border-color: color-mix(in oklab, var(--tint) 55%, transparent); }
+.acc-row[data-tinted]::after {
+  content: ""; position: absolute; left: -1px; top: 8px; bottom: 8px; width: 2px;
+  background: var(--tint); border-radius: 2px; opacity: .95;
+}
+.dcard[data-tinted] { border-color: color-mix(in oklab, var(--tint) 30%, transparent); }
+
+/* A dead account keeps its crown but loses all colour — it *was* Pro. */
+.acc-row.is-dead { filter: grayscale(1); opacity: .48; }
+.acc-row.is-dead[data-tier] { border-color: var(--border); }
+.acc-row.is-dead:hover { opacity: .72; }
+.acc-fault {
+  font-family: var(--mono); font-size: 10px; line-height: 1.35; color: var(--text-2);
+  text-align: right; text-wrap: balance;
 }
 
 .acc-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .acc-top { display: flex; align-items: center; gap: 6px; }
 .acc-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.acc-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 50px; }
+.acc-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 50px; max-width: 46%; }
 .acc-pct { font-family: var(--mono); font-size: 11.5px; font-weight: 600; }
 .acc-meter { width: 50px; }
 .acc-sub { font-family: var(--mono); font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* density variants */
 .app[data-density="compact"] { --row-h: 48px; --fs: 13px; }
-.app[data-density="compact"] .acc-avatar { width: 28px; height: 28px; font-size: 10px; }
+
 .app[data-density="comfy"] { --row-h: 72px; --fs: 14px; }
 
 /* ── DETAIL PANEL ──────────────────────────────────────────────────────────── */
@@ -354,6 +398,8 @@ input, textarea, select { font-family: inherit; }
 .dcard-bar--bad { background: var(--bad); }
 
 .dhead { padding: 18px 20px 14px; display: flex; gap: 14px; align-items: flex-start; }
+.dhead-name-row { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.dcard.is-dead { filter: grayscale(1); opacity: .62; }
 .dhead-id {
   width: 50px; height: 50px; border-radius: var(--r-md);
   display: grid; place-items: center; flex: 0 0 auto;
@@ -781,3 +827,41 @@ input, textarea, select { font-family: inherit; }
   .detail { padding: 12px; }
   .dhead { flex-wrap: wrap; }
 }
+
+/* ── CONTEXT MENU ──────────────────────────────────────────────────────────── */
+.ctx-scrim { position: fixed; inset: 0; z-index: 900; }
+.ctx {
+  position: fixed; z-index: 901; min-width: 196px; padding: 5px;
+  border: 1px solid var(--border-2); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 9px; border-radius: var(--r-sm);
+  font-size: 12.5px; color: var(--text-2); text-align: left;
+}
+.ctx-item:hover { background: var(--surface-2); color: var(--text); }
+.ctx-item:disabled { opacity: .38; pointer-events: none; }
+.ctx-item svg { flex-shrink: 0; opacity: .75; }
+.ctx-item--danger { color: var(--bad); }
+.ctx-item--danger:hover { background: color-mix(in oklab, var(--bad) 12%, transparent); color: var(--bad); }
+.ctx-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+.ctx-head {
+  padding: 5px 9px 7px; font-family: var(--mono); font-size: 10.5px;
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ctx-swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; padding: 0 9px 6px; }
+.ctx-swatch {
+  height: 17px; border-radius: 5px; border: 1px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.28);
+}
+.ctx-swatch:hover { border-color: var(--text-3); }
+.ctx-swatch.is-active { border-color: var(--text); box-shadow: inset 0 0 0 1px rgba(0,0,0,.28), 0 0 0 1px var(--surface); }
+.ctx-glyphs { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; padding: 0 9px 7px; }
+.ctx-glyph {
+  height: 24px; display: grid; place-items: center;
+  border-radius: 5px; border: 1px solid transparent; color: var(--text-3);
+}
+.ctx-glyph:hover { background: var(--surface-2); color: var(--text); }
+.ctx-glyph.is-active { border-color: var(--border-strong); background: var(--surface-3); color: var(--text); }
