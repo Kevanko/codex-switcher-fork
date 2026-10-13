@@ -1,18 +1,98 @@
 name: Build & Release
 
+# Every push and PR runs the tests. A `v*` tag additionally builds all
+# platforms into a DRAFT release, verifies the updater manifest and every
+# signature with the app's own pubkey, and only then publishes it — so users'
+# auto-update never sees a release that is incomplete or wrongly signed.
+
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v1.0.0)'
+        description: 'Existing tag to (re)build and release, e.g. v1.0.0'
         required: true
         type: string
 
+env:
+  TAG: ${{ inputs.version || github.ref_name }}
+  IS_RELEASE: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and build frontend
+        run: pnpm build
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Versions agree (package.json, tauri.conf.json, Cargo.toml, tag)
+        shell: bash
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          echo "package.json=$pkg tauri.conf.json=$conf Cargo.toml=$cargo"
+          [ "$pkg" = "$conf" ] && [ "$pkg" = "$cargo" ] || { echo "::error::versions differ"; exit 1; }
+          if [ "$IS_RELEASE" = "true" ] && [ "${TAG#v}" != "$pkg" ]; then
+            echo "::error::tag $TAG does not match app version $pkg"; exit 1
+          fi
+
+      - name: Updater config and verifier self-test
+        # The live manifest of the current release must verify with the shipped pubkey.
+        run: node scripts/verify-updater.mjs
+
+
+  draft:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - name: Create draft release
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A leftover draft from a failed run is replaced; a published release is never touched.
+          state=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$state" = "false" ]; then echo "::error::$TAG is already published; bump the version"; exit 1; fi
+          if [ "$state" = "true" ]; then gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes; fi
+          gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f name="$TAG" \
+            -F draft=true -F generate_release_notes=true --jq '"release_id=\(.id)"' >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: draft
     permissions:
       contents: write
     strategy:
@@ -21,35 +101,29 @@ jobs:
         include:
           - platform: macos-latest
             target: aarch64-apple-darwin
-            name: macos-arm64
           - platform: macos-latest
             target: x86_64-apple-darwin
-            name: macos-x64
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            name: linux-x64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            name: windows-x64
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 9
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -59,31 +133,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install frontend dependencies
-        run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
-      - name: Determine tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build and release
+      - name: Build into the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ steps.tag.outputs.tag }}
-          releaseName: ${{ steps.tag.outputs.tag }}
-          generateReleaseNotes: true
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.draft.outputs.release_id }}
           includeUpdaterJson: true
           updaterJsonKeepUniversal: true
           args: --target ${{ matrix.target }}
+
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify updater manifest and every signature
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --dir release
+          node scripts/verify-updater.mjs release/latest.json --expect-version "$TAG" --assets-dir release
+
+      - name: Publish release (users start receiving the update now)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
