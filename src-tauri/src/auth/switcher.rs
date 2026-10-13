@@ -66,14 +66,8 @@ pub fn read_claude_session() -> Result<Option<ClaudeCredentialsFile>> {
 /// key Claude Code stores there (above all `mcpOAuth`). `None` signs out.
 pub fn write_claude_session(credentials: Option<&ClaudeCredentialsFile>) -> Result<()> {
     let credentials_path = get_claude_credentials_file()?;
-    let mut map = read_claude_credentials_json()?.unwrap_or_default();
-    map.remove("claudeAiOauth");
-    map.remove("organizationUuid");
-    if let Some(creds) = credentials {
-        if let serde_json::Value::Object(ours) = serde_json::to_value(creds)? {
-            map.extend(ours.into_iter().filter(|(_, v)| !v.is_null()));
-        }
-    } else if map.is_empty() {
+    let map = merge_claude_session(read_claude_credentials_json()?.unwrap_or_default(), credentials)?;
+    if map.is_empty() {
         if credentials_path.exists() {
             fs::remove_file(&credentials_path).with_context(|| {
                 format!("Failed to remove {}", credentials_path.display())
@@ -130,6 +124,24 @@ pub fn write_claude_session(credentials: Option<&ClaudeCredentialsFile>) -> Resu
     // leave `.credentials.json.tmp-*` behind.
     crate::auth::storage::sweep_stale_temp_files(&credentials_path, ".credentials.json.tmp-");
     Ok(())
+}
+
+/// The credentials file with our session swapped in (or removed for `None`).
+/// Everything else in it — `mcpOAuth` and any future keys — is kept as is.
+fn merge_claude_session(
+    mut map: serde_json::Map<String, serde_json::Value>,
+    credentials: Option<&ClaudeCredentialsFile>,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    // organizationUuid belongs to the session: a stale one would pin the next
+    // account to the previous account's organisation.
+    map.remove("claudeAiOauth");
+    map.remove("organizationUuid");
+    if let Some(creds) = credentials {
+        if let serde_json::Value::Object(ours) = serde_json::to_value(creds)? {
+            map.extend(ours.into_iter().filter(|(_, v)| !v.is_null()));
+        }
+    }
+    Ok(map)
 }
 
 /// Result of reconciling the active Claude account with the live credentials file.
@@ -525,5 +537,51 @@ mod tests {
             .to_string();
 
         assert!(error.contains("accessToken"));
+    }
+}
+
+#[cfg(test)]
+mod claude_session_tests {
+    use super::*;
+
+    fn session(org: Option<&str>) -> ClaudeCredentialsFile {
+        serde_json::from_value(serde_json::json!({
+            "claudeAiOauth": {"accessToken": "new-a", "refreshToken": "new-r", "expiresAt": 1},
+            "organizationUuid": org,
+        }))
+        .unwrap()
+    }
+
+    fn existing() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_value(serde_json::json!({
+            "mcpOAuth": {"server|1": {"accessToken": "keep-me"}},
+            "claudeAiOauth": {"accessToken": "old-a", "refreshToken": "old-r", "expiresAt": 1},
+            "organizationUuid": "old-org",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn switching_keeps_mcp_logins_and_replaces_the_session() {
+        let merged = merge_claude_session(existing(), Some(&session(None))).unwrap();
+        assert_eq!(merged["mcpOAuth"]["server|1"]["accessToken"], "keep-me");
+        assert_eq!(merged["claudeAiOauth"]["refreshToken"], "new-r");
+        assert!(!merged.contains_key("organizationUuid"), "stale org must not survive");
+    }
+
+    #[test]
+    fn sign_out_removes_only_the_session() {
+        let merged = merge_claude_session(existing(), None).unwrap();
+        assert!(merged.contains_key("mcpOAuth"));
+        assert!(!merged.contains_key("claudeAiOauth"));
+        assert!(!merged.contains_key("organizationUuid"));
+    }
+
+    #[test]
+    fn import_rejects_a_signed_out_file_with_a_clear_message() {
+        let err = import_from_claude_credentials_contents(r#"{"mcpOAuth":{}}"#, "x".into())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No Claude login"), "{err}");
     }
 }

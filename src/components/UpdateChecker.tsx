@@ -9,6 +9,7 @@ type UpdateStatus =
   | { kind: "checking" }
   | { kind: "available"; update: Update }
   | { kind: "downloading"; downloaded: number; total: number | null }
+  | { kind: "installing" }
   | { kind: "ready" }
   | { kind: "error"; message: string };
 
@@ -80,8 +81,10 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
             downloaded += event.data.chunkLength;
             setStatus({ kind: "downloading", downloaded, total });
             break;
+          // "Finished" ends the download only; the installer still runs, so
+          // offering a restart here would relaunch the old build.
           case "Finished":
-            setStatus({ kind: "ready" });
+            setStatus({ kind: "installing" });
             break;
         }
       });
@@ -158,6 +161,13 @@ export function UpdateChecker({ locale = "en" }: { locale?: Locale }) {
                 />
               </div>
             </div>
+          </>
+        )}
+
+        {status.kind === "installing" && (
+          <>
+            <Loader2 size={18} className="spin" />
+            <div style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{t.installing}</div>
           </>
         )}
 

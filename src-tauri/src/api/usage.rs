@@ -26,6 +26,10 @@ const CHATGPT_ACCOUNTS_CHECK_API: &str =
 const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_API: &str = "https://api.openai.com/v1";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
+const CHATGPT_ORIGIN: &str = "https://chatgpt.com";
+/// chatgpt.com sits behind Cloudflare, which answers a bare `codex-cli` client
+/// with a 403 "Enable JavaScript and cookies" challenge (upstream Lampese#108).
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 const CLAUDE_OAUTH_USAGE_API: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -346,9 +350,11 @@ fn parked_chatgpt_usage(account: &StoredAccount) -> UsageInfo {
 /// Turn an HTTP failure into a cause the UI can explain in the user's language.
 /// The raw status text is kept in `error` for the log/tooltip, but `error_kind`
 /// is what decides the wording and whether the account is treated as dead.
-fn classified_http_error(account_id: &str, status: StatusCode) -> UsageInfo {
+fn classified_http_error(account_id: &str, status: StatusCode, body: &str) -> UsageInfo {
     let kind = match status {
         StatusCode::UNAUTHORIZED => "auth_revoked",
+        // A Cloudflare challenge page is a bot check, not a closed account.
+        StatusCode::FORBIDDEN if is_cloudflare_challenge(body) => "server",
         StatusCode::FORBIDDEN => "forbidden",
         _ if status.is_server_error() => "server",
         _ => "http",
@@ -356,6 +362,13 @@ fn classified_http_error(account_id: &str, status: StatusCode) -> UsageInfo {
     let mut info = UsageInfo::error(account_id.to_string(), format!("API error: {status}"));
     info.error_kind = Some(kind.to_string());
     info
+}
+
+fn is_cloudflare_challenge(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    ["cloudflare", "just a moment", "enable javascript and cookies", "cf-chl"]
+        .iter()
+        .any(|marker| body.contains(marker))
 }
 
 async fn parse_usage_response(
@@ -369,7 +382,7 @@ async fn parse_usage_response(
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         println!("[Usage] Error response: {body}");
-        return Ok(classified_http_error(account_id, status));
+        return Ok(classified_http_error(account_id, status, &body));
     }
 
     let body_text = response
@@ -727,12 +740,25 @@ fn build_chatgpt_headers(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<HeaderMap> {
+    use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, ORIGIN, REFERER};
+
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static(CODEX_USER_AGENT));
+    headers.insert(USER_AGENT, HeaderValue::from_static(BROWSER_USER_AGENT));
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {access_token}")).context("Invalid access token")?,
     );
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json, text/plain, */*"));
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    headers.insert(ORIGIN, HeaderValue::from_static(CHATGPT_ORIGIN));
+    headers.insert(REFERER, HeaderValue::from_static(CHATGPT_ORIGIN));
+    for (name, value) in [
+        ("sec-fetch-dest", "empty"),
+        ("sec-fetch-mode", "cors"),
+        ("sec-fetch-site", "same-origin"),
+    ] {
+        headers.insert(HeaderName::from_static(name), HeaderValue::from_static(value));
+    }
 
     if let Some(acc_id) = chatgpt_account_id {
         println!("[Usage] Using ChatGPT Account ID: {acc_id}");
