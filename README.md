@@ -1,76 +1,61 @@
+<div align="center">
+
 # Codex Switcher
 
-Unofficial desktop app for switching between multiple local Codex / ChatGPT and Claude Code account profiles.
+**One switcher for your Codex, Claude Code and Z.ai accounts.**
+Hit a limit — switch to the next account in one click and keep coding.
 
-The app keeps account metadata and cached usage locally, writes the selected profile to the active auth file, and helps track 5-hour and weekly usage windows. Built as a Tauri desktop app for Windows, macOS, and Linux.
+**English** · [Русский](README.ru.md)
 
-## Screenshots
+[![Release](https://img.shields.io/github/v/release/Kevanko/codex-switcher-fork?style=flat-square&color=3b82f6)](https://github.com/Kevanko/codex-switcher-fork/releases/latest)
+![Platforms](https://img.shields.io/badge/Windows%20·%20macOS%20·%20Linux-10131a?style=flat-square)
 
-![Codex Switcher — dark](screenshots/app-dark.png)
+![Codex Switcher](screenshots/codex-switcher.gif)
 
-## What it does
+</div>
 
-- Adds Codex accounts via ChatGPT OAuth or by importing an existing `auth.json`.
-- Adds Claude accounts by importing an existing `.credentials.json`.
-- Switches the active Codex account — terminates running Codex processes and restarts them with the new credentials.
-- Writes Claude credentials to `~/.claude/.credentials.json` (restart Claude Code CLI to apply).
-- Switches Z.ai / ZCode sign-ins by snapshotting `~/.zcode/v2` — closes ZCode, swaps the snapshot in, starts it again.
-- Shows cached limit usage for Free, Plus, Pro, and Team-style Codex accounts.
-- Tracks 5-hour and 7-day reset windows with progress bars.
-- Global email hide toggle in the top bar — one click masks all account emails at once.
-- Russian/English UI, system/manual theme selection, six accent color presets, density modes.
-- Checks GitHub releases for signed app updates.
-- Minimizes to the system tray; active account switchable directly from the tray menu.
-- Encrypted full backup (`.cswf`) and slim text import/export.
+## Quick start
 
-## What it is not
+1. Download the installer from the [latest release](https://github.com/Kevanko/codex-switcher-fork/releases/latest):
+   - Windows — `*_x64-setup.exe`
+   - macOS — `*_aarch64.dmg` (Apple Silicon) or `*_x64.dmg`
+   - Linux — `.AppImage`, `.deb` or `.rpm`
+2. Add accounts on the tab you need:
+   - **Codex** — sign in with ChatGPT, or import `~/.codex/auth.json`.
+   - **Claude** — log in with `claude`, then press **Add account** (or import `~/.claude/.credentials.json`).
+   - **Claude CLI** — long-lived tokens from `claude setup-token`.
+   - **Z.ai** — snapshots of your ZCode sign-ins.
+3. Click an account → **Switch**. Codex and ZCode restart by themselves; restart Claude Code yourself.
 
-- Not an official OpenAI, Codex, or Anthropic project.
-- Not meant for account sharing, resale, pooling, or bypassing terms of service.
-- Does not create extra quota — only displays locally cached usage data and switches between accounts you already own.
-- The optional browser/LAN server exists for development and local debugging only.
+The app updates itself from GitHub releases.
+
+## What you get
+
+| | Codex | Claude |
+| --- | :---: | :---: |
+| 5-hour and weekly limits with reset timers | ✓ | ✓ |
+| One-click switch | ✓ | ✓ |
+| Switch from the tray | ✓ | — |
+| Plan badges (Plus / Pro / Team, Pro / Max) | ✓ | ✓ |
+
+Plus: encrypted backup (`.cswf`), one toggle to hide all emails, RU/EN, light/dark theme. MCP connector logins in `.credentials.json` stay intact when you switch Claude accounts.
+
+![Screenshot](screenshots/app-dark.png)
 
 ## Build from source
 
-Prerequisites: Node.js 20+, pnpm, Rust stable.
+Needs Node.js 20+, pnpm and Rust stable.
 
 ```bash
 git clone https://github.com/Kevanko/codex-switcher-fork.git
 cd codex-switcher-fork
-
 pnpm install
-pnpm tauri dev
+pnpm tauri dev      # run
+pnpm tauri build    # installers → src-tauri/target/release/bundle/
 ```
 
-Build installers:
-
-```bash
-pnpm tauri build
-```
-
-Bundles are written to `src-tauri/target/release/bundle/`.
-
-## Release
-
-The release helper keeps `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` on the same version.
-
-```bash
-pnpm version:patch
-pnpm release:patch -- --push
-```
-
-GitHub Actions builds release assets from tags like `v0.2.14`. The updater reads:
-
-```
-https://github.com/Kevanko/codex-switcher-fork/releases/latest/download/latest.json
-```
-
-## Local data
-
-Account storage lives in the user's local profile. The app reads and writes the normal Codex auth location (`~/.codex/auth.json`) and Claude credentials (`~/.claude/.credentials.json`) so the selected account is picked up by each CLI tool.
-
-Full backups use the app's encrypted `.cswf` format. Slim import/export is for non-secret account metadata only.
+Release: `pnpm release:patch -- --push` — bumps the version everywhere and pushes a tag; GitHub Actions builds the rest.
 
 ## Disclaimer
 
-Use this only with accounts you personally control. You are responsible for following OpenAI's, ChatGPT's, and Anthropic's terms. This project does not grant permission to share accounts or automate quota abuse.
+Unofficial project, not affiliated with OpenAI, Anthropic or Z.ai. Use only with accounts you own; it does not add quota and is not meant for account sharing.
