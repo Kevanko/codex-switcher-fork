@@ -34,6 +34,104 @@ pub fn get_claude_credentials_file() -> Result<PathBuf> {
     Ok(home.join(".claude").join(".credentials.json"))
 }
 
+/// Read `~/.claude/.credentials.json` as a JSON object (BOM tolerated).
+/// `None` when the file is missing or unreadable.
+fn read_claude_credentials_json() -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+    let path = get_claude_credentials_file()?;
+    let Ok(content) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    match serde_json::from_str::<serde_json::Value>(content.trim_start_matches('\u{feff}')) {
+        Ok(serde_json::Value::Object(map)) => Ok(Some(map)),
+        _ => Ok(None),
+    }
+}
+
+/// The signed-in Claude session, if any. The file also holds `mcpOAuth` (MCP
+/// connector logins) and survives `/logout` without `claudeAiOauth`, so "file
+/// exists" does not mean "someone is signed in".
+pub fn read_claude_session() -> Result<Option<ClaudeCredentialsFile>> {
+    let Some(map) = read_claude_credentials_json()? else {
+        return Ok(None);
+    };
+    if !map.contains_key("claudeAiOauth") {
+        return Ok(None);
+    }
+    serde_json::from_value(serde_json::Value::Object(map))
+        .map(Some)
+        .context("Claude credentials file has an unexpected format")
+}
+
+/// Write our Claude session into the credentials file while keeping every other
+/// key Claude Code stores there (above all `mcpOAuth`). `None` signs out.
+pub fn write_claude_session(credentials: Option<&ClaudeCredentialsFile>) -> Result<()> {
+    let credentials_path = get_claude_credentials_file()?;
+    let mut map = read_claude_credentials_json()?.unwrap_or_default();
+    map.remove("claudeAiOauth");
+    map.remove("organizationUuid");
+    if let Some(creds) = credentials {
+        if let serde_json::Value::Object(ours) = serde_json::to_value(creds)? {
+            map.extend(ours.into_iter().filter(|(_, v)| !v.is_null()));
+        }
+    } else if map.is_empty() {
+        if credentials_path.exists() {
+            fs::remove_file(&credentials_path).with_context(|| {
+                format!("Failed to remove {}", credentials_path.display())
+            })?;
+        }
+        return Ok(());
+    }
+
+    let claude_home = credentials_path
+        .parent()
+        .context("Claude credentials path has no parent directory")?;
+    fs::create_dir_all(claude_home)
+        .with_context(|| format!("Failed to create Claude home: {}", claude_home.display()))?;
+
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .context("Failed to serialize Claude credentials")?;
+    let temp_path = claude_home.join(format!(
+        ".credentials.json.tmp-{}",
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000)
+    ));
+
+    fs::write(&temp_path, content).with_context(|| {
+        format!(
+            "Failed to write temporary Claude credentials: {}",
+            temp_path.display()
+        )
+    })?;
+    if credentials_path.exists() {
+        fs::remove_file(&credentials_path).with_context(|| {
+            format!(
+                "Failed to replace Claude credentials: {}",
+                credentials_path.display()
+            )
+        })?;
+    }
+    fs::rename(&temp_path, &credentials_path).with_context(|| {
+        format!(
+            "Failed to move temporary Claude credentials {} to {}",
+            temp_path.display(),
+            credentials_path.display()
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&credentials_path, perms)?;
+    }
+
+    // Same orphan sweep as save_accounts: a killed process or failed rename can
+    // leave `.credentials.json.tmp-*` behind.
+    crate::auth::storage::sweep_stale_temp_files(&credentials_path, ".credentials.json.tmp-");
+    Ok(())
+}
+
 /// Result of reconciling the active Claude account with the live credentials file.
 #[derive(Debug)]
 pub enum ClaudeReconcileResult {
@@ -48,9 +146,7 @@ pub enum ClaudeReconcileResult {
 /// Reconcile the stored active Claude account with ~/.claude/.credentials.json.
 /// Mirrors reconcile_active_account_with_current_auth() for Codex.
 pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
-    let creds_path = get_claude_credentials_file()?;
-
-    if !creds_path.exists() {
+    let Some(file_creds) = read_claude_session().ok().flatten() else {
         return with_store(|store| {
             let changed = if store.active_claude_account_id.is_some() {
                 store.active_claude_account_id = None;
@@ -60,15 +156,6 @@ pub fn reconcile_active_claude_account() -> Result<ClaudeReconcileResult> {
             };
             Ok((ClaudeReconcileResult::FileNotFound, changed))
         });
-    }
-
-    let content = match fs::read_to_string(&creds_path) {
-        Ok(c) => c,
-        Err(_) => return Ok(ClaudeReconcileResult::UnknownCredentials),
-    };
-    let file_creds: ClaudeCredentialsFile = match serde_json::from_str(&content) {
-        Ok(c) => c,
-        Err(_) => return Ok(ClaudeReconcileResult::UnknownCredentials),
     };
 
     with_store(|store| {
@@ -159,80 +246,20 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
 /// Switch Claude Code to a specific account by writing ~/.claude/.credentials.json.
 pub fn switch_to_claude_account(account: &StoredAccount) -> Result<()> {
     let mut credentials = create_claude_credentials(account)?;
-    let credentials_path = get_claude_credentials_file()?;
 
     // If the current file already belongs to this account (same refresh_token) and
     // has a fresher access token (Claude Code auto-refreshes), use it instead of
     // overwriting with our stale stored copy.
-    if credentials_path.exists() {
-        if let Ok(existing_content) = fs::read_to_string(&credentials_path) {
-            if let Ok(existing) =
-                serde_json::from_str::<ClaudeCredentialsFile>(&existing_content)
-            {
-                if existing.claude_ai_oauth.refresh_token
-                    == credentials.claude_ai_oauth.refresh_token
-                    && existing.claude_ai_oauth.expires_at
-                        > credentials.claude_ai_oauth.expires_at
-                {
-                    credentials.claude_ai_oauth.access_token =
-                        existing.claude_ai_oauth.access_token;
-                    credentials.claude_ai_oauth.expires_at =
-                        existing.claude_ai_oauth.expires_at;
-                }
-            }
+    if let Ok(Some(existing)) = read_claude_session() {
+        if existing.claude_ai_oauth.refresh_token == credentials.claude_ai_oauth.refresh_token
+            && existing.claude_ai_oauth.expires_at > credentials.claude_ai_oauth.expires_at
+        {
+            credentials.claude_ai_oauth.access_token = existing.claude_ai_oauth.access_token;
+            credentials.claude_ai_oauth.expires_at = existing.claude_ai_oauth.expires_at;
         }
     }
 
-    let claude_home = credentials_path
-        .parent()
-        .context("Claude credentials path has no parent directory")?;
-
-    fs::create_dir_all(claude_home)
-        .with_context(|| format!("Failed to create Claude home: {}", claude_home.display()))?;
-
-    let content = serde_json::to_string_pretty(&credentials)
-        .context("Failed to serialize Claude credentials")?;
-    let temp_path = claude_home.join(format!(
-        ".credentials.json.tmp-{}",
-        Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000)
-    ));
-
-    fs::write(&temp_path, content).with_context(|| {
-        format!(
-            "Failed to write temporary Claude credentials: {}",
-            temp_path.display()
-        )
-    })?;
-    if credentials_path.exists() {
-        fs::remove_file(&credentials_path).with_context(|| {
-            format!(
-                "Failed to replace Claude credentials: {}",
-                credentials_path.display()
-            )
-        })?;
-    }
-    fs::rename(&temp_path, &credentials_path).with_context(|| {
-        format!(
-            "Failed to move temporary Claude credentials {} to {}",
-            temp_path.display(),
-            credentials_path.display()
-        )
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&credentials_path, perms)?;
-    }
-
-    // Same orphan sweep as save_accounts: a killed process or failed rename can
-    // leave `.credentials.json.tmp-*` behind.
-    crate::auth::storage::sweep_stale_temp_files(&credentials_path, ".credentials.json.tmp-");
-
-    Ok(())
+    write_claude_session(Some(&credentials))
 }
 
 /// Create an AuthDotJson structure from a StoredAccount
@@ -340,8 +367,15 @@ pub fn import_from_claude_credentials_contents(
     content: &str,
     account_name: String,
 ) -> Result<StoredAccount> {
+    let value: serde_json::Value = serde_json::from_str(content.trim_start_matches('\u{feff}'))
+        .context("This is not a valid JSON file")?;
+    if value.get("claudeAiOauth").is_none() {
+        anyhow::bail!(
+            "No Claude login in this file (claudeAiOauth is missing). Log in with `claude` first."
+        );
+    }
     let credentials: ClaudeCredentialsFile =
-        serde_json::from_str(content).context("Failed to parse Claude credentials contents")?;
+        serde_json::from_value(value).context("Failed to parse Claude credentials contents")?;
 
     validate_claude_credentials(&credentials)?;
     Ok(StoredAccount::new_claude(account_name, credentials))

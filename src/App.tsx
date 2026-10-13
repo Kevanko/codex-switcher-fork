@@ -46,7 +46,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, GatewayPanel, ZcodePanel } from "./components";
+import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, ZcodePanel } from "./components";
 import { GravityGrid } from "./components/GravityGrid";
 import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
 import {
@@ -394,8 +394,8 @@ function describeFault(
       return {
         short: ru ? "Токен истёк" : "Token expired",
         detail: ru
-          ? "Токен доступа устарел. Переключись на этот аккаунт, чтобы Codex обновил его."
-          : "The access token went stale. Switch to this account so Codex refreshes it.",
+          ? "Токен доступа устарел. Открой Codex / Claude Code с этим аккаунтом — вход обновится сам."
+          : "The access token went stale. Open Codex / Claude Code on this account and it refreshes itself.",
       };
     case "server":
       return {
@@ -476,6 +476,9 @@ function AccountListRow({
           <LookIcon icon={look?.icon} color={tint} />
           <span className="acc-name">{account.name}</span>
           <PlanMark account={account} />
+          {isActiveAcc && (
+            <span className="acc-active-pill">{locale_label("АКТИВНЫЙ", "ACTIVE", locale)}</span>
+          )}
         </span>
         {account.email && (
           <span className="acc-sub">{maskEmail(account.email)}</span>
@@ -900,7 +903,7 @@ function AccountDetailPanel({
             <div className="sec-label">
               <span className="sec-label-txt">
                 <span className="sec-label-mark">//</span>
-                {fault === "unreachable" && account.cached_usage_updated_at
+                {account.usage?.from_cache && account.cached_usage_updated_at
                   ? locale_label("Лимиты на ", "Limits as of ", locale) +
                     new Date(account.cached_usage_updated_at).toLocaleDateString(locale === "ru" ? "ru-RU" : "en-GB")
                   : locale_label("Лимиты использования", "Usage limits", locale)}
@@ -2071,9 +2074,6 @@ function App() {
       {tabView === "tokens" ? (
         <div className="token-wrap">
           <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onTokensChange={setClaudeTokens} />
-          {/* Both panels feed Claude Code the same way (env-var auth override), so
-              they belong together — the Z.ai tab is about ZCode sign-ins. */}
-          <GatewayPanel language={resolvedLanguage === "ru" ? "ru" : "en"} />
         </div>
       ) : tabView === "zai" ? (
         <ZcodePanel

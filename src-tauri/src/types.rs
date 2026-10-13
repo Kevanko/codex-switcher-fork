@@ -142,7 +142,7 @@ impl ClaudeTokenAccountInfo {
     }
 }
 
-/// An Anthropic-compatible gateway account (GLM via z.ai / OpenRouter / custom).
+/// Legacy gateway account (feature removed). Kept so older stores still load.
 ///
 /// The key is STABLE (no rotation, no reuse detection) and is consumed only via
 /// the `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (+ optional `ANTHROPIC_MODEL`)
@@ -160,32 +160,6 @@ pub struct GatewayAccount {
     #[serde(default)]
     pub model: Option<String>,
     pub created_at: DateTime<Utc>,
-}
-
-/// UI-facing view of a gateway account — the key is masked.
-#[derive(Debug, Clone, Serialize)]
-pub struct GatewayAccountInfo {
-    pub id: String,
-    pub name: String,
-    pub base_url: String,
-    pub model: Option<String>,
-    pub key_masked: String,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-}
-
-impl GatewayAccountInfo {
-    pub fn from_account(account: &GatewayAccount, is_active: bool) -> Self {
-        Self {
-            id: account.id.clone(),
-            name: account.name.clone(),
-            base_url: account.base_url.clone(),
-            model: account.model.clone(),
-            key_masked: mask_token(&account.key),
-            is_active,
-            created_at: account.created_at,
-        }
-    }
 }
 
 /// Mask a secret token for display: keep a short prefix and the last 4 chars.

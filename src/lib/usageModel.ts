@@ -124,15 +124,17 @@ export function getAccountFault(account: AccountWithUsage): AccountFaultKind | n
   // A 429 is the provider asking us to wait, not a broken account.
   if (usage?.rate_limited) return null;
 
-  // We asked and were turned away, so these figures are a replay of an older
-  // snapshot. Whatever credential we hold is no longer accepted.
-  if (usage?.from_cache) return "unreachable";
+  // `from_cache` only means a parked account's access token aged out, which is
+  // normal: Codex refreshes it on the next switch. The account still works, so
+  // the replayed figures are shown with their date instead of greying it out.
 
   if (usage?.error) {
     const kind = usage.error_kind;
     if (kind && kind !== "rate_limited") return kind as AccountFaultKind;
-    // Snapshots cached by an older build carry a message but no kind.
-    return hasRecoverableAuthError(usage) ? "auth_revoked" : "http";
+    // No kind: an older snapshot or a plain failure. Word-matching "token" is
+    // not proof of a revoked login, so never grey the account out on a guess;
+    // real revocations always arrive with an explicit `auth_revoked` kind.
+    return hasRecoverableAuthError(usage) ? "auth_expired" : "http";
   }
 
   return null;

@@ -297,10 +297,13 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
             }
         }
 
-        return Ok(UsageInfo::error(
+        // Not a revoked account: the CLI simply has not refreshed the token yet.
+        let mut info = UsageInfo::error(
             fresh_account.id.clone(),
             "Codex session token rejected — open Codex to refresh the login".to_string(),
-        ));
+        );
+        info.error_kind = Some("auth_expired".to_string());
+        return Ok(info);
     }
 
     parse_usage_response(&fresh_account.id, &fresh_account.name, response).await
@@ -455,10 +458,14 @@ async fn get_usage_with_claude_auth(account: &StoredAccount, force: bool) -> Res
                     RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS,
                 ));
             }
-            return Ok(UsageInfo::error(
+            // Usually offline or a transient token-endpoint hiccup; the text
+            // mentions "token", which must not be read as a revoked login.
+            let mut info = UsageInfo::error(
                 account.id.clone(),
                 format!("Claude token refresh failed: {message}"),
-            ));
+            );
+            info.error_kind = Some("http".to_string());
+            return Ok(info);
         }
     };
 
@@ -520,10 +527,12 @@ async fn get_usage_with_claude_auth(account: &StoredAccount, force: bool) -> Res
             }
         }
 
-        return Ok(UsageInfo::error(
+        let mut info = UsageInfo::error(
             fresh_account.id.clone(),
             "Claude session token rejected — open Claude Code to refresh the login".to_string(),
-        ));
+        );
+        info.error_kind = Some("auth_expired".to_string());
+        return Ok(info);
     }
 
     parse_claude_usage_response(&fresh_account, response).await

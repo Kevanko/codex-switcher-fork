@@ -270,20 +270,15 @@ pub fn remove_account(account_id: &str) -> Result<()> {
             anyhow::bail!("Account not found: {account_id}");
         }
 
+        // The live auth file still holds the deleted account, so promoting some
+        // other account to "active" would be a lie — and the next reconcile would
+        // then copy the deleted account's tokens over that other account.
         if store.active_account_id.as_deref() == Some(account_id) {
-            store.active_account_id = store
-                .accounts
-                .iter()
-                .find(|a| a.provider == AccountProvider::Codex)
-                .map(|a| a.id.clone());
+            store.active_account_id = None;
         }
 
         if store.active_claude_account_id.as_deref() == Some(account_id) {
-            store.active_claude_account_id = store
-                .accounts
-                .iter()
-                .find(|a| a.provider == AccountProvider::Claude)
-                .map(|a| a.id.clone());
+            store.active_claude_account_id = None;
         }
 
         Ok(((), true))
@@ -523,21 +518,8 @@ pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result
 /// Called right before switching away from an account — saves whatever Claude wrote
 /// to the file (including a rotated refresh_token) so the next switch back works.
 pub fn sync_claude_tokens_from_file(account_id: &str) -> Result<()> {
-    use crate::auth::switcher::get_claude_credentials_file;
-    use crate::types::ClaudeCredentialsFile;
-
-    let creds_path = get_claude_credentials_file()?;
-    if !creds_path.exists() {
+    let Ok(Some(file_creds)) = crate::auth::switcher::read_claude_session() else {
         return Ok(());
-    }
-
-    let file_content = match fs::read_to_string(&creds_path) {
-        Ok(c) => c,
-        Err(_) => return Ok(()),
-    };
-    let file_creds: ClaudeCredentialsFile = match serde_json::from_str(&file_content) {
-        Ok(c) => c,
-        Err(_) => return Ok(()),
     };
 
     // Sync ALL token fields and metadata — Claude rotates refresh_token on every

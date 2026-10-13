@@ -13,14 +13,12 @@ use commands::{
     add_claude_account_from_file, add_claude_token_account, cancel_login, check_claude_file_status,
     check_codex_file_status, check_codex_processes, clear_claude_active_session, complete_login,
     complete_reauth_login, add_codex_account_from_active_session,
-    activate_gateway_account, add_gateway_account, create_claude_token_account,
-    deactivate_claude_token, deactivate_gateway, delete_account, delete_claude_token_account,
-    delete_gateway_account, export_accounts_full_encrypted_file, export_accounts_slim_text,
-    get_active_account_info, get_claude_token_secret, get_gateway_key_secret,
-    get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
-    import_accounts_slim_text, list_accounts, list_claude_token_accounts, list_gateway_accounts,
-    refresh_account_metadata, refresh_all_accounts_usage, refresh_tray_menu, rename_account,
-    rename_claude_token_account, rename_gateway_account, set_masked_account_ids,
+    create_claude_token_account,
+    deactivate_claude_token, delete_account, delete_claude_token_account,
+    export_accounts_full_encrypted_file, export_accounts_slim_text,
+    get_active_account_info, get_claude_token_secret, get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
+    import_accounts_slim_text, list_accounts, list_claude_token_accounts, refresh_account_metadata, refresh_all_accounts_usage, refresh_tray_menu, rename_account,
+    rename_claude_token_account, set_masked_account_ids,
     set_tray_mode_enabled, setup_tray, start_login, switch_account,
     update_active_claude_account_from_file, warmup_account, warmup_all_accounts,
     list_zcode_accounts, capture_zcode_account, activate_zcode_account, delete_zcode_account,
@@ -45,16 +43,15 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Reconcile the Claude-auth environment with the selected state on
-            // launch: if neither a gateway nor a CLI token is active, wipe any
+            // launch: if no CLI token is active, wipe any
             // stray override env var (a leftover ANTHROPIC_API_KEY from another
             // tool / shared folder, or vars left by a previous crash) so a regular
             // OAuth account isn't silently shadowed ("connectors disabled … takes
             // precedence"). Best-effort, off the UI thread.
             std::thread::spawn(|| {
                 if let Ok(store) = crate::auth::load_accounts() {
-                    if store.active_gateway_id.is_none()
-                        && store.active_claude_token_id.is_none()
-                    {
+                    // A gateway left active by an older build is dropped here too.
+                    if store.active_claude_token_id.is_none() {
                         let _ = crate::commands::gateway::clear_claude_auth_overrides();
                     }
                 }
@@ -115,14 +112,6 @@ pub fn run() {
             activate_claude_token_account,
             deactivate_claude_token,
             get_claude_token_secret,
-            // Anthropic-compatible gateway accounts (GLM via z.ai/OpenRouter)
-            list_gateway_accounts,
-            add_gateway_account,
-            rename_gateway_account,
-            delete_gateway_account,
-            activate_gateway_account,
-            deactivate_gateway,
-            get_gateway_key_secret,
             // ZCode local sign-in snapshots
             list_zcode_accounts,
             capture_zcode_account,

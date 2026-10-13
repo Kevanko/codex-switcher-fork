@@ -128,11 +128,11 @@ pub async fn add_codex_account_from_active_session(name: String) -> Result<Accou
     add_account_from_file(path.to_string_lossy().to_string(), name).await
 }
 
-/// Delete ~/.claude/.credentials.json so the user can log in to a different account.
-/// Does NOT touch accounts.json — stored accounts are preserved.
+/// Sign Claude Code out so the user can log in to a different account.
+/// Only the Claude login is removed from ~/.claude/.credentials.json — MCP
+/// connector logins stored in the same file stay. accounts.json is untouched.
 #[tauri::command]
 pub async fn clear_claude_active_session() -> Result<(), String> {
-    use crate::auth::switcher::get_claude_credentials_file;
 
     // Capture any rotated tokens for the active account before deleting the
     // file — otherwise the stored copy keeps a stale (revoked) refresh_token.
@@ -141,10 +141,7 @@ pub async fn clear_claude_active_session() -> Result<(), String> {
         let _ = crate::auth::storage::sync_claude_tokens_from_file(active_id);
     }
 
-    let path = get_claude_credentials_file().map_err(|e| e.to_string())?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
+    crate::auth::switcher::write_claude_session(None).map_err(|e| e.to_string())?;
     // Clear the active pointer so the UI reflects the logged-out state.
     let mut store = load_accounts().map_err(|e| e.to_string())?;
     if store.active_claude_account_id.is_some() {
@@ -160,17 +157,15 @@ pub async fn clear_claude_active_session() -> Result<(), String> {
 pub async fn add_claude_account_from_active_session(
     name: String,
 ) -> Result<AccountInfo, String> {
-    use crate::auth::switcher::get_claude_credentials_file;
-
-    let path = get_claude_credentials_file().map_err(|e| e.to_string())?;
-    if !path.exists() {
-        return Err(
-            "No active Claude session found (run `claude` first to log in)".to_string(),
-        );
-    }
-    let path_str = path.to_string_lossy().to_string();
-    let account = import_from_claude_credentials(&path_str, name).map_err(|e| e.to_string())?;
-    let stored = add_account(account).map_err(|e| e.to_string())?;
+    let session = crate::auth::switcher::read_claude_session()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            "Claude Code is not signed in. Run `claude`, log in, then try again.".to_string()
+        })?;
+    let content = serde_json::to_string(&session).map_err(|e| e.to_string())?;
+    let account =
+        import_from_claude_credentials_contents(&content, name).map_err(|e| e.to_string())?;
+    let stored = add_new_claude_account(account)?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -183,17 +178,9 @@ pub async fn add_claude_account_from_active_session(
 /// Used when the user re-authenticated outside the switcher.
 #[tauri::command]
 pub async fn update_active_claude_account_from_file() -> Result<(), String> {
-    use crate::auth::switcher::get_claude_credentials_file;
-    use crate::types::{AuthData, ClaudeCredentialsFile};
-
-    let creds_path = get_claude_credentials_file().map_err(|e| e.to_string())?;
-    if !creds_path.exists() {
-        return Err("No active Claude session file found".to_string());
-    }
-
-    let content = fs::read_to_string(&creds_path).map_err(|e| e.to_string())?;
-    let file_creds: ClaudeCredentialsFile =
-        serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let file_creds = crate::auth::switcher::read_claude_session()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Claude Code is not signed in".to_string())?;
 
     let mut store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store
@@ -292,6 +279,26 @@ pub async fn add_account_from_auth_json_text(
     ))
 }
 
+/// Store a freshly imported Claude account, refusing a second copy of one that
+/// is already stored: two entries sharing a refresh-token chain would rotate it
+/// out from under each other and both end up signed out.
+fn add_new_claude_account(account: StoredAccount) -> Result<StoredAccount, String> {
+    if let AuthData::ClaudeOAuth { refresh_token, access_token, .. } = &account.auth_data {
+        let store = load_accounts().map_err(|e| e.to_string())?;
+        let existing = store.accounts.iter().find(|a| {
+            matches!(&a.auth_data, AuthData::ClaudeOAuth { refresh_token: r, access_token: t, .. }
+                if r == refresh_token || t == access_token)
+        });
+        if let Some(existing) = existing {
+            return Err(format!(
+                "This Claude account is already added as '{}'",
+                existing.name
+            ));
+        }
+    }
+    add_account(account).map_err(|e| e.to_string())
+}
+
 /// Add a Claude account from a .credentials.json file
 #[tauri::command]
 pub async fn add_claude_account_from_file(
@@ -299,7 +306,7 @@ pub async fn add_claude_account_from_file(
     name: String,
 ) -> Result<AccountInfo, String> {
     let account = import_from_claude_credentials(&path, name).map_err(|e| e.to_string())?;
-    let stored = add_account(account).map_err(|e| e.to_string())?;
+    let stored = add_new_claude_account(account)?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -319,7 +326,7 @@ pub async fn add_claude_account_from_credentials_text(
 ) -> Result<AccountInfo, String> {
     let account =
         import_from_claude_credentials_contents(&contents, name).map_err(|e| e.to_string())?;
-    let stored = add_account(account).map_err(|e| e.to_string())?;
+    let stored = add_new_claude_account(account)?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -412,7 +419,13 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         .iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
-    switch_to_account(account).map_err(|e| e.to_string())?;
+    if let Err(err) = switch_to_account(account) {
+        // Codex was already stopped above; don't leave the user without it.
+        if !running_pids.is_empty() {
+            let _ = restart_codex_process(restart_target.as_ref());
+        }
+        return Err(err.to_string());
+    }
 
     // Update the active account in our store
     set_active_account(&account_id).map_err(|e| e.to_string())?;

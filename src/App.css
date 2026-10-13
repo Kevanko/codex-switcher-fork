@@ -358,6 +358,31 @@ input, textarea, select { font-family: inherit; }
 .acc-row.is-dead { filter: grayscale(1); opacity: .48; }
 .acc-row.is-dead[data-tier] { border-color: var(--border); }
 .acc-row.is-dead:hover { opacity: .72; }
+
+/* State beats decoration. Tier outlines and personal tints used to repaint the
+   selected row's border (same specificity, declared later), so on a list full of
+   paid accounts the selection vanished. The doubled class wins over both. */
+.acc-row[data-tier] { border-color: color-mix(in oklab, var(--tier) 18%, transparent); }
+.acc-row.acc-row.is-active-acc {
+  background: color-mix(in oklab, var(--accent) 13%, var(--surface));
+  border-color: var(--accent-line);
+}
+.acc-row.acc-row.is-active-acc::before {
+  content: ""; position: absolute; left: -1px; top: 6px; bottom: 6px; width: 3px;
+  background: var(--accent); border-radius: 3px;
+}
+.acc-row.acc-row.is-active-acc::after { display: none; }
+.acc-row.acc-row.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 6px 20px -10px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+.acc-row.acc-row.is-selected:not(.is-active-acc) { background: var(--surface-2); }
+.acc-row.acc-row.is-selected:not(.is-active-acc)::before { display: none; }
+.acc-active-pill {
+  flex-shrink: 0; padding: 1px 6px; border-radius: 999px;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+  color: var(--accent-fg); background: var(--accent);
+}
 .acc-fault {
   font-family: var(--mono); font-size: 10px; line-height: 1.35; color: var(--text-2);
   text-align: right; text-wrap: balance;
