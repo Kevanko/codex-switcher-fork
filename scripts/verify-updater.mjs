@@ -76,13 +76,19 @@ for (const key of ["windows-x86_64", "darwin-aarch64", "darwin-x86_64", "linux-x
 
 const checked = new Map(); // same file is listed under several keys
 for (const [key, { url, signature }] of Object.entries(manifest.platforms)) {
-  if (!url?.includes(`/v${manifest.version}/`) && !url?.includes(`/${manifest.version}/`)) {
+  // Tag URLs, or /releases/latest/download/ (what tauri-action writes for a draft
+  // built by id) — the latter resolves to this release once it is published.
+  const name = decodeURIComponent(url?.split("/").pop() ?? "");
+  const pinned = url?.includes(`/v${manifest.version}/`) || url?.includes(`/${manifest.version}/`);
+  const latest = url?.includes("/releases/latest/download/");
+  // macOS bundles carry no version in their file name.
+  const thisVersion = name.includes(manifest.version) || name.endsWith(".app.tar.gz");
+  if (!pinned && !(latest && thisVersion)) {
     fail(`${key}: url does not point at ${manifest.version}: ${url}`);
   }
   if (!checked.has(url + signature)) {
     let data;
     if (assetsDir) {
-      const name = decodeURIComponent(url.split("/").pop());
       try {
         data = readFileSync(`${assetsDir}/${name}`);
       } catch {
