@@ -219,13 +219,12 @@ jobs:
     # does, and require: right version, no second copy, app starts, data kept.
     needs: publish
     runs-on: windows-latest
+    timeout-minutes: 20
     permissions:
       # A draft release is only visible to a token that can write releases.
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.version || github.ref }}
 
       - name: Update from older releases
         shell: pwsh

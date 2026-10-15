@@ -39,10 +39,10 @@ function Stop-App {
 function Remove-All {
   Stop-App
   $u = Join-Path $nsisDir "uninstall.exe"
-  if (Test-Path $u) { Start-Process $u -ArgumentList "/S" -Wait; Start-Sleep 2 }
+  if (Test-Path $u) { Run-Installer $u @("/S") "uninstall" | Out-Null; Start-Sleep 2 }
   Get-ChildItem "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
     ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -eq "Codex Switcher" -and $_.PSChildName -match '^\{' } |
-    ForEach-Object { Start-Process msiexec.exe -ArgumentList "/x", $_.PSChildName, "/quiet", "/norestart" -Wait }
+    ForEach-Object { Run-Installer msiexec.exe @("/x", $_.PSChildName, "/quiet", "/norestart") "msi uninstall" | Out-Null }
   Remove-Item -Recurse -Force $nsisDir, $msiDir -ErrorAction SilentlyContinue
 }
 
@@ -68,6 +68,12 @@ function Check-Store($label) {
       @{ ok = ($s.gateway_accounts | Where-Object id -eq "g1"); what = "the gateway key" })) {
     if (-not $check.ok) { Fail "${label}: update lost $($check.what) from accounts.json" }
   }
+}
+
+function Run-Installer($file, [string[]]$installerArgs, $label) {
+  $p = Start-Process $file -ArgumentList $installerArgs -PassThru
+  if (-not $p.WaitForExit(180000)) { $p | Stop-Process -Force; throw "${label}: installer did not finish within 3 minutes" }
+  return $p.ExitCode
 }
 
 function Exe-Version($path) { (Get-Item $path).VersionInfo.ProductVersion -replace '\+.*$', '' }
@@ -114,7 +120,7 @@ if ($OldTags.Count -eq 0) {
 
 # ── Fresh install of the new version (what a new user gets) ──────────────────
 Remove-All
-Start-Process $NewSetup -ArgumentList "/S" -Wait
+Run-Installer $NewSetup @("/S") "fresh install" | Out-Null
 $exe = Join-Path $nsisDir $exeName
 if ((Exe-Version $exe) -ne $NewVersion) { Fail "fresh NSIS install is $(Exe-Version $exe), expected $NewVersion" }
 if (-not (Has-Marker $exe "NSS")) { Fail "NSIS-installed exe has no NSIS bundle marker — its updater would fetch the MSI" }
@@ -126,11 +132,11 @@ foreach ($tag in $OldTags) {
   $label = "$tag → $NewVersion (NSIS)"
   try {
     Remove-All; Seed-Store
-    Start-Process (Get-Asset $tag "*-setup.exe") -ArgumentList "/S" -Wait
+    Run-Installer (Get-Asset $tag "*-setup.exe") @("/S") "$tag install" | Out-Null
     $old = Exe-Version (Join-Path $nsisDir $exeName)
     Write-Host "installed $tag as $old"
     # tauri-plugin-updater, passive NSIS: /P /R /UPDATE /ARGS
-    Start-Process $NewSetup -ArgumentList "/P", "/R", "/UPDATE", "/ARGS" -Wait
+    Run-Installer $NewSetup @("/P", "/R", "/UPDATE", "/ARGS") $label | Out-Null
     $exe = Join-Path $nsisDir $exeName
     $ver = Exe-Version $exe
     if ($ver -ne $NewVersion) { Fail "${label}: installed exe is $ver, expected $NewVersion" }
@@ -145,10 +151,10 @@ foreach ($tag in $OldTags) {
   $label = "$tag → $NewVersion (MSI)"
   try {
     Remove-All; Seed-Store
-    Start-Process msiexec.exe -ArgumentList "/i", "`"$(Get-Asset $tag '*.msi')`"", "/quiet", "/norestart" -Wait
+    Run-Installer msiexec.exe @("/i", "`"$(Get-Asset $tag '*.msi')`"", "/quiet", "/norestart") "$tag msi install" | Out-Null
     # tauri-plugin-updater, passive MSI: /i <msi> /passive /promptrestart AUTOLAUNCHAPP=True LAUNCHAPPARGS=""
-    $p = Start-Process msiexec.exe -ArgumentList "/i", "`"$NewMsi`"", "/passive", "/promptrestart", "AUTOLAUNCHAPP=True", 'LAUNCHAPPARGS=""' -Wait -PassThru
-    if ($p.ExitCode -notin 0, 3010) { Fail "${label}: msiexec exited with $($p.ExitCode)" }
+    $code = Run-Installer msiexec.exe @("/i", "`"$NewMsi`"", "/passive", "/promptrestart", "AUTOLAUNCHAPP=True", 'LAUNCHAPPARGS=""') $label
+    if ($code -notin 0, 3010) { Fail "${label}: msiexec exited with $code" }
     $exe = Join-Path $msiDir $exeName
     $ver = Exe-Version $exe
     if ($ver -ne $NewVersion) { Fail "${label}: installed exe is $ver, expected $NewVersion" }
