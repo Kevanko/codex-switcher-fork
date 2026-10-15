@@ -1378,6 +1378,7 @@ function SettingsPanel({
 
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", lineHeight: 1.5 }}>
             {t.settings.note}
+            <div style={{ marginTop: 8 }}>Codex Switcher v{__APP_VERSION__}</div>
           </div>
         </div>
       </div>
@@ -2277,6 +2278,7 @@ function App() {
         <div className="brand">
           <span className="brand-glyph"><Terminal size={14} /></span>
           <span className="brand-name"><b>codex</b><span>·</span><b>switcher</b></span>
+          <span className="brand-ver" title={locale_label("Версия программы", "App version", resolvedLanguage)}>v{__APP_VERSION__}</span>
         </div>
 
         {/* Provider tabs */}

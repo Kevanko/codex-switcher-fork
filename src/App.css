@@ -198,6 +198,7 @@ input, textarea, select { font-family: inherit; }
 .brand-name { font-family: var(--mono); font-weight: 500; font-size: calc(13px * var(--fz, 1)); letter-spacing: -.01em; }
 .brand-name b { color: var(--text); font-weight: 600; }
 .brand-name span { color: var(--text-3); }
+.brand-ver { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-3); padding: 2px 6px; border: 1px solid var(--border-2); border-radius: 5px; }
 
 /* provider tabs */
 .tabs { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2); }
