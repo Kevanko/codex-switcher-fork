@@ -477,6 +477,156 @@ pub async fn rename_account(account_id: String, new_name: String) -> Result<(), 
     Ok(())
 }
 
+const SHARE_FORMAT_KEY: &str = "codex_switcher_account";
+
+/// One account as pasteable JSON: `{codex_switcher_account, name, provider, auth}`,
+/// where `auth` is exactly the auth.json / .credentials.json the CLI would read.
+/// Tokens are copied as-is (no refresh), so the original login is not rotated away.
+#[tauri::command]
+pub async fn export_account_json(account_id: String) -> Result<String, String> {
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    // The CLI may have rotated the live tokens since we last stored them.
+    if store.active_account_id.as_deref() == Some(account_id.as_str()) {
+        let _ = crate::auth::storage::sync_codex_tokens_from_file(&account_id);
+    }
+    if store.active_claude_account_id.as_deref() == Some(account_id.as_str()) {
+        let _ = crate::auth::storage::sync_claude_tokens_from_file(&account_id);
+    }
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    let (provider, auth) = match account.provider {
+        AccountProvider::Claude => (
+            "claude",
+            serde_json::to_value(
+                crate::auth::switcher::create_claude_credentials(account)
+                    .map_err(|e| e.to_string())?,
+            ),
+        ),
+        AccountProvider::Codex => (
+            "codex",
+            serde_json::to_value(
+                crate::auth::switcher::create_auth_json(account).map_err(|e| e.to_string())?,
+            ),
+        ),
+    };
+    let payload = serde_json::json!({
+        SHARE_FORMAT_KEY: 1,
+        "name": account.name,
+        "provider": provider,
+        "auth": auth.map_err(|e| e.to_string())?,
+    });
+    serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())
+}
+
+/// Add an account from pasted JSON: the shape `export_account_json` produces, or a
+/// raw Codex auth.json / Claude .credentials.json. Provider is detected from the content.
+#[tauri::command]
+pub async fn import_account_json(
+    contents: String,
+    name: Option<String>,
+) -> Result<AccountInfo, String> {
+    let value: serde_json::Value = serde_json::from_str(contents.trim())
+        .map_err(|e| format!("Not valid JSON: {e}"))?;
+    let (auth, shared_name) = match value.get("auth") {
+        Some(auth) if value.get(SHARE_FORMAT_KEY).is_some() => {
+            (auth.clone(), value.get("name").and_then(|n| n.as_str()).map(String::from))
+        }
+        _ => (value.clone(), None),
+    };
+    let is_claude = auth.get("claudeAiOauth").is_some();
+    let provider = if is_claude { AccountProvider::Claude } else { AccountProvider::Codex };
+
+    let base = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .or(shared_name.filter(|n| !n.trim().is_empty()))
+        .unwrap_or_else(|| "Imported".to_string());
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let taken = |n: &str| store.accounts.iter().any(|a| a.provider == provider && a.name == n);
+    let name = if taken(&base) {
+        (2..).map(|i| format!("{base} ({i})")).find(|n| !taken(n)).unwrap()
+    } else {
+        base
+    };
+
+    let text = auth.to_string();
+    let account = if is_claude {
+        import_from_claude_credentials_contents(&text, name)
+    } else {
+        import_from_auth_json_contents(&text, name)
+    }
+    .map_err(|e| format!("{e:#}"))?;
+
+    let stored = add_account(account).map_err(|e| e.to_string())?;
+    finalize_added_account_state(&stored).map_err(|e| e.to_string())?;
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    Ok(AccountInfo::from_stored(
+        &stored,
+        store.active_account_id.as_deref(),
+        store.active_claude_account_id.as_deref(),
+    ))
+}
+
+/// After handing an account to someone else: drop it here *and* the CLI session
+/// file holding the same tokens, so this machine never refreshes them (a refresh
+/// would rotate the shared token and sign the other person out). Nothing is
+/// revoked server-side — the shared copy keeps working; you sign in afresh.
+#[tauri::command]
+pub async fn remove_account_and_session(account_id: String) -> Result<(), String> {
+    use crate::auth::switcher::{get_claude_credentials_file, get_codex_auth_file};
+
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| format!("Account not found: {account_id}"))?;
+    let provider = account.provider.clone();
+    let was_active = match provider {
+        AccountProvider::Codex => store.active_account_id.as_deref() == Some(account_id.as_str()),
+        AccountProvider::Claude => {
+            store.active_claude_account_id.as_deref() == Some(account_id.as_str())
+        }
+    };
+
+    if was_active {
+        let path = match provider {
+            AccountProvider::Codex => {
+                // A running Codex holds the tokens in memory and would refresh them.
+                let (pids, _) = snapshot_restart_target().map_err(|e| e.to_string())?;
+                if !pids.is_empty() {
+                    terminate_codex_processes(&pids).map_err(|e| e.to_string())?;
+                }
+                get_codex_auth_file()
+            }
+            AccountProvider::Claude => get_claude_credentials_file(),
+        }
+        .map_err(|e| e.to_string())?;
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+    }
+
+    remove_account(&account_id).map_err(|e| e.to_string())?;
+
+    if was_active {
+        // remove_account points "active" at another stored account, but no file
+        // was written for it — leave the slot empty until the fresh sign-in.
+        let mut store = load_accounts().map_err(|e| e.to_string())?;
+        match provider {
+            AccountProvider::Codex => store.active_account_id = None,
+            AccountProvider::Claude => store.active_claude_account_id = None,
+        }
+        save_accounts(&store).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Export minimal account config as a compact text string.
 /// For ChatGPT accounts, only refresh token is exported.
 #[tauri::command]
@@ -806,12 +956,11 @@ async fn build_store_from_slim_payload(
         active_account_id,
         active_claude_account_id: None,
         masked_account_ids: Vec::new(),
-        claude_token_accounts: Vec::new(),
-        active_claude_token_id: None,
         gateway_accounts: Vec::new(),
         active_gateway_id: None,
         zcode_accounts: Vec::new(),
         active_zcode_account_id: None,
+        ..Default::default()
     })
 }
 
@@ -1029,12 +1178,11 @@ fn codex_only_store(store: &AccountsStore) -> AccountsStore {
         active_account_id,
         active_claude_account_id: None,
         masked_account_ids: store.masked_account_ids.clone(),
-        claude_token_accounts: store.claude_token_accounts.clone(),
-        active_claude_token_id: store.active_claude_token_id.clone(),
         gateway_accounts: store.gateway_accounts.clone(),
         active_gateway_id: store.active_gateway_id.clone(),
         zcode_accounts: store.zcode_accounts.clone(),
         active_zcode_account_id: store.active_zcode_account_id.clone(),
+        ..Default::default()
     }
 }
 

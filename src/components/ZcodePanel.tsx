@@ -18,7 +18,7 @@ import {
 import { invokeBackend, pickZcodeCredentialsFile } from "../lib/platform";
 import { colorHex, type AccountLook } from "../lib/accountLooks";
 import { LookIcon, LookPicker } from "./AccountLookPicker";
-import type { ZcodeAccountInfo, ZcodePlanInfo } from "../types";
+import type { ZcodeAccountInfo, ZcodeEntitlement, ZcodePlanInfo } from "../types";
 
 const ru_en = (ru: boolean, r: string, e: string) => (ru ? r : e);
 
@@ -40,52 +40,44 @@ function formatUnits(value: number | null | undefined): string {
 function formatEndsAt(endsAt: number | null | undefined, ru: boolean): string {
   if (!endsAt) return ru ? "без срока" : "no end date";
   const at = endsAt * 1000;
-  const date = new Date(at).toLocaleDateString(ru ? "ru-RU" : "en-GB");
-  const days = Math.ceil((at - Date.now()) / 86_400_000);
-  if (days < 0) return ru ? `истёк ${date}` : `ended ${date}`;
-  if (days === 0) return ru ? `сегодня · ${date}` : `today · ${date}`;
-  return ru ? `ещё ${days} дн · ${date}` : `${days}d left · ${date}`;
-}
-
-/** "lite" -> "Lite". The tier is the headline fact about a Z.ai sign-in. */
-function formatLevel(level: string | null | undefined): string | null {
-  if (!level?.trim()) return null;
-  return level.trim().charAt(0).toUpperCase() + level.trim().slice(1);
-}
-
-function formatRefreshAt(at: number | null | undefined, ru: boolean): string {
-  if (!at) return "—";
-  return new Date(at * 1000).toLocaleString(ru ? "ru-RU" : "en-GB", {
-    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  // Absolute first, because "4 days left" alone is unactionable, and with the
+  // hour because these plans expire at a specific time of day.
+  const stamp = new Date(at).toLocaleString(ru ? "ru-RU" : "en-GB", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
   });
+  const left = at - Date.now();
+  if (left < 0) return ru ? `истёк ${stamp}` : `ended ${stamp}`;
+  const days = Math.floor(left / 86_400_000);
+  const hours = Math.floor((left % 86_400_000) / 3_600_000);
+  const rest = days > 0
+    ? (ru ? `${days} дн ${hours} ч` : `${days}d ${hours}h`)
+    : (ru ? `${hours} ч` : `${hours}h`);
+  return ru ? `${stamp} · осталось ${rest}` : `${stamp} · ${rest} left`;
 }
 
 /**
- * Z.ai Coding Plan tiers wear the same metals as the Codex plans: a hollow
- * glacier crown for Lite, a solid gold one for Pro, a solid verdigris one for
- * Max. A snapshot with no tier gets no mark, exactly like a Free Codex account.
+ * A paid Coding Plan wears the same glacier crown as a Codex Plus; the free
+ * Start Plan and a bare account wear nothing, exactly like a Free Codex one.
+ *
+ * ponytail: the crown is on/off, not per tier. Lite/Pro/Max is shown only by a
+ * z.ai-hosted webview, so no local file distinguishes them — inventing a
+ * distinction here is how a free account ended up wearing "Lite".
  */
-function tierMark(level: string | null | undefined): { colorVar: string; solid: boolean } | null {
-  const normalized = level?.trim().toLowerCase() ?? "";
-  if (!normalized) return null;
-  if (normalized.includes("max")) return { colorVar: "--tier-team", solid: true };
-  if (normalized.includes("pro")) return { colorVar: "--tier-pro", solid: true };
-  return { colorVar: "--tier-plus", solid: false };
+function zcodeTierName(entitlement: ZcodeEntitlement | undefined): "plus" | undefined {
+  return entitlement === "coding" ? "plus" : undefined;
 }
 
-/** The `data-tier` value whose CSS paints the row outline. */
-function zcodeTierName(level: string | null | undefined): "plus" | "pro" | "team" | undefined {
-  const mark = tierMark(level);
-  if (!mark) return undefined;
-  return mark.colorVar === "--tier-pro" ? "pro" : mark.colorVar === "--tier-team" ? "team" : "plus";
+function planName(entitlement: ZcodeEntitlement | undefined, ru: boolean): string {
+  if (entitlement === "coding") return "Coding Plan";
+  if (entitlement === "start") return ru ? "Start Plan (бесплатный)" : "Start Plan (free)";
+  return ru ? "без плана" : "no plan";
 }
 
-function ZcodeMark({ level, size = 13 }: { level: string | null | undefined; size?: number }) {
-  const mark = tierMark(level);
-  if (!mark) return null;
+function ZcodeMark({ entitlement, size = 13 }: { entitlement: ZcodeEntitlement | undefined; size?: number }) {
+  if (entitlement !== "coding") return null;
   return (
-    <span className="acc-mark" style={{ color: `var(${mark.colorVar})` }} title={formatLevel(level) ?? undefined}>
-      <Crown size={size} fill={mark.solid ? "currentColor" : "none"} />
+    <span className="acc-mark" style={{ color: "var(--tier-plus)" }} title="Z.ai Coding Plan">
+      <Crown size={size} />
     </span>
   );
 }
@@ -94,12 +86,6 @@ function ZcodeMark({ level, size = 13 }: { level: string | null | undefined; siz
 function totalRemaining(plan: ZcodePlanInfo | null | undefined): number | null {
   if (!plan?.balances?.length) return null;
   return plan.balances.reduce((sum, b) => sum + (b.remaining_units ?? 0), 0);
-}
-
-/** The plan a snapshot is on, preferring an active one over a lapsed one. */
-function primaryPlan(plan: ZcodePlanInfo | null | undefined) {
-  if (!plan?.plans?.length) return null;
-  return plan.plans.find((p) => p.status === "active") ?? plan.plans[0];
 }
 
 /**
@@ -362,7 +348,7 @@ export function ZcodePanel({
                     selected?.id === a.id ? "is-selected" : "",
                     a.is_active ? "is-active-acc" : "",
                   ].join(" ")}
-                  data-tier={zcodeTierName(a.plan?.level)}
+                  data-tier={zcodeTierName(a.entitlement)}
                   data-tinted={tint ? "" : undefined}
                   style={tint ? ({ "--tint": tint } as CSSProperties) : undefined}
                   onClick={() => setSelectedId(a.id)}
@@ -382,39 +368,25 @@ export function ZcodePanel({
                     <span className="acc-top">
                       <LookIcon icon={looks[a.id]?.icon} color={tint} />
                       <span className="acc-name">{a.name}</span>
-                      <ZcodeMark level={a.plan?.level} />
+                      <ZcodeMark entitlement={a.entitlement} />
                     </span>
                     <span className="acc-sub">
-                      {formatLevel(a.plan?.level) ?? primaryPlan(a.plan)?.name ?? formatDate(a.created_at, ru)}
+                      {planName(a.entitlement, ru)}
                     </span>
                   </span>
                   <span className="acc-right">
                     {(() => {
-                      // Token grants first; an account on a tier with no grants
-                      // still has an MCP quota worth showing. Neither means the
-                      // snapshot has never been live, so show nothing at all.
+                      // GLM token grants — the only quota ZCode writes to disk.
                       const tokens = totalRemaining(a.plan);
-                      if (tokens !== null) {
-                        return (
-                          <>
-                            <span className="acc-pct" style={{ color: a.is_active ? "var(--accent)" : "var(--text)" }}>
-                              {formatUnits(tokens)}
-                            </span>
-                            <span className="acc-sub" style={{ fontSize: 10 }}>{ru_en(ru, "токенов", "tokens")}</span>
-                          </>
-                        );
-                      }
-                      if (a.plan?.mcp_limit) {
-                        return (
-                          <>
-                            <span className="acc-pct" style={{ color: a.is_active ? "var(--accent)" : "var(--text)" }}>
-                              {formatUnits(a.plan.mcp_limit - (a.plan.mcp_used ?? 0))}
-                            </span>
-                            <span className="acc-sub" style={{ fontSize: 10 }}>MCP</span>
-                          </>
-                        );
-                      }
-                      return null;
+                      if (tokens === null) return null;
+                      return (
+                        <>
+                          <span className="acc-pct" style={{ color: a.is_active ? "var(--accent)" : "var(--text)" }}>
+                            {formatUnits(tokens)}
+                          </span>
+                          <span className="acc-sub" style={{ fontSize: 10 }}>{ru_en(ru, "токенов GLM", "GLM tokens")}</span>
+                        </>
+                      );
                     })()}
                   </span>
                 </button>
@@ -487,7 +459,7 @@ export function ZcodePanel({
                           <span>{selected.name}</span>
                           <PencilLine size={15} className="edit-pencil" />
                         </button>
-                        <ZcodeMark level={selected.plan?.level} size={18} />
+                        <ZcodeMark entitlement={selected.entitlement} size={18} />
                       </>
                     )}
                   </div>
@@ -546,51 +518,27 @@ export function ZcodePanel({
               <div className="dbody">
                 <div className="dbody-col">
                   <div className="sec-label">
-                    <span className="sec-label-txt"><span className="sec-label-mark">//</span>{ru_en(ru, "Подписка и токены", "Plan and tokens")}</span>
+                    <span className="sec-label-txt"><span className="sec-label-mark">//</span>{ru_en(ru, "План и токены GLM", "Plan and GLM tokens")}</span>
                     <span className="sec-label-rule" />
                   </div>
-                  {selected.plan?.level || selected.plan?.balances?.length || selected.plan?.plans?.length ? (
-                    <div className="limit-block">
-                      {selected.plan.level && (
-                        <div className="limit-item">
-                          <div className="limit-top">
-                            <span className="limit-label">{ru_en(ru, "Тариф", "Tier")}</span>
-                            <span
-                              className="limit-pct"
-                              style={{ color: `var(${tierMark(selected.plan.level)?.colorVar ?? "--text"})`, display: "inline-flex", alignItems: "center", gap: 6 }}
-                            >
-                              <ZcodeMark level={selected.plan.level} size={14} />
-                              {formatLevel(selected.plan.level)}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-                      {selected.plan.mcp_limit ? (() => {
-                        const left = (selected.plan.mcp_limit ?? 0) - (selected.plan.mcp_used ?? 0);
-                        const pct = Math.max(0, Math.min(100, (left / (selected.plan.mcp_limit || 1)) * 100));
-                        return (
-                          <div className="limit-item">
-                            <div className="limit-top">
-                              {/* Named the way ZCode names it, so the two can be
-                                  compared without translating between them. */}
-                              <span className="limit-label">ZCode MCP</span>
-                              <span className="limit-pct">{Math.round(pct)}%</span>
-                            </div>
-                            <span className="meter" style={{ height: 6 }}>
-                              <span
-                                className={"meter-fill meter-fill--" + (pct <= 15 ? "amber" : "accent")}
-                                style={{ width: Math.max(2, pct) + "%" }}
-                              />
-                            </span>
-                            <div className="limit-eta">
-                              <Coins size={12} /> {formatUnits(left)} {ru_en(ru, "из", "of")} {formatUnits(selected.plan.mcp_limit)}
-                              {selected.plan.mcp_next_refresh_at
-                                ? ` · ${ru_en(ru, "сброс", "resets")} ${formatRefreshAt(selected.plan.mcp_next_refresh_at, ru)}`
-                                : ""}
-                            </div>
-                          </div>
-                        );
-                      })() : null}
+                  <div className="limit-block">
+                    <div className="limit-item">
+                      <div className="limit-top">
+                        <span className="limit-label">{ru_en(ru, "План", "Plan")}</span>
+                        <span
+                          className="limit-pct"
+                          style={{
+                            color: selected.entitlement === "coding" ? "var(--tier-plus)" : "var(--text-2)",
+                            display: "inline-flex", alignItems: "center", gap: 6, fontSize: 14,
+                          }}
+                        >
+                          <ZcodeMark entitlement={selected.entitlement} size={14} />
+                          {planName(selected.entitlement, ru)}
+                        </span>
+                      </div>
+                    </div>
+                    {selected.plan?.plans?.length || selected.plan?.balances?.length ? (
+                      <>
                       {selected.plan.plans.map((plan) => (
                         <div className="limit-item" key={plan.name + String(plan.ends_at)}>
                           <div className="limit-top">
@@ -623,34 +571,20 @@ export function ZcodePanel({
                               />
                             </span>
                             <div className="limit-eta">
-                              <Coins size={12} /> {ru_en(ru, "из", "of")} {formatUnits(balance.total_units)} · {ru_en(ru, "потрачено", "used")} {formatUnits(balance.used_units)}
+                              <Coins size={12} /> {formatUnits(left)} / {formatUnits(balance.total_units)}
                             </div>
                           </div>
                         );
                       })}
-                      <p className="token-hint" style={{ margin: "2px 0 0" }}>
-                        {ru_en(
-                          ru,
-                          "Окна «5 hours» и «Weekly» из ZCode здесь не показать: ZCode держит их только в памяти, на диск не пишет, а эндпоинт за капчей. Сверяйся с ними в самом ZCode.",
-                          "ZCode's “5 hours” and “Weekly” windows cannot be shown here: ZCode keeps them in memory only, never writes them to disk, and the endpoint is behind a captcha. Check those in ZCode itself."
-                        )}
+                      </>
+                    ) : (
+                      <p className="token-hint" style={{ margin: 0 }}>
+                        {selected.is_active
+                          ? ru_en(ru, "Ждём ответа ZCode — гранты появятся после его ближайшего запроса.", "Waiting for ZCode — grants appear after its next request.")
+                          : ru_en(ru, "Переключись на этот аккаунт, чтобы прочитать гранты.", "Switch to this account to read its grants.")}
                       </p>
-                    </div>
-                  ) : (
-                    <p className="token-hint" style={{ margin: 0 }}>
-                      {selected.plan?.captured_at
-                        ? ru_en(
-                            ru,
-                            `Z.ai не вернула ни одного активного плана (проверено ${formatDate(selected.plan.captured_at, ru)}). Купи или продли Coding Plan — цифры появятся сами.`,
-                            `Z.ai reported no active plan (checked ${formatDate(selected.plan.captured_at, ru)}). Buy or renew a Coding Plan and the figures appear on their own.`
-                          )
-                        : ru_en(
-                            ru,
-                            "Данных о подписке нет. Цифры берутся из того, что ZCode уже запросил у Z.ai — переключись на этот аккаунт и дай ZCode запуститься.",
-                            "No plan data yet. The figures come from what ZCode has already fetched from Z.ai — switch to this account and let ZCode run."
-                          )}
-                    </p>
-                  )}
+                    )}
+                  </div>
                 </div>
 
                 <div className="dbody-col">
@@ -670,31 +604,16 @@ export function ZcodePanel({
                       <span className="meta-val">{formatDate(selected.created_at, ru)}</span>
                     </div>
                     <div className="meta-row">
-                      <span className="meta-key">{ru_en(ru, "Хранилище", "Storage")}</span>
-                      <span className="meta-val">~/.zcode/v2</span>
-                    </div>
-                    <div className="meta-row">
-                      <span className="meta-key">{ru_en(ru, "Тариф", "Tier")}</span>
-                      <span className="meta-val" style={selected.plan?.level ? { color: `var(${tierMark(selected.plan.level)?.colorVar ?? "--text"})` } : undefined}>
-                        {formatLevel(selected.plan?.level) ?? "—"}
+                      <span className="meta-key">{ru_en(ru, "План", "Plan")}</span>
+                      <span className="meta-val" style={selected.entitlement === "coding" ? { color: "var(--tier-plus)" } : undefined}>
+                        {planName(selected.entitlement, ru)}
                       </span>
                     </div>
                     <div className="meta-row">
-                      <span className="meta-key">{ru_en(ru, "Токенов всего", "Tokens left")}</span>
+                      <span className="meta-key">{ru_en(ru, "Токенов GLM", "GLM tokens")}</span>
                       <span className="meta-val">{formatUnits(totalRemaining(selected.plan))}</span>
                     </div>
-                    <div className="meta-row">
-                      <span className="meta-key">{ru_en(ru, "Секреты", "Secrets")}</span>
-                      <span className="meta-val">{ru_en(ru, "шифрует ZCode", "encrypted by ZCode")}</span>
-                    </div>
                   </div>
-                  <p className="token-hint" style={{ marginTop: 14 }}>
-                    {ru_en(
-                      ru,
-                      "Переключение закрывает ZCode, подменяет credentials.json и config.json снимком этого аккаунта и запускает ZCode заново.",
-                      "Switching closes ZCode, swaps credentials.json and config.json for this snapshot, then starts ZCode again."
-                    )}
-                  </p>
                 </div>
               </div>
 
@@ -702,10 +621,6 @@ export function ZcodePanel({
                 <button type="button" className="btn btn--ghost btn--md" disabled={busy !== null} onClick={() => void load()}>
                   <RefreshCcw size={14} /> {ru_en(ru, "Обновить", "Refresh")}
                 </button>
-                <span className="dfoot-note">
-                  <Clock size={13} />
-                  {ru_en(ru, "снимок того же ПК — секреты привязаны к устройству", "same-device snapshot — secrets are device-bound")}
-                </span>
                 <span className="dfoot-spacer" />
                 <button
                   type="button"

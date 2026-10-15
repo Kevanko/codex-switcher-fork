@@ -23,6 +23,7 @@ import {
   Crown,
   Database,
   Download,
+  FileJson,
   Eye,
   EyeOff,
   FolderInput,
@@ -33,6 +34,7 @@ import {
   PencilLine,
   RefreshCcw,
   Search,
+  Share2,
   Settings2,
   Sparkles,
   Sun,
@@ -46,9 +48,9 @@ import {
   Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, ZcodePanel } from "./components";
+import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, GatewayPanel, ZcodePanel } from "./components";
 import { GravityGrid } from "./components/GravityGrid";
-import type { AccountWithUsage, ClaudeTokenAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
+import type { AccountWithUsage, ClaudeTokenAccountInfo, GatewayAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
 import {
   exportFullBackupFile,
   importFullBackupFile,
@@ -89,6 +91,9 @@ const LANGUAGE_STORAGE_KEY = "codex-switcher-language";
 const ACCENT_STORAGE_KEY = "codex-switcher-accent";
 const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
 const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
+const PALETTE_STORAGE_KEY = "codex-switcher-palette";
+const FONT_STORAGE_KEY = "codex-switcher-font";
+const TEXT_SCALE_STORAGE_KEY = "codex-switcher-text-scale";
 const TRAY_MODE_STORAGE_KEY = "codex-switcher-tray-mode";
 const ACTIVE_TAB_STORAGE_KEY = "codex-switcher-active-tab";
 const AUTO_WARMUP_ALL_STORAGE_KEY = "codex-switcher-auto-warmup-all";
@@ -102,7 +107,10 @@ const DEFAULT_PRIMARY_WINDOW_MINUTES = 300;
 const LIMIT_FULL_THRESHOLD = 99.5;
 const NEAR_LIMIT_REMAINING_THRESHOLD = 10;
 
-type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose";
+type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose" | "clay" | "frost" | "mauve";
+type Palette = "graphite" | "clay" | "nord" | "mocha";
+type FontPreset = "plex" | "system" | "serif" | "mono" | "geometric";
+type TextScale = "s" | "m" | "l" | "xl";
 type AutoWarmupLedger = Record<string, { lastSuccessfulWarmupAt?: number }>;
 type ProviderTab = "codex" | "claude";
 type ConfigModalMode = "slim_export" | "slim_import";
@@ -124,7 +132,36 @@ const accentPresets: Record<
   blue:   { label: "Control blue",  accent: "#3e7ce9", soft: "rgba(62,124,233,.15)", strong: "rgba(62,124,233,.24)", border: "rgba(62,124,233,.32)", glow: "rgba(62,124,233,.2)",  contrast: "#f8fbff" },
   amber:  { label: "Amber focus",   accent: "#d88b22", soft: "rgba(216,139,34,.16)", strong: "rgba(216,139,34,.24)", border: "rgba(216,139,34,.34)", glow: "rgba(216,139,34,.2)",  contrast: "#211305" },
   rose:   { label: "Rose pulse",    accent: "#d15a7d", soft: "rgba(209,90,125,.16)", strong: "rgba(209,90,125,.24)", border: "rgba(209,90,125,.34)", glow: "rgba(209,90,125,.21)", contrast: "#fff8fb" },
+  clay:   { label: "Clay",          accent: "#d97757", soft: "rgba(217,119,87,.16)", strong: "rgba(217,119,87,.24)", border: "rgba(217,119,87,.34)", glow: "rgba(217,119,87,.2)",  contrast: "#fffaf6" },
+  frost:  { label: "Frost",         accent: "#5e81ac", soft: "rgba(94,129,172,.16)", strong: "rgba(94,129,172,.24)", border: "rgba(94,129,172,.34)", glow: "rgba(94,129,172,.2)",  contrast: "#f7faff" },
+  mauve:  { label: "Mauve",         accent: "#9d6cf0", soft: "rgba(157,108,240,.16)", strong: "rgba(157,108,240,.24)", border: "rgba(157,108,240,.34)", glow: "rgba(157,108,240,.2)", contrast: "#fcf9ff" },
 };
+
+// Each palette suggests an accent; picking the palette applies it, and the
+// accent can still be changed afterwards.
+const palettes: Record<Palette, { label: string; swatch: [string, string]; accent: AccentPreset }> = {
+  graphite: { label: "Graphite", swatch: ["#0d1014", "#e9ecef"], accent: "green" },
+  clay:     { label: "Clay",     swatch: ["#262624", "#f0eee6"], accent: "clay" },
+  nord:     { label: "Nord",     swatch: ["#2e3440", "#e5e9f0"], accent: "frost" },
+  mocha:    { label: "Mocha",    swatch: ["#1e1e2e", "#eff1f5"], accent: "mauve" },
+};
+
+const fontPresets: Record<FontPreset, { label: string; family: string }> = {
+  plex:      { label: "Plex",      family: '"IBM Plex Sans", "Segoe UI", sans-serif' },
+  system:    { label: "System",    family: '"Segoe UI Variable Text", "Segoe UI", system-ui' },
+  serif:     { label: "Serif",     family: '"Tiempos Text", Charter, Cambria, Georgia, serif' },
+  mono:      { label: "Mono",      family: '"Cascadia Code", Consolas, monospace' },
+  geometric: { label: "Geometric", family: 'Bahnschrift, "Segoe UI", sans-serif' },
+};
+
+const textScales: Record<TextScale, number> = { s: 0.92, m: 1, l: 1.1, xl: 1.22 };
+
+function readStoredChoice<T extends string>(key: string, options: Record<T, unknown>, fallback: T): T {
+  try {
+    const s = window.localStorage.getItem(key);
+    return s && s in options ? (s as T) : fallback;
+  } catch { return fallback; }
+}
 
 const cardDensityLabels: Record<CardDensity, string> = {
   compact: "Compact",
@@ -175,10 +212,10 @@ function readStoredAutoWarmupLedger(): AutoWarmupLedger {
 }
 
 // The active tab is the (tabView, activeProvider) pair flattened to one stored key.
-function readActiveTab(): { tabView: "accounts" | "tokens" | "zai"; activeProvider: ProviderTab } {
+function readActiveTab(): { tabView: "accounts" | "gateway" | "zai"; activeProvider: ProviderTab } {
   try {
     const s = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (s === "tokens") return { tabView: "tokens", activeProvider: "codex" };
+    if (s === "gateway") return { tabView: "gateway", activeProvider: "codex" };
     if (s === "zai") return { tabView: "zai", activeProvider: "codex" };
     if (s === "claude") return { tabView: "accounts", activeProvider: "claude" };
   } catch {}
@@ -277,14 +314,16 @@ function formatSubscriptionRenewal(expiresAt: string | null | undefined, locale:
   return locale_label(`через ${days} дн · ${date}`, `in ${days}d · ${date}`, locale);
 }
 
-function formatLastUsed(lastUsedAt: string | null): string {
+function formatLastUsed(lastUsedAt: string | null, locale: Locale): string {
   if (!lastUsedAt) return "—";
   const diff = Math.floor((Date.now() - new Date(lastUsedAt).getTime()) / 1000);
-  if (diff < 5) return "сейчас";
-  if (diff < 60) return `${diff}с`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}м`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}ч`;
-  return `${Math.floor(diff / 86400)}дн`;
+  const ru = locale === "ru";
+  const ago = (n: number, ruUnit: string, enUnit: string) => (ru ? `${n} ${ruUnit} назад` : `${n}${enUnit} ago`);
+  if (diff < 5) return ru ? "сейчас" : "now";
+  if (diff < 60) return ago(diff, "с", "s");
+  if (diff < 3600) return ago(Math.floor(diff / 60), "мин", "m");
+  if (diff < 86400) return ago(Math.floor(diff / 3600), "ч", "h");
+  return ago(Math.floor(diff / 86400), "дн", "d");
 }
 
 function isRateLimitedUsage(account: AccountWithUsage): boolean {
@@ -476,13 +515,21 @@ function AccountListRow({
           <LookIcon icon={look?.icon} color={tint} />
           <span className="acc-name">{account.name}</span>
           <PlanMark account={account} />
-          {isActiveAcc && (
-            <span className="acc-active-pill">{locale_label("АКТИВНЫЙ", "ACTIVE", locale)}</span>
-          )}
+          {isActiveAcc && <span className="acc-active-tag">{locale_label("активен", "active", locale)}</span>}
         </span>
         {account.email && (
           <span className="acc-sub">{maskEmail(account.email)}</span>
         )}
+        {/* Shown only in "detailed" density (CSS). */}
+        <span className="acc-extra">
+          {(() => {
+            const next = getVisibleLimitWindows(account).filter((w) => w.resetsAt).sort((a, b) => (a.resetsAt ?? 0) - (b.resetsAt ?? 0))[0];
+            const parts = [planVisual.label];
+            if (next?.resetsAt) parts.push(locale_label("сброс ", "reset ", locale) + formatResetCountdown(next.resetsAt, locale));
+            if (account.last_used_at) parts.push(formatLastUsed(account.last_used_at, locale));
+            return parts.join(" · ");
+          })()}
+        </span>
       </span>
       <span className="acc-right">
         {fault ? (
@@ -525,6 +572,7 @@ function AccountContextMenu({
   onRefresh,
   onRename,
   onCopyEmail,
+  onCopyJson,
   onToggleMask,
   onReauthorize,
   onDelete,
@@ -542,6 +590,7 @@ function AccountContextMenu({
   onRefresh: () => void;
   onRename: () => void;
   onCopyEmail: () => void;
+  onCopyJson: () => void;
   onToggleMask: () => void;
   /** Sign in again as this same account, keeping its name and history. */
   onReauthorize?: () => void;
@@ -594,6 +643,9 @@ function AccountContextMenu({
         <button type="button" className="ctx-item" role="menuitem" disabled={!account.email} onClick={run(onCopyEmail)}>
           <Copy size={14} /> {t.account.copyEmail}
         </button>
+        <button type="button" className="ctx-item" role="menuitem" onClick={run(onCopyJson)}>
+          <FileJson size={14} /> {locale_label("Копировать как JSON", "Copy as JSON", locale)}
+        </button>
         <button type="button" className="ctx-item" role="menuitem" disabled={!account.email} onClick={run(onToggleMask)}>
           {masked ? <Eye size={14} /> : <EyeOff size={14} />}
           {masked ? locale_label("Показать почту", "Show email", locale) : locale_label("Скрыть почту", "Hide email", locale)}
@@ -618,6 +670,7 @@ function AccountDetailPanel({
   masked,
   onToggleMask,
   onCopyEmail,
+  onCopyJson,
   emailCopied,
   switching,
   warmingUp,
@@ -640,6 +693,7 @@ function AccountDetailPanel({
   masked: boolean;
   onToggleMask: () => void;
   onCopyEmail: () => void;
+  onCopyJson: () => void;
   emailCopied: boolean;
   switching: boolean;
   warmingUp: boolean;
@@ -759,7 +813,7 @@ function AccountDetailPanel({
             <div className="dhead-eyebrow">
               {account.is_active
                 ? <><Check size={12} /> {t.account.currentAccount}</>
-                : <>{planVisual.label} · {t.account.currentAccount.replace("Текущий", "").trim() || "аккаунт"}</>
+                : <>{planVisual.label} · {locale_label("аккаунт", "account", locale)}</>
               }
             </div>
             <div className="dhead-name">
@@ -799,7 +853,7 @@ function AccountDetailPanel({
                 <button type="button" className="icon-btn icon-btn--xs" title={t.account.copyEmail} onClick={onCopyEmail}>
                   {emailCopied ? <Check size={12} /> : <Copy size={12} />}
                 </button>
-                <button type="button" className="icon-btn icon-btn--xs" title={masked ? "Показать" : "Скрыть"} onClick={onToggleMask}>
+                <button type="button" className="icon-btn icon-btn--xs" title={masked ? locale_label("Показать", "Show", locale) : locale_label("Скрыть", "Hide", locale)} onClick={onToggleMask}>
                   {masked ? <Eye size={12} /> : <EyeOff size={12} />}
                 </button>
               </div>
@@ -979,7 +1033,7 @@ function AccountDetailPanel({
               <div className="meta-row">
                 <span className="meta-key">{locale_label("Токен", "Token", locale)}</span>
                 <span className="meta-val" style={{ color: !isCodex ? undefined : tokenExpiry.tone === "danger" ? "var(--bad)" : tokenExpiry.tone === "warning" ? "var(--warn)" : undefined }}>
-                  {isCodex ? tokenExpiry.label : "OAuth / автообновление"}
+                  {isCodex ? tokenExpiry.label : locale_label("OAuth / автообновление", "OAuth / auto-refresh", locale)}
                 </span>
               </div>
               <div className="meta-row">
@@ -1006,7 +1060,7 @@ function AccountDetailPanel({
               )}
               <div className="meta-row">
                 <span className="meta-key">{locale_label("Был активен", "Last used", locale)}</span>
-                <span className="meta-val">{formatLastUsed(account.last_used_at)}</span>
+                <span className="meta-val">{formatLastUsed(account.last_used_at, locale)}</span>
               </div>
             </div>
           </div>
@@ -1064,6 +1118,18 @@ function AccountDetailPanel({
             </button>
           )}
           <span className="dfoot-spacer" />
+          <button
+            type="button"
+            className="btn btn--ghost btn--md"
+            onClick={onCopyJson}
+            title={locale_label(
+              "Скопировать аккаунт целиком — друг вставит его через «+ аккаунт» → «Вставить JSON»",
+              "Copy the whole account — a friend pastes it via “+ account” → “Paste JSON”",
+              locale
+            )}
+          >
+            <Share2 size={14} /> {locale_label("Копировать JSON", "Copy JSON", locale)}
+          </button>
           <button type="button" className="icon-btn icon-btn--md" title={t.account.delete || "Удалить"} onClick={onDelete}>
             <Trash2 size={16} />
           </button>
@@ -1079,6 +1145,9 @@ function SettingsPanel({
   languagePreference,
   t,
   accentPreset,
+  palette,
+  fontPreset,
+  textScale,
   cardDensity,
   trayModeEnabled,
   isExportingFull,
@@ -1089,6 +1158,9 @@ function SettingsPanel({
   onThemeChange,
   onLanguageChange,
   onAccentChange,
+  onPaletteChange,
+  onFontChange,
+  onTextScaleChange,
   onCardDensityChange,
   onTrayModeChange,
   onClose,
@@ -1103,6 +1175,9 @@ function SettingsPanel({
   languagePreference: LanguagePreference;
   t: AppText;
   accentPreset: AccentPreset;
+  palette: Palette;
+  fontPreset: FontPreset;
+  textScale: TextScale;
   cardDensity: CardDensity;
   trayModeEnabled: boolean;
   isExportingFull: boolean;
@@ -1113,6 +1188,9 @@ function SettingsPanel({
   onThemeChange: (theme: ThemePreference) => void;
   onLanguageChange: (lang: LanguagePreference) => void;
   onAccentChange: (preset: AccentPreset) => void;
+  onPaletteChange: (p: Palette) => void;
+  onFontChange: (f: FontPreset) => void;
+  onTextScaleChange: (s: TextScale) => void;
   onCardDensityChange: (d: CardDensity) => void;
   onTrayModeChange: (e: boolean) => void;
   onClose: () => void;
@@ -1123,6 +1201,7 @@ function SettingsPanel({
   onWarmupAll: () => void;
   onToggleAutoWarmupAll: () => void;
 }) {
+  const ru = t === translations.ru;
   return (
     <>
       <div className="scrim" onClick={onClose} />
@@ -1157,6 +1236,45 @@ function SettingsPanel({
               {([["system", t.common.auto, Monitor], ["light", t.common.light, Sun], ["dark", t.common.dark, Moon]] as [ThemePreference, string, ElementType][]).map(([v, l, Icon]) => (
                 <button key={v} type="button" className={"seg-opt" + (themePreference === v ? " is-active" : "")} onClick={() => onThemeChange(v)}>
                   <Icon size={14} />{l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Palette */}
+          <div className="setting">
+            <div className="setting-label">{ru ? "Палитра" : "Palette"}</div>
+            <div className="setting-hint">{ru ? "Цвета фона и текста. Светлая/тёмная — по настройке темы выше." : "Background and text colours. Light/dark follows the theme above."}</div>
+            <div className="swatches">
+              {(Object.entries(palettes) as [Palette, typeof palettes[Palette]][]).map(([id, meta]) => (
+                <button key={id} type="button" className={"swatch-btn" + (palette === id ? " is-active" : "")} onClick={() => onPaletteChange(id)}>
+                  <span className="swatch-dot" style={{ background: `linear-gradient(135deg, ${meta.swatch[0]} 50%, ${meta.swatch[1]} 50%)`, boxShadow: `0 0 0 2px ${accentPresets[meta.accent].accent}` }} />
+                  {meta.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Font */}
+          <div className="setting">
+            <div className="setting-label">{ru ? "Шрифт" : "Font"}</div>
+            <div className="setting-hint">{ru ? "Только системные шрифты — работает офлайн." : "System fonts only — works offline."}</div>
+            <div className="swatches">
+              {(Object.entries(fontPresets) as [FontPreset, typeof fontPresets[FontPreset]][]).map(([id, meta]) => (
+                <button key={id} type="button" className={"swatch-btn" + (fontPreset === id ? " is-active" : "")} style={{ fontFamily: meta.family }} onClick={() => onFontChange(id)}>
+                  Aa {meta.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Text size */}
+          <div className="setting">
+            <div className="setting-label">{ru ? "Размер текста" : "Text size"}</div>
+            <div className="segmented">
+              {(Object.keys(textScales) as TextScale[]).map((k) => (
+                <button key={k} type="button" className={"seg-opt" + (textScale === k ? " is-active" : "")} onClick={() => onTextScaleChange(k)}>
+                  {k.toUpperCase()}
                 </button>
               ))}
             </div>
@@ -1200,12 +1318,12 @@ function SettingsPanel({
 
           {/* Warmup tools */}
           <div className="setting">
-            <div className="setting-label">Инструменты</div>
-            <div className="setting-hint">Массовые операции с аккаунтами.</div>
+            <div className="setting-label">{ru ? "Инструменты" : "Tools"}</div>
+            <div className="setting-hint">{ru ? "Массовые операции с аккаунтами." : "Bulk actions on accounts."}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <button type="button" className="btn btn--ghost btn--md btn--full" onClick={onWarmupAll} disabled={isWarmingAll || !hasAccounts}>
                 <Zap size={14} className={isWarmingAll ? "pulse-soft" : undefined} />
-                {isWarmingAll ? "Прогрев…" : t.toolbar.warmAll}
+                {isWarmingAll ? (ru ? "Прогрев…" : "Warming…") : t.toolbar.warmAll}
               </button>
               <button type="button" className={"btn btn--ghost btn--md btn--full" + (autoWarmupAllEnabled ? " is-active" : "")} onClick={onToggleAutoWarmupAll} disabled={!hasAccounts}>
                 <Activity size={14} /> {autoWarmupAllEnabled ? t.toolbar.autoWarmupOn : t.toolbar.autoWarmupOff}
@@ -1308,6 +1426,97 @@ function ConfigModal({
   );
 }
 
+// ── Share Modal (copy as JSON → optionally give the login away) ─────────────
+// Both copies share one refresh token; whoever refreshes first signs the other
+// out. "Give away" removes it here (and the CLI's session file) so only the
+// friend's copy stays alive, then opens a fresh sign-in for yourself.
+function ShareAccountModal({
+  account,
+  json,
+  error,
+  copied,
+  removing,
+  locale,
+  onCopy,
+  onGiveAway,
+  onClose,
+}: {
+  account: AccountWithUsage;
+  json: string;
+  error: string | null;
+  copied: boolean;
+  removing: boolean;
+  locale: Locale;
+  onCopy: () => void;
+  onGiveAway: () => void;
+  onClose: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const ru = locale === "ru";
+  const isClaude = account.provider === "claude";
+  const file = isClaude ? "~/.claude/.credentials.json" : "~/.codex/auth.json";
+  const cli = isClaude ? "Claude Code" : "Codex";
+  return (
+    <div className="config-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="config-panel fade-up" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="config-header">
+          <div>
+            <h2>{ru ? `Поделиться «${account.name}»` : `Share “${account.name}”`}</h2>
+            <p>
+              {ru
+                ? "Друг вставит это через «+ аккаунт» → «Вставить JSON». Внутри живые токены — как пароль."
+                : "Your friend pastes this via “+ account” → “Paste JSON”. It holds live tokens — treat it like a password."}
+            </p>
+          </div>
+          <button type="button" className="icon-btn icon-btn--md" onClick={onClose} title={ru ? "Закрыть" : "Close"}><X size={16} /></button>
+        </div>
+        <div className="config-body">
+          <textarea className="config-textarea" readOnly value={json} placeholder={ru ? "Готовлю…" : "Preparing…"} spellCheck={false} style={{ minHeight: 150 }} />
+          <div className="modal-footer" style={{ marginTop: 0 }}>
+            <button type="button" className="btn btn--primary btn--md" onClick={onCopy} disabled={!json}>
+              {copied ? <Check size={14} /> : <Copy size={14} />}
+              {copied ? (ru ? "Скопировано" : "Copied") : (ru ? "Скопировать" : "Copy")}
+            </button>
+          </div>
+
+          <div className="share-giveaway">
+            <div className="share-giveaway-title">
+              <AlertTriangle size={15} /> {ru ? "Отдать аккаунт насовсем" : "Give the account away"}
+            </div>
+            <p>
+              {ru
+                ? `Вход один на двоих: как только ${cli} у одного из вас обновит токен, у второго вход слетит. Чтобы этого не было, удали копию у себя — из списка и ${file}${isClaude ? "" : ", Codex будет закрыт"}. Затем войди в аккаунт заново: у тебя будет своя, отдельная сессия, а у друга всё продолжит работать.`
+                : `The sign-in is shared: as soon as ${cli} on either side refreshes the token, the other one is signed out. To avoid that, remove your copy — from the list and ${file}${isClaude ? "" : " (Codex will be closed)"}. Then sign in again: you get your own separate session and your friend's keeps working.`}
+              {isClaude && (ru ? " Закрой Claude Code перед этим." : " Close Claude Code first.")}
+            </p>
+            {confirming ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" className="btn btn--danger btn--md" onClick={onGiveAway} disabled={removing}>
+                  {removing ? <Loader2 size={14} className="spin" /> : <Trash2 size={14} />}
+                  {ru ? "Да, удалить у себя и войти заново" : "Yes, remove mine and sign in again"}
+                </button>
+                <button type="button" className="btn btn--ghost btn--md" onClick={() => setConfirming(false)} disabled={removing}>
+                  {ru ? "Отмена" : "Cancel"}
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="btn btn--ghost btn--md share-giveaway-btn" onClick={() => setConfirming(true)} disabled={!json}>
+                <Trash2 size={14} /> {ru ? "Удалить у себя и войти заново…" : "Remove mine and sign in again…"}
+              </button>
+            )}
+          </div>
+
+          {error && (
+            <div className="inline-alert is-danger">
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── App ────────────────────────────────────────────────────────────────────────
 function App() {
   const {
@@ -1327,6 +1536,9 @@ function App() {
     importClaudeFromFile,
     exportAccountsSlimText,
     importAccountsSlimText,
+    exportAccountJson,
+    importAccountJson,
+    removeAccountAndSession,
     startOAuthLogin,
     completeOAuthLogin,
     completeOAuthReauth,
@@ -1344,10 +1556,11 @@ function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [activeProvider, setActiveProvider] = useState<ProviderTab>(() => readActiveTab().activeProvider);
   // Claude CLI long-lived token tab (separate from the provider account list).
-  const [tabView, setTabView] = useState<"accounts" | "tokens" | "zai">(() => readActiveTab().tabView);
+  const [tabView, setTabView] = useState<"accounts" | "gateway" | "zai">(() => readActiveTab().tabView);
   // Full Claude CLI token list, loaded at startup so the tab badge + stats are
   // correct immediately (not only after the tab is first opened). The panel keeps
   // this in sync as tokens are added / activated / deleted.
+  const [gatewayAccounts, setGatewayAccounts] = useState<GatewayAccountInfo[]>([]);
   const [claudeTokens, setClaudeTokens] = useState<ClaudeTokenAccountInfo[]>([]);
   const [reauthAccount, setReauthAccount] = useState<AccountWithUsage | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1393,6 +1606,9 @@ function App() {
       return s && s in cardDensityLabels ? (s as CardDensity) : "compact";
     } catch { return "compact"; }
   });
+  const [palette, setPalette] = useState<Palette>(() => readStoredChoice(PALETTE_STORAGE_KEY, palettes, "graphite"));
+  const [fontPreset, setFontPreset] = useState<FontPreset>(() => readStoredChoice(FONT_STORAGE_KEY, fontPresets, "plex"));
+  const [textScale, setTextScale] = useState<TextScale>(() => readStoredChoice(TEXT_SCALE_STORAGE_KEY, textScales, "m"));
   const [trayModeEnabled, setTrayModeEnabled] = useState(() => {
     try { return window.localStorage.getItem(TRAY_MODE_STORAGE_KEY) === "true"; } catch { return false; }
   });
@@ -1404,6 +1620,7 @@ function App() {
   const [zcodeAccounts, setZcodeAccounts] = useState<ZcodeAccountInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [renameRequestId, setRenameRequestId] = useState<string | null>(null);
+  const [share, setShare] = useState<{ account: AccountWithUsage; json: string; error: string | null; copied: boolean; removing: boolean } | null>(null);
   const [accountLooks, setAccountLooks] = useState<Record<string, AccountLook>>(() => loadAccountLooks());
 
   const deferredSearchQuery = useDeferredValue(accountSearchQuery);
@@ -1435,6 +1652,53 @@ function App() {
     }).catch(() => {});
   }, []);
 
+  // One click puts the account on the clipboard as JSON a friend can paste into
+  // "+ account" → "Paste JSON". It carries live tokens, so the toast says so.
+  const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+  const copyShareJson = useCallback((json: string) => {
+    void navigator.clipboard.writeText(json).then(() => {
+      setShare((s) => (s ? { ...s, copied: true } : s));
+      setTimeout(() => setShare((s) => (s ? { ...s, copied: false } : s)), 1600);
+    }).catch(() => setShare((s) => (s ? { ...s, error: resolvedLanguage === "ru" ? "Буфер обмена недоступен — выдели текст и скопируй вручную." : "Clipboard unavailable — select the text and copy it manually." } : s)));
+  }, [resolvedLanguage]);
+
+  // Opens the share window and puts the JSON on the clipboard straight away.
+  const copyAccountJson = useCallback(async (account: AccountWithUsage) => {
+    setShare({ account, json: "", error: null, copied: false, removing: false });
+    try {
+      const json = await exportAccountJson(account.id);
+      setShare((s) => (s && s.account.id === account.id ? { ...s, json } : s));
+      copyShareJson(json);
+    } catch (err) {
+      setShare((s) => (s ? { ...s, error: errText(err) } : s));
+    }
+  }, [exportAccountJson, copyShareJson]);
+
+  const giveAccountAway = useCallback(async () => {
+    if (!share) return;
+    const { account } = share;
+    setShare({ ...share, removing: true, error: null });
+    try {
+      await removeAccountAndSession(account.id);
+      setShare(null);
+      setTabView("accounts");
+      setActiveProvider(account.provider);
+      setIsAddModalOpen(true);
+    } catch (err) {
+      setShare((s) => (s ? { ...s, removing: false, error: errText(err) } : s));
+    }
+  }, [share, removeAccountAndSession]);
+
+  const handleImportAccountJson = useCallback(async (contents: string, name: string) => {
+    const added = await importAccountJson(contents, name);
+    // The JSON decides the provider, which may not be the tab the modal opened on.
+    setTabView("accounts");
+    setActiveProvider(added.provider);
+    setSelectedId((prev) => ({ ...prev, [added.provider]: added.id }));
+    showWarmupToast(resolvedLanguage === "ru" ? `Добавлен «${added.name}»` : `Added “${added.name}”`);
+  }, [importAccountJson, resolvedLanguage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleResizeDrag = useCallback((direction: ResizeDirection) => {
     if (!isTauriRuntime() || !currentWindow) return;
     void currentWindow.startResizeDragging(direction);
@@ -1445,9 +1709,25 @@ function App() {
     void currentWindow.toggleMaximize();
   }, []);
 
+  const [, setClockTick] = useState(0);
   useEffect(() => {
-    const id = window.setInterval(() => {}, 30_000);
+    const id = window.setInterval(() => setClockTick((n) => n + 1), 30_000);
     return () => window.clearInterval(id);
+  }, []);
+
+  // The search box shows a "/" hint; make the key actually focus it.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (!searchInputRef.current) return;
+      e.preventDefault();
+      searchInputRef.current.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -1457,6 +1737,9 @@ function App() {
   // Prime the Claude CLI token list once on startup so the tab badge and stats
   // reflect reality before the user ever opens the tab.
   useEffect(() => {
+    invokeBackend<GatewayAccountInfo[]>("list_gateway_accounts")
+      .then(setGatewayAccounts)
+      .catch(() => {});
     invokeBackend<ClaudeTokenAccountInfo[]>("list_claude_token_accounts")
       .then(setClaudeTokens)
       .catch(() => {});
@@ -1477,7 +1760,8 @@ function App() {
 
   useEffect(() => {
     document.body.dataset.theme = themeMode;
-  }, [themeMode]);
+    document.body.dataset.palette = palette;
+  }, [themeMode, palette]);
 
   useEffect(() => {
     const sync = () => setResolvedLanguage(resolveLanguagePreference(languagePreference));
@@ -1491,10 +1775,13 @@ function App() {
   useEffect(() => { document.documentElement.lang = resolvedLanguage; }, [resolvedLanguage]);
 
   useEffect(() => {
-    try { window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabView === "tokens" ? "tokens" : tabView === "zai" ? "zai" : activeProvider); } catch {}
+    try { window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabView === "gateway" ? "gateway" : tabView === "zai" ? "zai" : activeProvider); } catch {}
   }, [tabView, activeProvider]);
   useEffect(() => { try { window.localStorage.setItem(ACCENT_STORAGE_KEY, accentPreset); } catch {} }, [accentPreset]);
   useEffect(() => { try { window.localStorage.setItem(CARD_DENSITY_STORAGE_KEY, cardDensity); } catch {} }, [cardDensity]);
+  useEffect(() => { try { window.localStorage.setItem(PALETTE_STORAGE_KEY, palette); } catch {} }, [palette]);
+  useEffect(() => { try { window.localStorage.setItem(FONT_STORAGE_KEY, fontPreset); } catch {} }, [fontPreset]);
+  useEffect(() => { try { window.localStorage.setItem(TEXT_SCALE_STORAGE_KEY, textScale); } catch {} }, [textScale]);
   useEffect(() => {
     try { window.localStorage.setItem(TRAY_MODE_STORAGE_KEY, String(trayModeEnabled)); } catch {}
     if (isTauriRuntime()) void invokeBackend("set_tray_mode_enabled", { enabled: trayModeEnabled });
@@ -1675,6 +1962,18 @@ function App() {
     setTimeout(() => setWarmupToast(null), 2500);
   }, []);
 
+  // One wording for every refresh path. A replayed snapshot is not "refreshed":
+  // the server refused the saved sign-in and these are old numbers.
+  const reportRefresh = (usage: UsageInfo | undefined) => {
+    const ru = resolvedLanguage === "ru";
+    if (usage?.rate_limited) showWarmupToast(t.toast.refreshRateLimited, true);
+    else if (usage?.error) showWarmupToast(t.toast.refreshFailed, true);
+    else if (usage?.from_cache) showWarmupToast(ru
+      ? "Сервер не принял сохранённый вход — показаны прошлые цифры. Переключись на аккаунт или войди заново."
+      : "The saved sign-in was refused — showing old numbers. Switch to the account or sign in again.", true);
+    else showWarmupToast(t.toast.refreshed);
+  };
+
   const formatWarmupError = useCallback((err: unknown) => {
     if (!err) return t.toast.unknownError;
     if (err instanceof Error) return err.message;
@@ -1752,6 +2051,7 @@ function App() {
       await warmupAccount(accountId);
       markSuccessfulWarmup(accountId);
       showWarmupToast(`${t.toast.warmupSent} ${accountName}`);
+      void refreshSingleUsage(accountId, { force: true }).catch(() => {});
     } catch (err) {
       showWarmupToast(`${t.toast.warmupFailed} ${accountName}: ${formatWarmupError(err)}`, true);
     } finally { setWarmingUpId(null); }
@@ -1768,7 +2068,10 @@ function App() {
         showWarmupToast(`${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}. ${t.toast.failed}: ${summary.failed_account_ids.length}`, true);
       }
       const failedSet = new Set(summary.failed_account_ids);
-      accounts.forEach((a) => { if (!failedSet.has(a.id)) markSuccessfulWarmup(a.id); });
+      // Claude accounts are never warmed; don't record them as warmed.
+      const warmed = accounts.filter((a) => a.provider !== "claude" && !failedSet.has(a.id));
+      warmed.forEach((a) => markSuccessfulWarmup(a.id));
+      void refreshUsage(warmed).catch(() => {});
     } catch (err) {
       showWarmupToast(`${t.toast.warmupAllFailed}: ${formatWarmupError(err)}`, true);
     } finally { setIsWarmingAll(false); }
@@ -1908,19 +2211,6 @@ function App() {
     };
   }, [accounts, activeProvider]);
 
-  // Stats for the Claude CLI tab: total tokens, how many are active, and expiry health.
-  const tokenSummary = useMemo(() => {
-    const now = Date.now();
-    const daysLeft = (iso: string) => Math.floor((new Date(iso).getTime() - now) / 86_400_000);
-    let active = 0, expiring = 0, expired = 0;
-    for (const tk of claudeTokens) {
-      if (tk.is_active) active += 1;
-      const d = daysLeft(tk.expires_at);
-      if (d < 0) expired += 1;
-      else if (d <= 30) expiring += 1;
-    }
-    return { total: claudeTokens.length, active, expiring, expired };
-  }, [claudeTokens]);
 
   const isBackendUnavailable = !isTauriRuntime() && typeof error === "string" && /404|Failed to fetch|NetworkError|ERR_/i.test(error);
 
@@ -1931,7 +2221,8 @@ function App() {
     "--accent-border": accentTheme.border,
     "--accent-glow": accentTheme.glow,
     "--accent-contrast": accentTheme.contrast,
-  }) as CSSProperties, [accentTheme]);
+    "--fz": textScales[textScale],
+  }) as CSSProperties, [accentTheme, textScale]);
 
   const STATUS_FILTERS: { id: StatusFilter; label: string; dot?: string }[] = [
     { id: "all", label: locale_label("Все", "All", resolvedLanguage) },
@@ -1941,7 +2232,7 @@ function App() {
   ];
 
   return (
-    <div className={"app" + (isWindowMaximized ? " is-maximized" : "")} data-theme={themeMode} data-density={cardDensity} style={shellStyle}>
+    <div className={"app" + (isWindowMaximized ? " is-maximized" : "")} data-theme={themeMode} data-palette={palette} data-font={fontPreset} data-density={cardDensity} style={shellStyle}>
       {/* Interactive gravity-warp grid background */}
       <GravityGrid theme={themeMode} accent={accentTheme.accent} />
 
@@ -1971,8 +2262,8 @@ function App() {
           <button type="button" className={"tab" + (tabView === "accounts" && activeProvider === "claude" ? " is-active" : "")} onClick={() => { setTabView("accounts"); setActiveProvider("claude"); }}>
             <Sparkles size={13} /> Claude <span className="t-count">{providerCounts.claude}</span>
           </button>
-          <button type="button" className={"tab" + (tabView === "tokens" ? " is-active" : "")} onClick={() => setTabView("tokens")} title="claude setup-token">
-            🔑 Claude CLI <span className="t-count">{claudeTokens.length}</span>
+          <button type="button" className={"tab" + (tabView === "gateway" ? " is-active" : "")} onClick={() => setTabView("gateway")} title="Anthropic-compatible gateway keys">
+            <KeyRound size={13} /> Gateway / CLI <span className="t-count">{gatewayAccounts.length + claudeTokens.length}</span>
           </button>
           <button type="button" className={"tab" + (tabView === "zai" ? " is-active" : "")} onClick={() => setTabView("zai")} title="Z.ai Coding Plan / ZCode">
             <Boxes size={13} /> Z.ai / ZCode <span className="t-count">{zcodeAccounts.length}</span>
@@ -1993,23 +2284,15 @@ function App() {
               <span className="gstat-l">{locale_label("АКТИВЕН", "ACTIVE", resolvedLanguage)}</span>
             </div>
           </div>
-        ) : tabView === "tokens" ? (
+        ) : tabView === "gateway" ? (
           <div className="gstats">
             <div className="gstat">
-              <span className="gstat-n">{tokenSummary.total}</span>
-              <span className="gstat-l">{locale_label("ВСЕГО", "TOTAL", resolvedLanguage)}</span>
+              <span className="gstat-n">{gatewayAccounts.length}</span>
+              <span className="gstat-l">{locale_label("КЛЮЧЕЙ", "KEYS", resolvedLanguage)}</span>
             </div>
             <div className="gstat gstat--ok">
-              <span className="gstat-n">{tokenSummary.active}</span>
+              <span className="gstat-n">{gatewayAccounts.filter((g) => g.is_active).length}</span>
               <span className="gstat-l">{locale_label("АКТИВЕН", "ACTIVE", resolvedLanguage)}</span>
-            </div>
-            <div className="gstat gstat--warn">
-              <span className="gstat-n">{tokenSummary.expiring}</span>
-              <span className="gstat-l">{locale_label("ИСТЕКАЕТ", "EXPIRING", resolvedLanguage)}</span>
-            </div>
-            <div className="gstat gstat--bad">
-              <span className="gstat-n">{tokenSummary.expired}</span>
-              <span className="gstat-l">{locale_label("ИСТЁК", "EXPIRED", resolvedLanguage)}</span>
             </div>
           </div>
         ) : (
@@ -2071,9 +2354,10 @@ function App() {
       </div>
 
       {/* ── Workbench ──────────────────────────────────────────────────────── */}
-      {tabView === "tokens" ? (
+      {tabView === "gateway" ? (
         <div className="token-wrap">
           <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onTokensChange={setClaudeTokens} />
+          <GatewayPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onGatewaysChange={setGatewayAccounts} />
         </div>
       ) : tabView === "zai" ? (
         <ZcodePanel
@@ -2090,6 +2374,7 @@ function App() {
             <div className="search">
               <Search size={14} />
               <input
+                ref={searchInputRef}
                 placeholder={locale_label("поиск по имени или почте…", "search by name or email…", resolvedLanguage)}
                 value={accountSearchQuery}
                 onChange={(e) => startTransition(() => setAccountSearchQuery(e.target.value))}
@@ -2117,9 +2402,9 @@ function App() {
             <div style={{
               display: "flex", alignItems: "center", gap: 8,
               padding: "7px 14px",
-              background: "var(--warn, #b45309)22",
-              borderBottom: "1px solid var(--warn, #b45309)55",
-              color: "var(--warn, #ca8a04)",
+              background: "color-mix(in oklab, var(--warn) 13%, transparent)",
+              borderBottom: "1px solid color-mix(in oklab, var(--warn) 33%, transparent)",
+              color: "var(--warn)",
               fontFamily: "var(--mono)", fontSize: 12,
             }}>
               <WifiOff size={14} style={{ flexShrink: 0 }} />
@@ -2176,6 +2461,7 @@ function App() {
               masked={hideAllEmails || maskedAccounts.has(effectiveSelectedAccount.id)}
               onToggleMask={() => toggleMask(effectiveSelectedAccount.id)}
               onCopyEmail={() => copyAccountEmail(effectiveSelectedAccount)}
+              onCopyJson={() => void copyAccountJson(effectiveSelectedAccount)}
               emailCopied={copiedEmailAccountId === effectiveSelectedAccount.id}
               switching={switchingId === effectiveSelectedAccount.id}
               warmingUp={isWarmingAll || warmingUpId === effectiveSelectedAccount.id || autoWarmupRunningIds.has(effectiveSelectedAccount.id)}
@@ -2190,9 +2476,7 @@ function App() {
                   // get_usage already syncs the active account's token from the
                   // live auth.json safely.
                   const usage = await refreshSingleUsage(effectiveSelectedAccount.id, { force: true });
-                  if (usage?.rate_limited) showWarmupToast(t.toast.refreshRateLimited, true);
-                  else if (usage?.error) showWarmupToast(t.toast.refreshFailed, true);
-                  else showWarmupToast(t.toast.refreshed);
+                  reportRefresh(usage);
                 } catch {
                   // Backend errors can be a whole HTML page — show a short, fixed message.
                   showWarmupToast(t.toast.refreshFailed, true);
@@ -2233,9 +2517,10 @@ function App() {
             t={t}
             onClose={() => setContextMenu(null)}
             onSwitch={() => void handleSwitch(target.id, target.provider)}
-            onRefresh={() => { void refreshSingleUsage(target.id, { force: true }).catch(() => showWarmupToast(t.toast.refreshFailed, true)); }}
+            onRefresh={() => { void refreshSingleUsage(target.id, { force: true }).then(reportRefresh).catch(() => showWarmupToast(t.toast.refreshFailed, true)); }}
             onRename={() => setRenameRequestId(target.id)}
             onCopyEmail={() => copyAccountEmail(target)}
+            onCopyJson={() => void copyAccountJson(target)}
             onToggleMask={() => toggleMask(target.id)}
             onReauthorize={target.auth_mode === "chat_g_p_t" ? () => setReauthAccount(target) : undefined}
             onDelete={() => void handleDelete(target.id)}
@@ -2244,12 +2529,28 @@ function App() {
           />
         );
       })()}
+      {share && (
+        <ShareAccountModal
+          account={share.account}
+          json={share.json}
+          error={share.error}
+          copied={share.copied}
+          removing={share.removing}
+          locale={resolvedLanguage}
+          onCopy={() => copyShareJson(share.json)}
+          onGiveAway={() => void giveAccountAway()}
+          onClose={() => setShare(null)}
+        />
+      )}
       {isSettingsOpen && (
         <SettingsPanel
           themePreference={themePreference}
           languagePreference={languagePreference}
           t={t}
           accentPreset={accentPreset}
+          palette={palette}
+          fontPreset={fontPreset}
+          textScale={textScale}
           cardDensity={cardDensity}
           trayModeEnabled={trayModeEnabled}
           isExportingFull={isExportingFull}
@@ -2260,6 +2561,9 @@ function App() {
           onThemeChange={setThemePreference}
           onLanguageChange={setLanguagePreference}
           onAccentChange={setAccentPreset}
+          onPaletteChange={(p) => { setPalette(p); setAccentPreset(palettes[p].accent); }}
+          onFontChange={setFontPreset}
+          onTextScaleChange={setTextScale}
           onCardDensityChange={setCardDensity}
           onTrayModeChange={setTrayModeEnabled}
           onClose={() => setIsSettingsOpen(false)}
@@ -2282,6 +2586,7 @@ function App() {
         onStartOAuth={startOAuthLogin}
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
+        onImportJson={handleImportAccountJson}
         provider={activeProvider}
         locale={resolvedLanguage}
       />

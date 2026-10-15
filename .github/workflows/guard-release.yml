@@ -1,0 +1,42 @@
+name: Guard releases
+
+# CI publishes releases with GITHUB_TOKEN, which does not trigger this workflow.
+# So anything arriving here was published by hand (web UI, `gh release create`)
+# and skipped the build/verify/e2e gate. If its updater manifest does not check
+# out, put it back into drafts at once: a "latest" release without a valid
+# latest.json stops auto-update for every installed copy.
+
+on:
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify the published release
+        id: verify
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --dir release
+          node scripts/verify-updater.mjs release/latest.json --expect-version "$TAG" --assets-dir release
+          node scripts/test-update-paths.mjs release/latest.json --assets-dir release
+      - name: Unpublish it if it would break updates
+        if: steps.verify.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=true
+          echo "::error::$TAG was published without passing the update checks and has been moved back to drafts"
+          exit 1

@@ -76,6 +76,21 @@ export interface ClaudeTokenAccountInfo {
   plan_label: string | null;
 }
 
+/** An Anthropic-compatible gateway account (GLM via z.ai / OpenRouter / custom). */
+export interface GatewayAccountInfo {
+  id: string;
+  name: string;
+  /** Anthropic-compatible base URL, e.g. "https://api.z.ai/api/anthropic". */
+  base_url: string;
+  /** Pinned model id sent via ANTHROPIC_MODEL, e.g. "glm-5.2". */
+  model: string | null;
+  /** Masked key for display. */
+  key_masked: string;
+  is_active: boolean;
+  /** ISO timestamp */
+  created_at: string;
+}
+
 /** A Z.ai plan as ZCode last reported it. */
 export interface ZcodePlanEntry {
   name: string;
@@ -97,14 +112,10 @@ export interface ZcodePlanInfo {
   balances: ZcodeBalance[];
   /** ISO timestamp of when these figures were read. */
   captured_at: string | null;
-  /** Coding Plan tier: "lite" / "pro" / "max". */
-  level: string | null;
-  /** Official MCP quota for the tier — tool calls, not coding tokens. */
-  mcp_used: number | null;
-  mcp_limit: number | null;
-  /** Unix seconds */
-  mcp_next_refresh_at: number | null;
 }
+
+/** Which Z.ai plan a snapshot holds, read from its own ZCode config. */
+export type ZcodeEntitlement = "coding" | "start" | "none";
 
 /** A local, same-device Z.ai / ZCode sign-in snapshot. */
 export interface ZcodeAccountInfo {
@@ -114,6 +125,7 @@ export interface ZcodeAccountInfo {
   /** ISO timestamp */
   created_at: string;
   plan: ZcodePlanInfo | null;
+  entitlement: ZcodeEntitlement;
 }
 
 export interface WarmupSummary {

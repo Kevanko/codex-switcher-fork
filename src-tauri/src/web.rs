@@ -199,6 +199,19 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             to_json(complete_reauth_login(args.account_id).await?)
         }
         "cancel_login" => to_json(cancel_login().await?),
+        "export_account_json" => {
+            let args: AccountIdArgs = parse_args(payload)?;
+            to_json(crate::commands::export_account_json(args.account_id).await?)
+        }
+        "remove_account_and_session" => {
+            let args: AccountIdArgs = parse_args(payload)?;
+            to_json(crate::commands::remove_account_and_session(args.account_id).await?)
+        }
+        "import_account_json" => {
+            let contents = payload.get("contents").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let name = payload.get("name").and_then(|v| v.as_str()).map(String::from);
+            to_json(crate::commands::import_account_json(contents, name).await?)
+        }
         "export_accounts_slim_text" => to_json(export_accounts_slim_text().await?),
         "import_accounts_slim_text" => {
             let args: ImportSlimArgs = parse_args(payload)?;

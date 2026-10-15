@@ -65,6 +65,9 @@ jobs:
             echo "::error::tag $TAG does not match app version $pkg"; exit 1
           fi
 
+      - name: Updater logic tests (install-type selection, semver, pinned key/endpoint)
+        run: node --test scripts/updater-lib.test.mjs
+
       - name: Updater config and verifier self-test
         # The live manifest of the current release must verify with the shipped pubkey.
         run: node scripts/verify-updater.mjs
@@ -79,6 +82,20 @@ jobs:
     outputs:
       release_id: ${{ steps.create.outputs.release_id }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+          fetch-depth: 0
+
+      - name: Tag must point at a commit that is on main
+        # main only accepts commits whose tests passed (repository ruleset), so
+        # this is what stops a tag on an untested branch from shipping.
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$TAG is not on main — merge it through main (tests must pass) before releasing"; exit 1
+          fi
+
       - name: Create draft release
         id: create
         env:
@@ -145,6 +162,10 @@ jobs:
           releaseId: ${{ needs.draft.outputs.release_id }}
           includeUpdaterJson: true
           updaterJsonKeepUniversal: true
+          # Builds without a bundle marker read the plain "windows-x86_64" key.
+          # It must be the per-user NSIS installer: an MSI there installs a second
+          # copy in Program Files and the shortcut keeps launching the old one.
+          updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }}
 
   verify:
@@ -168,6 +189,50 @@ jobs:
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" --dir release
           node scripts/verify-updater.mjs release/latest.json --expect-version "$TAG" --assets-dir release
 
+      - name: Every published version can update to this one
+        # Replays each old release's own updater (its endpoint, its pubkey, its
+        # installer type) against this draft. One broken path blocks the release.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/test-update-paths.mjs release/latest.json --assets-dir release
+
+      - name: Installers carry the right bundle marker
+        # The marker decides which file the installed app's updater downloads.
+        run: |
+          sudo apt-get install -y p7zip-full >/dev/null
+          check() { dir=$(mktemp -d); 7z x -y -o"$dir" "$1" >/dev/null
+            grep -rlaq "__TAURI_BUNDLE_TYPE_VAR_$2" "$dir" || { echo "::error::$1 has no $2 marker"; exit 1; }; echo "ok $1 → $2"; }
+          check release/*-setup.exe NSS
+          check release/*.msi MSI
+
+  e2e-windows:
+    # Install old releases, run the new installer exactly as the in-app updater
+    # does, and require: right version, no second copy, app starts, data kept.
+    needs: publish
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - name: Update from older releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$env:TAG" -R "$env:GITHUB_REPOSITORY" -p "*-setup.exe" -p "*.msi" -D new
+          $setup = (Get-ChildItem new -Filter "*-setup.exe")[0].FullName
+          $msi = (Get-ChildItem new -Filter "*.msi")[0].FullName
+          ./scripts/e2e-windows-update.ps1 -NewSetup $setup -NewMsi $msi -NewVersion ($env:TAG -replace '^v','') -Repo $env:GITHUB_REPOSITORY
+
+  release:
+    needs: [verify, e2e-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Publish release (users start receiving the update now)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

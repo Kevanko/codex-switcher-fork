@@ -55,7 +55,12 @@ export function getVisibleLimitWindows(account: AccountWithUsage): VisibleLimitW
     });
   }
 
-  return windows;
+  // A window whose reset time has passed is full again, whatever the last
+  // snapshot said — otherwise a parked account sat at "0%" long after reset.
+  const nowSec = Date.now() / 1000;
+  return windows.map((w) =>
+    w.resetsAt && w.resetsAt <= nowSec ? { ...w, usedPercent: 0, resetsAt: null } : w
+  );
 }
 
 export function getEffectiveRemainingPercent(account: AccountWithUsage): number | null {

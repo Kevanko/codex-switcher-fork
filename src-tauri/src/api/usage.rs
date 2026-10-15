@@ -652,33 +652,90 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
 
-    let mut response = send_chatgpt_warmup_request(access_token, chatgpt_account_id, true).await?;
-    if response.status() == StatusCode::UNAUTHORIZED {
-        println!(
-            "[Warmup] Unauthorized for account {}, refreshing token and retrying once",
-            fresh_account.name
-        );
-        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
-        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
-        response = send_chatgpt_warmup_request(retry_token, retry_account_id, true).await?;
-    }
+    let mut token = access_token.to_string();
+    let mut chatgpt_id = chatgpt_account_id.map(String::from);
+    let mut refreshed = false;
+    let mut last_error = String::from("no warm-up model available");
 
-    if !response.status().is_success() {
+    // The model list changes under us (a hard-coded "gpt-5.4-mini" started
+    // failing with 400 "model is not supported"), so walk the models Codex
+    // itself currently offers and use the first one the server accepts.
+    for model in warmup_model_candidates() {
+        let mut response =
+            send_chatgpt_warmup_request(&token, chatgpt_id.as_deref(), &model, true).await?;
+        if response.status() == StatusCode::UNAUTHORIZED && !refreshed {
+            println!(
+                "[Warmup] Unauthorized for account {}, refreshing token and retrying once",
+                fresh_account.name
+            );
+            let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
+            let (t, id) = extract_chatgpt_auth(&refreshed_account)?;
+            token = t.to_string();
+            chatgpt_id = id.map(String::from);
+            refreshed = true;
+            response =
+                send_chatgpt_warmup_request(&token, chatgpt_id.as_deref(), &model, true).await?;
+        }
+
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        println!("[Warmup] ChatGPT warm-up error response: {body}");
-        anyhow::bail!("ChatGPT warm-up failed with status {status}");
+        if status.is_success() {
+            println!("[Warmup] {} warmed with {model}", fresh_account.name);
+            log_warmup_response("ChatGPT", &body, true);
+            return Ok(());
+        }
+        println!("[Warmup] {model} refused ({status}): {}", truncate_text(&body, 300));
+        last_error = format!("ChatGPT warm-up failed with status {status}: {}", truncate_text(&body, 200));
+        // Only a refused model is worth another try; auth/limit errors are final.
+        if status != StatusCode::BAD_REQUEST && status != StatusCode::NOT_FOUND {
+            break;
+        }
     }
+    anyhow::bail!(last_error)
+}
 
-    let body = response.text().await.unwrap_or_default();
-    log_warmup_response("ChatGPT", &body, true);
-
-    Ok(())
+/// Models to try for a warm-up, cheapest-looking first: the slugs Codex lists in
+/// ~/.codex/models_cache.json, then the model from config.toml, then a fallback.
+fn warmup_model_candidates() -> Vec<String> {
+    let mut models: Vec<String> = Vec::new();
+    if let Ok(home) = crate::auth::switcher::get_codex_home() {
+        if let Ok(text) = std::fs::read_to_string(home.join("models_cache.json")) {
+            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                let list = v.get("models").unwrap_or(&v);
+                if let Some(items) = list.as_array() {
+                    for m in items {
+                        let slug = m.get("slug").or_else(|| m.get("id")).and_then(|s| s.as_str());
+                        let listed = m.get("visibility").and_then(|s| s.as_str()) != Some("hide");
+                        if let (Some(slug), true) = (slug, listed) {
+                            models.push(slug.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(cfg) = std::fs::read_to_string(home.join("config.toml")) {
+            let model = cfg.lines().find_map(|l| {
+                let (k, v) = l.split_once('=')?;
+                (k.trim() == "model").then(|| v.trim().trim_matches('"').to_string())
+            });
+            if let Some(model) = model {
+                models.push(model);
+            }
+        }
+    }
+    models.push("gpt-5.6-luna".to_string());
+    // Small variants first: a warm-up only needs to touch the quota window.
+    let small = |m: &String| ["mini", "luna", "nano"].iter().any(|k| m.contains(k));
+    models.sort_by_key(|m| !small(m));
+    let mut seen = std::collections::HashSet::new();
+    models.retain(|m| seen.insert(m.clone()));
+    models.truncate(4);
+    models
 }
 
 async fn warmup_with_api_key(api_key: &str) -> Result<()> {
     let client = reqwest::Client::new();
-    let payload = build_warmup_payload(false, true);
+    let payload = build_warmup_payload("gpt-5.4-mini", false, true);
     let response = client
         .post(format!("{OPENAI_API}/responses"))
         .header(USER_AGENT, CODEX_USER_AGENT)
@@ -701,9 +758,9 @@ async fn warmup_with_api_key(api_key: &str) -> Result<()> {
     Ok(())
 }
 
-fn build_warmup_payload(stream: bool, include_max_output_tokens: bool) -> serde_json::Value {
+fn build_warmup_payload(model: &str, stream: bool, include_max_output_tokens: bool) -> serde_json::Value {
     let mut payload = json!({
-        "model": "gpt-5.4-mini",
+        "model": model,
         "instructions": "You are Codex.",
         "input": [
             {
@@ -817,11 +874,12 @@ async fn send_chatgpt_get_request(
 async fn send_chatgpt_warmup_request(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
+    model: &str,
     stream: bool,
 ) -> Result<reqwest::Response> {
     let client = reqwest::Client::new();
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
-    let payload = build_warmup_payload(stream, false);
+    let payload = build_warmup_payload(model, stream, false);
 
     client
         .post(CHATGPT_CODEX_RESPONSES_API)
@@ -857,7 +915,8 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         return text.to_string();
     }
-    let mut out = text[..max_len].to_string();
+    let cut = (0..=max_len).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    let mut out = text[..cut].to_string();
     out.push_str("...");
     out
 }
