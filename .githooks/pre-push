@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fast local gate before anything leaves the machine. CI and the main-branch
+# ruleset are the real enforcement; this just catches it a minute earlier.
+# Enabled by `pnpm install` (package.json "prepare").
+set -e
+node --test scripts/updater-lib.test.mjs >/dev/null || {
+  echo "pre-push: updater tests failed — run: node --test scripts/updater-lib.test.mjs" >&2
+  exit 1
+}

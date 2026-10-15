@@ -1,7 +1,7 @@
 {
   "name": "codex-switcher",
   "private": true,
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Unofficial desktop fork for local Codex account switching and usage tracking",
   "type": "module",
   "scripts": {
@@ -17,7 +17,8 @@
     "release": "node scripts/release.mjs",
     "release:patch": "node scripts/release.mjs patch",
     "release:minor": "node scripts/release.mjs minor",
-    "release:major": "node scripts/release.mjs major"
+    "release:major": "node scripts/release.mjs major",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",

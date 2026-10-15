@@ -275,7 +275,7 @@ pub fn switch_to_claude_account(account: &StoredAccount) -> Result<()> {
 }
 
 /// Create an AuthDotJson structure from a StoredAccount
-fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
+pub(crate) fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
     match &account.auth_data {
         AuthData::ApiKey { key } => Ok(AuthDotJson {
             openai_api_key: Some(key.clone()),
@@ -303,7 +303,7 @@ fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
     }
 }
 
-fn create_claude_credentials(account: &StoredAccount) -> Result<ClaudeCredentialsFile> {
+pub(crate) fn create_claude_credentials(account: &StoredAccount) -> Result<ClaudeCredentialsFile> {
     match &account.auth_data {
         AuthData::ClaudeOAuth {
             access_token,

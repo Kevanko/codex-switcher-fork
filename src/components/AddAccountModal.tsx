@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   ArrowUpFromLine,
+  ClipboardPaste,
   Copy,
   ExternalLink,
   FolderOpen,
@@ -30,13 +31,15 @@ interface AddAccountModalProps {
   onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
   onCompleteOAuth: () => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;
+  /** Paste an account someone shared (Copy as JSON) or a raw auth.json / .credentials.json. */
+  onImportJson?: (contents: string, name: string) => Promise<unknown>;
   locale?: Locale;
   mode?: "add" | "reauthorize";
   provider?: "codex" | "claude";
   lockedAccountName?: string;
 }
 
-type Tab = "oauth" | "import" | "auto";
+type Tab = "oauth" | "import" | "auto" | "paste";
 
 export function AddAccountModal({
   isOpen,
@@ -48,6 +51,7 @@ export function AddAccountModal({
   onStartOAuth,
   onCompleteOAuth,
   onCancelOAuth,
+  onImportJson,
   locale = "en",
   mode = "add",
   provider = "codex",
@@ -62,6 +66,7 @@ export function AddAccountModal({
   const [authUrl, setAuthUrl] = useState("");
   const [copied, setCopied] = useState(false);
   const [sessionCleared, setSessionCleared] = useState(false);
+  const [pasted, setPasted] = useState("");
   const tauriRuntime = isTauriRuntime();
   const t = translations[locale];
   const isReauthorize = mode === "reauthorize";
@@ -81,8 +86,9 @@ export function AddAccountModal({
   }, [isOpen, isReauthorize, lockedAccountName]);
 
   useEffect(() => {
-    if (isOpen && isClaude) {
-      setActiveTab("auto");
+    if (isOpen && !isReauthorize) {
+      setActiveTab(isClaude ? "auto" : "oauth");
+      setPasted("");
       setName("");
       setFileSource(null);
       setError(null);
@@ -90,7 +96,7 @@ export function AddAccountModal({
       setOauthPending(false);
       setCopied(false);
     }
-  }, [isOpen, isClaude]);
+  }, [isOpen, isClaude, isReauthorize]);
 
   const resetForm = () => {
     setName(isReauthorize && lockedAccountName ? lockedAccountName : "");
@@ -101,6 +107,7 @@ export function AddAccountModal({
     setAuthUrl("");
     setCopied(false);
     setSessionCleared(false);
+    setPasted("");
   };
 
   const handleClose = () => {
@@ -171,9 +178,24 @@ export function AddAccountModal({
     }
   };
 
+  const handleImportJson = async () => {
+    if (!onImportJson) return;
+    if (!pasted.trim()) { setError(ru ? "Вставь JSON аккаунта." : "Paste the account JSON."); return; }
+    try {
+      setLoading(true);
+      setError(null);
+      await onImportJson(pasted, name.trim());
+      handleClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleSubmit = () => {
+    if (activeTab === "paste") { void handleImportJson(); return; }
     if (isClaude) {
       void (activeTab === "auto" ? handleAddFromSession() : handleImportFile());
     } else {
@@ -183,6 +205,7 @@ export function AddAccountModal({
 
   const submitLabel = () => {
     if (loading) return t.common.working;
+    if (activeTab === "paste") return ru ? "Добавить аккаунт" : "Add account";
     if (isClaude) return activeTab === "auto"
       ? (ru ? "Добавить аккаунт" : "Add account")
       : t.addAccount.importAccount;
@@ -247,6 +270,18 @@ export function AddAccountModal({
               >
                 <ArrowUpFromLine size={16} /><span>{t.addAccount.importTab}</span>
               </button>
+              {onImportJson && (
+                <button
+                  type="button"
+                  className={`ui-segment-button add-account-tab ${activeTab === "paste" ? "is-selected" : ""}`}
+                  onClick={() => {
+                    if (oauthPending) { void onCancelOAuth().catch(() => {}); setOauthPending(false); setLoading(false); }
+                    setActiveTab("paste"); setError(null);
+                  }}
+                >
+                  <ClipboardPaste size={16} /><span>{ru ? "Вставить JSON" : "Paste JSON"}</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -267,6 +302,18 @@ export function AddAccountModal({
               >
                 <ArrowUpFromLine size={16} /><span>{ru ? "Из файла" : "From file"}</span>
               </button>
+              {onImportJson && (
+                <button
+                  type="button"
+                  className={`ui-segment-button add-account-tab ${activeTab === "paste" ? "is-selected" : ""}`}
+                  onClick={() => {
+                    if (oauthPending) { void onCancelOAuth().catch(() => {}); setOauthPending(false); setLoading(false); }
+                    setActiveTab("paste"); setError(null);
+                  }}
+                >
+                  <ClipboardPaste size={16} /><span>{ru ? "Вставить JSON" : "Paste JSON"}</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -274,7 +321,13 @@ export function AddAccountModal({
           <label className={`settings-section ${isReauthorize ? "is-readonly-section" : ""}`}>
             <div>
               <h3>{isReauthorize ? t.addAccount.reauthAccount : t.addAccount.name}</h3>
-              <p>{isReauthorize ? t.addAccount.reauthHint : t.addAccount.nameHint}</p>
+              <p>
+                {isReauthorize
+                  ? t.addAccount.reauthHint
+                  : activeTab === "paste"
+                    ? (ru ? "Необязательно — иначе возьмём имя из JSON." : "Optional — the name from the JSON is used otherwise.")
+                    : t.addAccount.nameHint}
+              </p>
             </div>
             <input
               type="text"
@@ -431,6 +484,34 @@ export function AddAccountModal({
                 >
                   <FolderOpen size={16} />{t.addAccount.browse}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "paste" && (
+            <div className="settings-section">
+              <div>
+                <h3><ClipboardPaste size={14} style={{ display: "inline", marginRight: 6 }} />{ru ? "JSON аккаунта" : "Account JSON"}</h3>
+                <p>
+                  {ru
+                    ? "То, что скопировали кнопкой «Копировать как JSON», или содержимое auth.json / .credentials.json. Codex или Claude определится сам."
+                    : "What “Copy as JSON” produced, or the contents of auth.json / .credentials.json. Codex vs Claude is detected automatically."}
+                </p>
+              </div>
+              <textarea
+                className="config-textarea"
+                style={{ minHeight: 140 }}
+                value={pasted}
+                onChange={(e) => setPasted(e.target.value)}
+                placeholder='{ "codex_switcher_account": 1, ... }'
+                spellCheck={false}
+                autoFocus
+              />
+              <div className="inline-alert is-warning">
+                <KeyRound size={16} />
+                {ru
+                  ? "Внутри — живые токены входа. Передавай только тому, кому доверяешь, как пароль."
+                  : "This holds live sign-in tokens. Share it only with someone you trust, like a password."}
               </div>
             </div>
           )}

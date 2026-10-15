@@ -5,38 +5,15 @@
 //       --assets-dir reads the files from D (a downloaded draft release) instead of the URLs.
 //   node scripts/verify-updater.mjs --file <path> --sig <path.sig>
 //       Checks one locally signed file (`tauri signer sign`) against the app's pubkey.
-import { createHash, createPublicKey, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { verifySignature as verifyWithKey } from "./updater-lib.mjs";
 
 const conf = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url)));
 const updater = conf.plugins?.updater;
 if (!updater?.pubkey || !updater?.endpoints?.length) fail("tauri.conf.json has no updater pubkey/endpoint");
 
-// minisign files: "untrusted comment: ...\n<base64 payload>\n[trusted comment: ...\n<base64 global sig>\n]"
-const lines = (b64) => Buffer.from(b64.trim(), "base64").toString("utf8").split(/\r?\n/);
-
-const pubRaw = Buffer.from(lines(updater.pubkey)[1], "base64"); // "Ed" | keyid(8) | key(32)
-const pubKeyId = pubRaw.subarray(2, 10);
-const pubKey = createPublicKey({
-  key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), pubRaw.subarray(10, 42)]),
-  format: "der",
-  type: "spki",
-});
-
-/** Throws unless `data` is signed by our key (Tauri uses prehashed "ED" signatures). */
-export function verifySignature(data, signatureB64) {
-  const [, sigLine, trustedLine, globalLine] = lines(signatureB64);
-  const sig = Buffer.from(sigLine, "base64");
-  const alg = sig.subarray(0, 2).toString();
-  if (!sig.subarray(2, 10).equals(pubKeyId)) throw new Error("signed with a different key than the app's pubkey");
-  const message = alg === "ED" ? createHash("blake2b512").update(data).digest() : data;
-  const sigBytes = sig.subarray(10, 74);
-  if (!verify(null, message, pubKey, sigBytes)) throw new Error("file signature does not verify");
-  const trusted = Buffer.from(trustedLine.replace(/^trusted comment: /, ""));
-  if (!verify(null, Buffer.concat([sigBytes, trusted]), pubKey, Buffer.from(globalLine, "base64"))) {
-    throw new Error("trusted comment signature does not verify");
-  }
-}
+/** Throws unless `data` is signed by the pubkey this build ships. */
+export const verifySignature = (data, signatureB64) => verifyWithKey(data, signatureB64, updater.pubkey);
 
 function fail(msg) {
   console.error(`✗ ${msg}`);

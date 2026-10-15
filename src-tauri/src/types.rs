@@ -32,7 +32,7 @@ pub struct AccountsStore {
     #[serde(default)]
     pub active_claude_token_id: Option<String>,
     /// Anthropic-compatible gateway accounts (GLM via z.ai/OpenRouter, etc.).
-    /// Like `claude_token_accounts`, fully separate from OAuth `accounts`: a
+    /// Fully separate from the OAuth `accounts`: a
     /// stable API key consumed by Claude Code via the `ANTHROPIC_BASE_URL` /
     /// `ANTHROPIC_AUTH_TOKEN` env vars. Never rotates, never touches
     /// ~/.claude/.credentials.json.
@@ -45,6 +45,12 @@ pub struct AccountsStore {
     pub zcode_accounts: Vec<ZcodeAccount>,
     #[serde(default)]
     pub active_zcode_account_id: Option<String>,
+    /// Every field this build does not know about, kept verbatim. A newer (or
+    /// older) version's data — e.g. a feature this build lacks — survives a
+    /// load/save round-trip instead of being silently dropped. Updating or
+    /// downgrading must never cost anyone their accounts.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for AccountsStore {
@@ -61,6 +67,7 @@ impl Default for AccountsStore {
             active_gateway_id: None,
             zcode_accounts: Vec::new(),
             active_zcode_account_id: None,
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -78,6 +85,11 @@ pub struct ZcodeAccount {
     /// Plan and token balances as they stood when this snapshot was last live.
     #[serde(default)]
     pub plan: Option<ZcodePlanInfo>,
+    /// When this snapshot last became the live ZCode session. ZCode logs every
+    /// account into one file, so this is what lets a reading be attributed to
+    /// the right account instead of to whoever was signed in most recently.
+    #[serde(default)]
+    pub activated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +99,10 @@ pub struct ZcodeAccountInfo {
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub plan: Option<ZcodePlanInfo>,
+    /// Which Z.ai plan this snapshot is entitled to: `coding` (paid GLM Coding
+    /// Plan), `start` (the free Start Plan) or `none`. Read from the snapshot's
+    /// own `config.json`, so it is right for parked accounts too.
+    pub entitlement: String,
 }
 
 fn default_accounts_store_version() -> u32 {
@@ -142,7 +158,7 @@ impl ClaudeTokenAccountInfo {
     }
 }
 
-/// Legacy gateway account (feature removed). Kept so older stores still load.
+/// An Anthropic-compatible gateway account (GLM via z.ai / OpenRouter / custom).
 ///
 /// The key is STABLE (no rotation, no reuse detection) and is consumed only via
 /// the `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (+ optional `ANTHROPIC_MODEL`)
@@ -160,6 +176,32 @@ pub struct GatewayAccount {
     #[serde(default)]
     pub model: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// UI-facing view of a gateway account — the key is masked.
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayAccountInfo {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub model: Option<String>,
+    pub key_masked: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+impl GatewayAccountInfo {
+    pub fn from_account(account: &GatewayAccount, is_active: bool) -> Self {
+        Self {
+            id: account.id.clone(),
+            name: account.name.clone(),
+            base_url: account.base_url.clone(),
+            model: account.model.clone(),
+            key_masked: mask_token(&account.key),
+            is_active,
+            created_at: account.created_at,
+        }
+    }
 }
 
 /// Mask a secret token for display: keep a short prefix and the last 4 chars.
@@ -206,6 +248,9 @@ pub struct StoredAccount {
     /// When the cached usage snapshot was last updated
     #[serde(default)]
     pub cached_usage_updated_at: Option<DateTime<Utc>>,
+    /// Fields from other app versions, kept verbatim (see `AccountsStore::extra`).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl StoredAccount {
@@ -224,6 +269,7 @@ impl StoredAccount {
             last_used_at: None,
             cached_usage: None,
             cached_usage_updated_at: None,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -256,6 +302,7 @@ impl StoredAccount {
             last_used_at: None,
             cached_usage: None,
             cached_usage_updated_at: None,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -283,6 +330,7 @@ impl StoredAccount {
             last_used_at: None,
             cached_usage: None,
             cached_usage_updated_at: None,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -798,6 +846,98 @@ pub struct CreditStatusDetails {
     pub balance: Option<String>,
 }
 
+/// The store must load, and save back unchanged, whatever version wrote it —
+/// that is what makes "update from any version to the latest" safe for data.
+#[cfg(test)]
+mod store_compat_tests {
+    use super::AccountsStore;
+    use serde_json::{json, Value};
+
+    fn round_trip(input: &Value) -> Value {
+        let store: AccountsStore = serde_json::from_value(input.clone())
+            .unwrap_or_else(|e| panic!("store failed to load: {e}\n{input:#}"));
+        serde_json::to_value(&store).unwrap()
+    }
+
+    /// Every key in `input` must survive with the same value.
+    fn assert_nothing_lost(input: &Value, output: &Value, path: &str) {
+        match (input, output) {
+            (Value::Object(a), Value::Object(b)) => {
+                for (k, v) in a {
+                    let p = format!("{path}.{k}");
+                    // `null` and an absent optional field mean the same thing.
+                    if v.is_null() && b.get(k).map_or(true, Value::is_null) {
+                        continue;
+                    }
+                    let got = b.get(k).unwrap_or_else(|| panic!("lost field {p}"));
+                    assert_nothing_lost(v, got, &p);
+                }
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                assert_eq!(a.len(), b.len(), "array length changed at {path}");
+                for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                    assert_nothing_lost(x, y, &format!("{path}[{i}]"));
+                }
+            }
+            (a, b) => assert_eq!(a, b, "value changed at {path}"),
+        }
+    }
+
+    fn codex_account(id: &str) -> Value {
+        json!({
+            "id": id, "name": format!("acc-{id}"), "email": "a@example.com", "plan_type": "plus",
+            "auth_mode": "chat_g_p_t",
+            "auth_data": {"type": "chat_g_p_t", "id_token": "h.e.s", "access_token": "at", "refresh_token": "rt", "account_id": "acc"},
+            "created_at": "2025-01-01T00:00:00Z"
+        })
+    }
+
+    #[test]
+    fn loads_a_minimal_early_0_2_store() {
+        // Shape written by the oldest builds: no provider, no Claude, no extras.
+        let input = json!({"version": 1, "accounts": [codex_account("1")], "active_account_id": "1"});
+        let out = round_trip(&input);
+        assert_nothing_lost(&input, &out, "$");
+        assert_eq!(out["accounts"][0]["provider"], "codex");
+    }
+
+    #[test]
+    fn keeps_claude_tokens_and_gateways_from_0_3_9() {
+        let input = json!({
+            "version": 1, "accounts": [codex_account("1")], "active_account_id": "1",
+            "active_claude_account_id": null, "masked_account_ids": ["1"],
+            "claude_token_accounts": [{"id": "t1", "name": "cli", "token": "sk-ant-oat01-x",
+                "created_at": "2026-01-01T00:00:00Z", "expires_at": "2027-01-01T00:00:00Z", "plan_label": "Max"}],
+            "active_claude_token_id": "t1",
+            "gateway_accounts": [{"id": "g1", "name": "glm", "base_url": "https://api.z.ai/api/anthropic",
+                "key": "k", "model": "glm-5.2", "created_at": "2026-01-01T00:00:00Z"}],
+            "active_gateway_id": "g1",
+            "zcode_accounts": [], "active_zcode_account_id": null
+        });
+        assert_nothing_lost(&input, &round_trip(&input), "$");
+    }
+
+    #[test]
+    fn keeps_fields_written_by_a_newer_version() {
+        // A downgrade (or an older build reading a newer store) must not drop
+        // data it does not understand — neither on the store nor on an account.
+        let mut acc = codex_account("1");
+        acc["some_future_flag"] = json!({"nested": [1, 2, 3]});
+        let input = json!({
+            "version": 9, "accounts": [acc], "active_account_id": "1",
+            "a_feature_from_the_future": [{"id": "x", "secret": "keep me"}]
+        });
+        assert_nothing_lost(&input, &round_trip(&input), "$");
+    }
+
+    #[test]
+    fn saving_twice_is_stable() {
+        let input = json!({"version": 1, "accounts": [codex_account("1")], "active_account_id": "1", "x": 1});
+        let once = round_trip(&input);
+        assert_eq!(once, round_trip(&once));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -906,19 +1046,6 @@ pub struct ZcodePlanInfo {
     #[serde(default)]
     pub balances: Vec<ZcodeBalance>,
     pub captured_at: Option<DateTime<Utc>>,
-    /// Coding Plan tier, e.g. "lite" / "pro" / "max". Comes from a different
-    /// endpoint than the token grants, which is why an account can show a tier
-    /// while `balances` is empty.
-    #[serde(default)]
-    pub level: Option<String>,
-    /// Official MCP quota for the tier — tool calls, not coding tokens.
-    #[serde(default)]
-    pub mcp_used: Option<i64>,
-    #[serde(default)]
-    pub mcp_limit: Option<i64>,
-    /// Unix seconds; when the MCP quota rolls over.
-    #[serde(default)]
-    pub mcp_next_refresh_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

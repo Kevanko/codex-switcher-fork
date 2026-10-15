@@ -503,6 +503,32 @@ export function useAccounts() {
     }
   }, [loadAccounts, refreshUsage]);
 
+  const exportAccountJson = useCallback(
+    (accountId: string) => invokeBackend<string>("export_account_json", { accountId }),
+    []
+  );
+
+  const removeAccountAndSession = useCallback(
+    async (accountId: string) => {
+      await invokeBackend("remove_account_and_session", { accountId });
+      await loadAccounts();
+    },
+    [loadAccounts]
+  );
+
+  const importAccountJson = useCallback(
+    async (contents: string, name: string) => {
+      const account = await invokeBackend<AccountInfo>("import_account_json", {
+        contents,
+        name: name || null,
+      });
+      const accountList = await loadAccounts();
+      await refreshUsage(accountList);
+      return account;
+    },
+    [loadAccounts, refreshUsage]
+  );
+
   const exportAccountsSlimText = useCallback(async () => {
     try {
       return await invokeBackend<string>("export_accounts_slim_text");
@@ -691,6 +717,9 @@ export function useAccounts() {
     importClaudeFromFile,
     exportAccountsSlimText,
     importAccountsSlimText,
+    exportAccountJson,
+    importAccountJson,
+    removeAccountAndSession,
     exportAccountsFullEncryptedFile,
     importAccountsFullEncryptedFile,
     startOAuthLogin,

@@ -9,16 +9,19 @@ pub mod web;
 use tauri::Manager;
 
 use commands::{
-    activate_claude_token_account, add_account_from_file, add_claude_account_from_active_session,
-    add_claude_account_from_file, add_claude_token_account, cancel_login, check_claude_file_status,
+    add_account_from_file, add_claude_account_from_active_session,
+    add_claude_account_from_file, cancel_login, check_claude_file_status,
     check_codex_file_status, check_codex_processes, clear_claude_active_session, complete_login,
     complete_reauth_login, add_codex_account_from_active_session,
-    create_claude_token_account,
-    deactivate_claude_token, delete_account, delete_claude_token_account,
-    export_accounts_full_encrypted_file, export_accounts_slim_text,
-    get_active_account_info, get_claude_token_secret, get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
-    import_accounts_slim_text, list_accounts, list_claude_token_accounts, refresh_account_metadata, refresh_all_accounts_usage, refresh_tray_menu, rename_account,
-    rename_claude_token_account, set_masked_account_ids,
+    activate_gateway_account, add_gateway_account, deactivate_gateway, delete_account, delete_gateway_account, export_accounts_full_encrypted_file, export_accounts_slim_text, export_account_json, import_account_json, remove_account_and_session,
+    get_active_account_info, get_gateway_key_secret,
+    get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
+    import_accounts_slim_text, list_accounts, list_gateway_accounts,
+    refresh_account_metadata, refresh_all_accounts_usage, refresh_tray_menu, rename_account,
+    rename_gateway_account, set_masked_account_ids,
+    activate_claude_token_account, add_claude_token_account, create_claude_token_account,
+    deactivate_claude_token, delete_claude_token_account, get_claude_token_secret,
+    list_claude_token_accounts, rename_claude_token_account,
     set_tray_mode_enabled, setup_tray, start_login, switch_account,
     update_active_claude_account_from_file, warmup_account, warmup_all_accounts,
     list_zcode_accounts, capture_zcode_account, activate_zcode_account, delete_zcode_account,
@@ -50,8 +53,7 @@ pub fn run() {
             // precedence"). Best-effort, off the UI thread.
             std::thread::spawn(|| {
                 if let Ok(store) = crate::auth::load_accounts() {
-                    // A gateway left active by an older build is dropped here too.
-                    if store.active_claude_token_id.is_none() {
+                    if store.active_gateway_id.is_none() && store.active_claude_token_id.is_none() {
                         let _ = crate::commands::gateway::clear_claude_auth_overrides();
                     }
                 }
@@ -75,6 +77,9 @@ pub fn run() {
             rename_account,
             export_accounts_slim_text,
             import_accounts_slim_text,
+            export_account_json,
+            import_account_json,
+            remove_account_and_session,
             export_accounts_full_encrypted_file,
             import_accounts_full_encrypted_file,
             // Masked accounts
@@ -103,6 +108,14 @@ pub fn run() {
             add_claude_account_from_active_session,
             update_active_claude_account_from_file,
             clear_claude_active_session,
+            // Anthropic-compatible gateway accounts (GLM via z.ai/OpenRouter)
+            list_gateway_accounts,
+            add_gateway_account,
+            rename_gateway_account,
+            delete_gateway_account,
+            activate_gateway_account,
+            deactivate_gateway,
+            get_gateway_key_secret,
             // Claude CLI long-lived token accounts (setup-token)
             list_claude_token_accounts,
             add_claude_token_account,
