@@ -349,7 +349,7 @@ input, textarea, select { font-family: inherit; }
 .acc-row {
   position: relative;
   display: grid;
-  grid-template-columns: 8px 1fr auto;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
   align-items: center; gap: 10px;
   min-height: var(--row-h);
   /* Rigid height: in the narrow single-column layout the list is a short flex
@@ -449,9 +449,20 @@ input, textarea, select { font-family: inherit; }
 .acc-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .acc-top { display: flex; align-items: center; gap: 6px; }
 .acc-name { font-weight: 600; font-size: calc(13.5px * var(--fz, 1)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.acc-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 50px; max-width: 46%; }
+.acc-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 50px; }
 .acc-pct { font-family: var(--mono); font-size: calc(11.5px * var(--fz, 1)); font-weight: 600; }
 .acc-meter { width: 50px; }
+/* One labelled line per quota window. Label · bar · % in a fixed grid so the
+   bars line up down the list and two windows still fit a 60px row. */
+.acc-wins { display: flex; flex-direction: column; gap: 4px; }
+.acc-win { display: grid; grid-template-columns: 24px 46px 34px; align-items: center; gap: 6px; }
+.acc-win-l { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-3); text-align: right; }
+.acc-win-m { height: 4px; }
+.acc-win-p { font-family: var(--mono); font-size: calc(11px * var(--fz, 1)); font-weight: 600; text-align: right; }
+.acc-right .acc-pct { display: none; }
+.app[data-density="compact"] .acc-right .acc-pct { display: block; }
+.app[data-density="compact"] .acc-wins { display: none; }
+.app[data-density="detailed"] .acc-win { grid-template-columns: 30px 72px 38px; }
 .acc-sub { font-family: var(--mono); font-size: calc(11.5px * var(--fz, 1)); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* density variants */
@@ -575,7 +586,9 @@ input, textarea, select { font-family: inherit; }
 .limit-block { display: flex; flex-direction: column; gap: 14px; }
 .limit-item {}
 .limit-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 7px; }
-.limit-label { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); }
+.limit-label { font-size: calc(13px * var(--fz, 1)); font-weight: 600; color: var(--text); }
+.limit-pct-sub { font-size: calc(10.5px * var(--fz, 1)); font-weight: 500; color: var(--text-3); margin-left: 6px; letter-spacing: .02em; }
+.limit-eta-at { color: var(--text-3); opacity: .8; }
 .limit-pct { font-family: var(--mono); font-size: calc(17px * var(--fz, 1)); font-weight: 600; }
 .limit-eta { font-family: var(--mono); font-size: calc(11px * var(--fz, 1)); color: var(--text-3); margin-top: 6px; display: flex; align-items: center; gap: 5px; }
 

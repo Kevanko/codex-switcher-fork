@@ -230,12 +230,33 @@ function resolveLanguagePreference(p: LanguagePreference): Locale {
   return p === "system" ? getSystemLocale() : p;
 }
 
-function formatResetWindowLabel(minutes: number | null | undefined, fallback: string): string {
-  if (!minutes || minutes === 300) return fallback;
-  if (minutes < 60) return `${minutes}m reset`;
-  const h = Math.floor(minutes / 60);
-  if (h < 24) return `${h}h reset`;
-  return `${Math.floor(h / 24)}d reset`;
+// Names a limit window by its length, so a 5-hour, weekly or 30-day quota reads
+// as what it is. `short` is for the list rows, the long form for the card.
+function windowName(minutes: number | null | undefined, kind: string, locale: Locale, short: boolean): string {
+  const ru = locale === "ru";
+  const m = minutes ?? (kind === "primary" ? 300 : 10080);
+  if (m <= 6 * 60) {
+    const h = Math.round(m / 60);
+    return short ? `${h}${ru ? "ч" : "h"}` : ru ? `${h}-часовой лимит` : `${h}-hour limit`;
+  }
+  if (m <= 2 * 1440) {
+    const h = Math.round(m / 60);
+    return short ? `${h}${ru ? "ч" : "h"}` : ru ? `Лимит на ${h} ч` : `${h}-hour limit`;
+  }
+  if (m <= 8 * 1440) return short ? (ru ? "нед" : "wk") : ru ? "Недельный лимит" : "Weekly limit";
+  if (m >= 27 * 1440 && m <= 32 * 1440) return short ? (ru ? "мес" : "mo") : ru ? "Месячный лимит" : "Monthly limit";
+  const d = Math.round(m / 1440);
+  return short ? `${d}${ru ? "д" : "d"}` : ru ? `Лимит на ${d} дн` : `${d}-day limit`;
+}
+
+// "Fri 15:40" / "пт 15:40", or a date when it is more than a week away.
+function formatResetAt(resetAt: number, locale: Locale): string {
+  const d = new Date(resetAt * 1000);
+  const loc = locale === "ru" ? "ru-RU" : "en-GB";
+  const far = resetAt * 1000 - Date.now() > 6 * 86_400_000;
+  return far
+    ? d.toLocaleDateString(loc, { day: "numeric", month: "short" })
+    : d.toLocaleString(loc, { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 function isLimitFull(pct: number | null | undefined): boolean {
@@ -296,7 +317,10 @@ function formatAuthTokenCountdown(expiresAt: string | null | undefined, locale: 
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   const s = secs % 60;
-  const countdown = secs < 60 ? `${s}s` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+  const ru = locale === "ru";
+  const countdown = secs < 60 ? `${s}s`
+    : h >= 48 ? `${Math.floor(h / 24)}${ru ? "д" : "d"} ${h % 24}${ru ? "ч" : "h"}`
+    : h > 0 ? `${h}h ${m}m` : `${m}m`;
   return { label: `${t.account.authTokenRefreshIn} ${countdown}`, tone: remainingMs <= 5 * 60 * 1000 ? "warning" : "muted" };
 }
 
@@ -368,14 +392,10 @@ function getBarClass(tone: "success" | "warning" | "danger" | "muted"): string {
 }
 
 function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
-  const t = translations[locale];
   return getVisibleLimitWindows(account).map((w) => ({
     key: w.key,
-    label: w.kind === "primary"
-      ? formatResetWindowLabel(w.windowMinutes, t.account.reset5h)
-      : w.kind === "rolling"
-        ? formatResetWindowLabel(w.windowMinutes, t.account.reset)
-        : t.account.reset7d,
+    label: windowName(w.windowMinutes, w.kind, locale, false),
+    short: windowName(w.windowMinutes, w.kind, locale, true),
     resetsAt: w.resetsAt,
     remaining: getUsageRemaining(w.usedPercent),
     tone: getLimitTone(getUsageRemaining(w.usedPercent)),
@@ -481,6 +501,7 @@ function AccountListRow({
   const dotColor = account.is_active ? "var(--accent)" : getDotColor(tone);
   const isPulse = (account.is_active || tone === "warning") && !dead;
   const tint = colorHex(look?.color);
+  const windows = getActiveResetItems(account, locale);
 
   const maskEmail = (email: string) => {
     if (!masked) return email;
@@ -540,16 +561,28 @@ function AccountListRow({
           </span>
         ) : (
           <>
+            {/* Compact density: just the tightest remaining %. */}
             <span className="acc-pct" style={{ color: remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
               {remaining !== null ? `${Math.round(remaining)}%` : "—"}
             </span>
-            <span className="acc-meter">
-              <span className="meter" style={{ height: 4 }}>
-                <span
-                  className={"meter-fill meter-fill--" + getMeterTone(remaining)}
-                  style={{ width: Math.max(2, remaining ?? 0) + "%" }}
-                />
-              </span>
+            {/* Otherwise one thin line per quota window: 5h, weekly, monthly… */}
+            <span className="acc-wins">
+              {windows.length === 0 ? (
+                <span className="acc-win-p" style={{ color: "var(--text-3)" }}>—</span>
+              ) : windows.map((w) => (
+                <span key={w.key} className="acc-win" title={w.label}>
+                  <span className="acc-win-l">{w.short}</span>
+                  <span className="meter acc-win-m">
+                    <span
+                      className={"meter-fill meter-fill--" + getMeterTone(w.remaining)}
+                      style={{ width: Math.max(2, w.remaining ?? 0) + "%" }}
+                    />
+                  </span>
+                  <span className="acc-win-p" style={{ color: w.remaining !== null && w.remaining <= 15 ? "var(--warn)" : undefined }}>
+                    {w.remaining !== null ? `${Math.round(w.remaining)}%` : "—"}
+                  </span>
+                </span>
+              ))}
             </span>
           </>
         )}
@@ -968,9 +1001,10 @@ function AccountDetailPanel({
               {resetItems.length > 0 ? resetItems.map((item) => (
                 <div key={item.key} className="limit-item">
                   <div className="limit-top">
-                    <span className="limit-label">{item.label.toUpperCase()}</span>
+                    <span className="limit-label">{item.label}</span>
                     <span className="limit-pct" style={{ color: item.tone === "danger" || item.tone === "warning" ? "var(--warn)" : "var(--text)" }}>
                       {item.remaining !== null ? `${Math.round(item.remaining)}%` : "—"}
+                      <span className="limit-pct-sub">{locale_label("осталось", "left", locale)}</span>
                     </span>
                   </div>
                   <span className="meter" style={{ height: 6 }}>
@@ -983,6 +1017,7 @@ function AccountDetailPanel({
                   {item.resetsAt && (
                     <div className="limit-eta">
                       <Clock size={12} /> {locale_label("сброс через", "resets in", locale)} {formatResetCountdown(item.resetsAt, locale)}
+                      <span className="limit-eta-at">· {formatResetAt(item.resetsAt, locale)}</span>
                     </div>
                   )}
                 </div>
@@ -1046,16 +1081,6 @@ function AccountDetailPanel({
                 <div className="meta-row">
                   <span className="meta-key">{locale_label("Организация", "Organisation", locale)}</span>
                   <span className="meta-val">{orgValue}</span>
-                </div>
-              )}
-              {isCodex && account.usage?.primary_window_minutes && (
-                <div className="meta-row">
-                  <span className="meta-key">{locale_label("Окно лимита", "Limit window", locale)}</span>
-                  <span className="meta-val">
-                    {account.usage.primary_window_minutes >= 1440
-                      ? `${Math.round(account.usage.primary_window_minutes / 1440)}${locale_label("д", "d", locale)}`
-                      : `${Math.round(account.usage.primary_window_minutes / 60)}${locale_label("ч", "h", locale)}`}
-                  </span>
                 </div>
               )}
               <div className="meta-row">
