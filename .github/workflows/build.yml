@@ -39,6 +39,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -143,6 +147,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
 
       - name: Install dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
