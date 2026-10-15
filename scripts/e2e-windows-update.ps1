@@ -76,6 +76,19 @@ function Run-Installer($file, [string[]]$installerArgs, $label) {
   return $p.ExitCode
 }
 
+# msiexec with a verbose log; any code but success / reboot-needed is a failure
+# and the log tail is printed, so a failed install never surfaces later as a
+# confusing "file not found".
+function Run-Msi([string[]]$msiArgs, $label) {
+  $log = Join-Path $work ("msi-" + [guid]::NewGuid().ToString("N") + ".log")
+  $code = Run-Installer msiexec.exe ($msiArgs + @("/L*v", $log)) $label
+  if ($code -notin 0, 3010) {
+    Write-Host "--- msiexec log tail ($label, exit $code) ---"
+    if (Test-Path $log) { Get-Content $log -Encoding Unicode -Tail 40 | Write-Host }
+    throw "${label}: msiexec exited with $code"
+  }
+}
+
 function Exe-Version($path) { (Get-Item $path).VersionInfo.ProductVersion -replace '\+.*$', '' }
 
 function Has-Marker($path, $marker) {
@@ -132,7 +145,8 @@ foreach ($tag in $OldTags) {
   $label = "$tag → $NewVersion (NSIS)"
   try {
     Remove-All; Seed-Store
-    Run-Installer (Get-Asset $tag "*-setup.exe") @("/S") "$tag install" | Out-Null
+    $c = Run-Installer (Get-Asset $tag "*-setup.exe") @("/S") "$tag install"
+    if ($c -ne 0) { throw "$tag setup.exe exited with $c" }
     $old = Exe-Version (Join-Path $nsisDir $exeName)
     Write-Host "installed $tag as $old"
     # tauri-plugin-updater, passive NSIS: /P /R /UPDATE /ARGS
@@ -151,10 +165,9 @@ foreach ($tag in $OldTags) {
   $label = "$tag → $NewVersion (MSI)"
   try {
     Remove-All; Seed-Store
-    Run-Installer msiexec.exe @("/i", "`"$(Get-Asset $tag '*.msi')`"", "/quiet", "/norestart") "$tag msi install" | Out-Null
+    Run-Msi @("/i", (Get-Asset $tag '*.msi'), "/quiet", "/norestart") "$tag msi install"
     # tauri-plugin-updater, passive MSI: /i <msi> /passive /promptrestart AUTOLAUNCHAPP=True LAUNCHAPPARGS=""
-    $code = Run-Installer msiexec.exe @("/i", "`"$NewMsi`"", "/passive", "/promptrestart", "AUTOLAUNCHAPP=True", 'LAUNCHAPPARGS=""') $label
-    if ($code -notin 0, 3010) { Fail "${label}: msiexec exited with $code" }
+    Run-Msi @("/i", $NewMsi, "/passive", "/promptrestart", "AUTOLAUNCHAPP=True", 'LAUNCHAPPARGS=""') $label
     $exe = Join-Path $msiDir $exeName
     $ver = Exe-Version $exe
     if ($ver -ne $NewVersion) { Fail "${label}: installed exe is $ver, expected $NewVersion" }

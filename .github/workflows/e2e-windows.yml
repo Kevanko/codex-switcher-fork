@@ -1,0 +1,32 @@
+name: Windows update e2e (re-check a draft)
+
+# Re-runs only the Windows install/update check against an already built
+# release, so fixing the test does not mean rebuilding every platform.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to check, e.g. v0.3.12'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  e2e-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update from older releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.version }}
+        run: |
+          gh release download "$env:TAG" -R "$env:GITHUB_REPOSITORY" -p "*-setup.exe" -p "*.msi" -D new
+          $setup = (Get-ChildItem new -Filter "*-setup.exe")[0].FullName
+          $msi = (Get-ChildItem new -Filter "*.msi")[0].FullName
+          ./scripts/e2e-windows-update.ps1 -NewSetup $setup -NewMsi $msi -NewVersion ($env:TAG -replace '^v','') -Repo $env:GITHUB_REPOSITORY
