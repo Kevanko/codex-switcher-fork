@@ -89,6 +89,27 @@ function Run-Msi([string[]]$msiArgs, $label) {
   }
 }
 
+# Find where the MSI actually put the app: registry InstallLocation first, then
+# a search of the usual roots. Never assume the folder.
+function Find-MsiExe($label) {
+  $roots = @(
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall")
+  $entries = $roots | ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue } |
+    ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like "Codex Switcher*" }
+  foreach ($e in $entries) { Write-Host "  registry: $($e.PSChildName) v$($e.DisplayVersion) at '$($e.InstallLocation)'" }
+  foreach ($e in $entries) {
+    if ($e.InstallLocation -and (Test-Path (Join-Path $e.InstallLocation $exeName))) { return (Join-Path $e.InstallLocation $exeName) }
+  }
+  $found = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA "Programs"), $env:LOCALAPPDATA) |
+    Where-Object { $_ -and (Test-Path $_) } |
+    ForEach-Object { Get-ChildItem $_ -Filter $exeName -Recurse -Depth 3 -ErrorAction SilentlyContinue } | Select-Object -First 3
+  foreach ($f in $found) { Write-Host "  found: $($f.FullName)" }
+  if ($found) { return $found[0].FullName }
+  throw "${label}: no installed $exeName found anywhere after the MSI install"
+}
+
 function Exe-Version($path) { (Get-Item $path).VersionInfo.ProductVersion -replace '\+.*$', '' }
 
 function Has-Marker($path, $marker) {
@@ -166,14 +187,17 @@ foreach ($tag in $OldTags) {
   try {
     Remove-All; Seed-Store
     Run-Msi @("/i", (Get-Asset $tag '*.msi'), "/quiet", "/norestart") "$tag msi install"
+    $oldExe = Find-MsiExe "$tag msi install"
+    Write-Host "installed $tag (msi) as $(Exe-Version $oldExe) at $oldExe"
     # tauri-plugin-updater, passive MSI: /i <msi> /passive /promptrestart AUTOLAUNCHAPP=True LAUNCHAPPARGS=""
     Run-Msi @("/i", $NewMsi, "/passive", "/promptrestart", "AUTOLAUNCHAPP=True", 'LAUNCHAPPARGS=""') $label
-    $exe = Join-Path $msiDir $exeName
+    $exe = Find-MsiExe $label
+    $dir = Split-Path $exe
     $ver = Exe-Version $exe
     if ($ver -ne $NewVersion) { Fail "${label}: installed exe is $ver, expected $NewVersion" }
     if (-not (Has-Marker $exe "MSI")) { Fail "${label}: exe lost its MSI bundle marker" }
-    if (-not (Wait-App $msiDir 20)) { Start-Process $exe }
-    Assert-Running $label $msiDir
+    if (-not (Wait-App $dir 20)) { Start-Process $exe }
+    Assert-Running $label $dir
     Stop-App
     Check-Store $label
   } catch { Fail "${label}: $_" }
