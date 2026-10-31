@@ -102,22 +102,36 @@ async fn fetch_code(addr: String, pass: String, since: Option<i64>) -> Result<Op
 // ── IMAP ──────────────────────────────────────────────────────────────────────
 // ponytail: INBOX only, last 15 messages; add Junk/Spam if codes land there.
 
-/// Hosts to try, in order. Resellers (firstmail.ltd and friends) serve many
-/// domains from one IMAP server, so `imap.<domain>` is tried first and the
-/// shared server second.
+/// IMAP servers shared by mailbox resellers. One server hosts many domains
+/// (dagonmail.com lives on imap.smakmail.com, microversemail.com on firstmail.ltd),
+/// so after `imap.<domain>` every known server is tried.
+const SHARED_IMAP_HOSTS: &[&str] = &["imap.firstmail.ltd", "imap.smakmail.com", "imap.notletters.com"];
+
+/// Which host worked last time for an address - tried first next time.
+static WORKING_HOST: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+fn remember_host(addr: &str, host: &str) {
+    let mut g = WORKING_HOST.lock().unwrap_or_else(|p| p.into_inner());
+    g.get_or_insert_with(Default::default).insert(addr.to_string(), host.to_string());
+}
+
 fn imap_hosts(addr: &str) -> Result<Vec<String>, String> {
     let domain = addr.rsplit_once('@').map(|(_, d)| d.trim()).filter(|d| !d.is_empty()).ok_or("Неверный адрес почты")?;
-    let mut hosts = vec![format!("imap.{domain}")];
-    if domain != "firstmail.ltd" {
-        hosts.push("imap.firstmail.ltd".to_string());
+    let mut hosts: Vec<String> = Vec::new();
+    if let Some(h) = WORKING_HOST.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|m| m.get(addr)) {
+        hosts.push(h.clone());
     }
+    hosts.push(format!("imap.{domain}"));
+    hosts.extend(SHARED_IMAP_HOSTS.iter().map(|h| h.to_string()));
+    let mut seen = std::collections::HashSet::new();
+    hosts.retain(|h| seen.insert(h.clone()));
     Ok(hosts)
 }
 
 /// Plain-language reason, keeping the server's wording only when it adds something.
 fn explain(errors: &[String]) -> String {
-    if errors.iter().any(|e| e.contains("AUTHENTICATIONFAILED") || e.contains("Authentication failed")) {
-        return "Неверный адрес или пароль почты".into();
+    if errors.iter().any(|e| e.contains("AUTHENTICATIONFAILED") || e.contains("Authentication failed") || e.contains("bad credentials") || e.contains("Почта не пустила")) {
+        return "Неверный адрес или пароль почты (или этот почтовый сервис пока не поддерживается)".into();
     }
     format!("Не удалось подключиться к почте: {}", errors.join("; "))
 }
@@ -126,19 +140,19 @@ fn imap_latest_code(addr: &str, pass: &str, since: Option<i64>) -> Result<Option
     let mut errors = Vec::new();
     for host in imap_hosts(addr)? {
         match imap_latest_code_on(&host, addr, pass, since) {
-            Ok(v) => return Ok(v),
+            Ok(v) => { remember_host(addr, &host); return Ok(v); }
             Err(e) => errors.push(e),
         }
     }
     Err(explain(&errors))
 }
 
-/// Proves the address and password work (a real IMAP login) — nothing is saved on failure.
+/// Proves the address and password work (a real IMAP login) - nothing is saved on failure.
 fn imap_check(addr: &str, pass: &str) -> Result<(), String> {
     let mut errors = Vec::new();
     for host in imap_hosts(addr)? {
         match imap_login_on(&host, addr, pass) {
-            Ok(mut s) => { let _ = s.logout(); return Ok(()); }
+            Ok(mut s) => { let _ = s.logout(); remember_host(addr, &host); return Ok(()); }
             Err(e) => errors.push(e),
         }
     }
