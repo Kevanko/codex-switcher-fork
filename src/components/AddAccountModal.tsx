@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpFromLine,
   ClipboardPaste,
+  Check,
   Copy,
   ExternalLink,
+  Mail,
   FolderOpen,
   KeyRound,
   ShieldCheck,
@@ -20,6 +22,8 @@ import {
   type FileSource,
 } from "../lib/platform";
 import { translations, type Locale } from "../i18n";
+import type { MailCode } from "../types";
+import { OPENAI_PHONE_URL, splitMailInput } from "../lib/mail";
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -33,6 +37,15 @@ interface AddAccountModalProps {
   onCancelOAuth: () => Promise<void>;
   /** Paste an account someone shared (Copy as JSON) or a raw auth.json / .credentials.json. */
   onImportJson?: (contents: string, name: string) => Promise<unknown>;
+  /** Fetch the newest login code from a mailbox (saved on the account, or typed in). */
+  onFetchCode?: (args: { accountId?: string; address?: string; password?: string; since?: number }) => Promise<MailCode | null>;
+  /** Remember the mailbox on the account once it exists. */
+  onSaveMail?: (accountId: string, address: string, password: string) => Promise<unknown>;
+  /** Real mailbox sign-in; rejects with a readable reason. */
+  onCheckMail?: (address: string, password: string) => Promise<unknown>;
+  /** Re-login of an account that already has a mailbox saved. */
+  mailAccountId?: string;
+  savedMailAddress?: string | null;
   locale?: Locale;
   mode?: "add" | "reauthorize";
   provider?: "codex" | "claude";
@@ -52,6 +65,11 @@ export function AddAccountModal({
   onCompleteOAuth,
   onCancelOAuth,
   onImportJson,
+  onFetchCode,
+  onSaveMail,
+  onCheckMail,
+  mailAccountId,
+  savedMailAddress,
   locale = "en",
   mode = "add",
   provider = "codex",
@@ -67,6 +85,38 @@ export function AddAccountModal({
   const [copied, setCopied] = useState(false);
   const [sessionCleared, setSessionCleared] = useState(false);
   const [pasted, setPasted] = useState("");
+  const [mailAddr, setMailAddr] = useState("");
+  const [mailPass, setMailPass] = useState("");
+  const [loginCode, setLoginCode] = useState<MailCode | null>(null);
+  const [codeCopied, setCodeCopied] = useState(false);
+  const loginStartedAt = useRef(0);
+  const useSavedMail = Boolean(mailAccountId && savedMailAddress);
+  const canFetchCode = Boolean(onFetchCode) && (useSavedMail || (mailAddr.trim() && mailPass));
+
+  // While the browser login is open, watch the mailbox for the code OpenAI sends.
+  useEffect(() => {
+    if (!oauthPending || !canFetchCode || !onFetchCode) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const c = await onFetchCode({
+          accountId: useSavedMail ? mailAccountId : undefined,
+          address: mailAddr.trim(),
+          password: mailPass,
+          since: loginStartedAt.current - 60,
+        });
+        if (stop || !c) return;
+        setLoginCode((prev) => {
+          if (prev?.code === c.code) return prev;
+          void navigator.clipboard.writeText(c.code).then(() => setCodeCopied(true)).catch(() => {});
+          return c;
+        });
+      } catch { /* mailbox hiccup — try again on the next tick */ }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 4000);
+    return () => { stop = true; window.clearInterval(id); };
+  }, [oauthPending, canFetchCode, onFetchCode, useSavedMail, mailAccountId, mailAddr, mailPass]);
   const tauriRuntime = isTauriRuntime();
   const t = translations[locale];
   const isReauthorize = mode === "reauthorize";
@@ -108,6 +158,10 @@ export function AddAccountModal({
     setCopied(false);
     setSessionCleared(false);
     setPasted("");
+    setMailAddr("");
+    setMailPass("");
+    setLoginCode(null);
+    setCodeCopied(false);
   };
 
   const handleClose = () => {
@@ -122,11 +176,31 @@ export function AddAccountModal({
     try {
       setLoading(true);
       setError(null);
+      // A mailbox that does not sign in is reported now, before the browser opens.
+      if (!useSavedMail && mailAddr.trim() && mailPass && onCheckMail) {
+        try { await onCheckMail(mailAddr.trim(), mailPass); }
+        catch (e) {
+          setError((ru ? "Почта: " : "Mailbox: ") + (e instanceof Error ? e.message : String(e)));
+          setLoading(false);
+          return;
+        }
+      }
       const info = await onStartOAuth(accountName);
       setAuthUrl(info.auth_url);
+      loginStartedAt.current = Math.floor(Date.now() / 1000);
+      setLoginCode(null);
+      setCodeCopied(false);
       setOauthPending(true);
       setLoading(false);
-      await onCompleteOAuth();
+      const done = (await onCompleteOAuth()) as { id?: string } | undefined;
+      if (!useSavedMail && mailAddr.trim() && mailPass && done?.id && onSaveMail) {
+        try { await onSaveMail(done.id, mailAddr.trim(), mailPass); }
+        catch (e) {
+          setOauthPending(false);
+          setError((ru ? "Аккаунт добавлен, но почту привязать не вышло: " : "Account added, but the mailbox was not linked: ") + (e instanceof Error ? e.message : String(e)));
+          return;
+        }
+      }
       handleClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -458,6 +532,51 @@ export function AddAccountModal({
                 <div className="inline-alert">
                   <ShieldCheck size={16} />
                   {isReauthorize ? t.addAccount.willRefreshLogin : t.addAccount.willCreateUrl}
+                </div>
+              )}
+
+              {/* Optional mailbox: the one-time code OpenAI mails is fetched and copied for you. */}
+              {onFetchCode && (useSavedMail ? (
+                <div className="inline-alert">
+                  <Mail size={16} />
+                  {ru ? `Код входа возьмём из почты ${savedMailAddress}` : `The login code will be read from ${savedMailAddress}`}
+                </div>
+              ) : !oauthPending && (
+                <div className="mail-box">
+                  <div className="mail-box-title"><Mail size={14} />{ru ? "Почта для кодов (необязательно)" : "Mailbox for codes (optional)"}</div>
+                  <input type="text" className="ui-input" value={mailAddr} onChange={(e) => { const sp = splitMailInput(e.target.value); if (sp) { setMailAddr(sp.address); setMailPass(sp.password); } else setMailAddr(e.target.value); }}
+                    placeholder="name@firstmail.ltd" autoComplete="off" spellCheck={false} />
+                  <input type="password" className="ui-input" value={mailPass} onChange={(e) => setMailPass(e.target.value)}
+                    placeholder={ru ? "пароль от почты" : "mailbox password"} autoComplete="off" />
+                  <p>{ru ? "Код придёт сам и скопируется в буфер. Почта и пароль хранятся только на этом компьютере." : "The code is fetched and copied for you. Mailbox and password stay on this computer."}</p>
+                </div>
+              ))}
+              {oauthPending && (
+                <div className="inline-alert is-warning phone-hint">
+                  <KeyRound size={16} />
+                  <span>
+                    {ru ? "Если OpenAI просит подтвердить телефон — сделай это на их странице, вход в программе продолжится сам." : "If OpenAI asks you to verify a phone, do it on their page; sign-in here continues by itself."}
+                    {" "}
+                    <button type="button" className="link-btn" onClick={() => void openExternalUrl(OPENAI_PHONE_URL)}>
+                      {ru ? "Открыть страницу телефона" : "Open the phone page"}
+                    </button>
+                  </span>
+                </div>
+              )}
+              {oauthPending && canFetchCode && (
+                <div className={"mail-code" + (loginCode ? " is-ready" : "")}>
+                  {loginCode ? (
+                    <>
+                      <span className="mail-code-n">{loginCode.code}</span>
+                      <span className="mail-code-h">{codeCopied ? <><Check size={13} />{ru ? "скопирован" : "copied"}</> : (ru ? "из письма" : "from the email")}</span>
+                      <button type="button" className="ui-icon-button" title={ru ? "Скопировать" : "Copy"}
+                        onClick={() => void navigator.clipboard.writeText(loginCode.code).then(() => setCodeCopied(true))}>
+                        <Copy size={15} />
+                      </button>
+                    </>
+                  ) : (
+                    <span className="mail-code-h"><Mail size={13} />{ru ? "Жду письмо с кодом…" : "Waiting for the code email…"}</span>
+                  )}
                 </div>
               )}
             </div>

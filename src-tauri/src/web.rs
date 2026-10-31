@@ -207,6 +207,22 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(crate::commands::remove_account_and_session(args.account_id).await?)
         }
+        "set_account_mail" => {
+            let g = |k: &str| payload.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            to_json(crate::commands::set_account_mail(g("accountId"), g("address"), g("password")).await?)
+        }
+        "check_mail_login" => {
+            let g = |k: &str| payload.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            to_json(crate::commands::check_mail_login(g("address"), g("password")).await?)
+        }
+        "fetch_login_code" => {
+            let id = payload.get("accountId").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            to_json(crate::commands::fetch_login_code(id, payload.get("since").and_then(|v| v.as_i64())).await?)
+        }
+        "fetch_login_code_with" => {
+            let g = |k: &str| payload.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            to_json(crate::commands::fetch_login_code_with(g("address"), g("password"), payload.get("since").and_then(|v| v.as_i64())).await?)
+        }
         "import_account_json" => {
             let contents = payload.get("contents").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             let name = payload.get("name").and_then(|v| v.as_str()).map(String::from);

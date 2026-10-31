@@ -12,7 +12,6 @@ import {
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Activity,
   AlertTriangle,
   Bot,
   Boxes,
@@ -35,6 +34,7 @@ import {
   RefreshCcw,
   Search,
   Share2,
+  Mail,
   Settings2,
   Sparkles,
   Sun,
@@ -48,9 +48,10 @@ import {
   Zap,
 } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
-import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, GatewayPanel, ZcodePanel } from "./components";
+import { splitMailInput } from "./lib/mail";
+import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, ZcodePanel } from "./components";
 import { GravityGrid } from "./components/GravityGrid";
-import type { AccountWithUsage, ClaudeTokenAccountInfo, GatewayAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
+import type { AccountWithUsage, MailCode, ClaudeTokenAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
 import {
   exportFullBackupFile,
   importFullBackupFile,
@@ -68,6 +69,7 @@ import { LookIcon, LookPicker } from "./components/AccountLookPicker";
 import {
   getAccountFault,
   getEffectiveRemainingPercent,
+  getResetProgressPercentForWindow,
   getUsageRemaining,
   getVisibleLimitWindows,
   hasRecoverableAuthError,
@@ -96,22 +98,12 @@ const FONT_STORAGE_KEY = "codex-switcher-font";
 const TEXT_SCALE_STORAGE_KEY = "codex-switcher-text-scale";
 const TRAY_MODE_STORAGE_KEY = "codex-switcher-tray-mode";
 const ACTIVE_TAB_STORAGE_KEY = "codex-switcher-active-tab";
-const AUTO_WARMUP_ALL_STORAGE_KEY = "codex-switcher-auto-warmup-all";
-const AUTO_WARMUP_ACCOUNTS_STORAGE_KEY = "codex-switcher-auto-warmup-accounts";
-const AUTO_WARMUP_LEDGER_STORAGE_KEY = "codex-switcher-auto-warmup-last-success";
-const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
-const AUTO_WARMUP_RETRY_BACKOFF_MS = 5 * 60 * 1000;
-const AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS = 60 * 60 * 1000;
-const AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES = 5;
-const DEFAULT_PRIMARY_WINDOW_MINUTES = 300;
-const LIMIT_FULL_THRESHOLD = 99.5;
 const NEAR_LIMIT_REMAINING_THRESHOLD = 10;
 
 type AccentPreset = "green" | "cyan" | "blue" | "amber" | "rose" | "clay" | "frost" | "mauve";
 type Palette = "graphite" | "clay" | "nord" | "mocha";
 type FontPreset = "plex" | "system" | "serif" | "mono" | "geometric";
 type TextScale = "s" | "m" | "l" | "xl";
-type AutoWarmupLedger = Record<string, { lastSuccessfulWarmupAt?: number }>;
 type ProviderTab = "codex" | "claude";
 type ConfigModalMode = "slim_export" | "slim_import";
 type CardDensity = "compact" | "comfortable" | "detailed";
@@ -185,33 +177,6 @@ function readLanguagePreference(): LanguagePreference {
   } catch { return "system"; }
 }
 
-function readStoredStringArray(key: string): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "[]");
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
-  } catch { return []; }
-}
-
-function readStoredAutoWarmupLedger(): AutoWarmupLedger {
-  if (typeof window === "undefined") return {};
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(AUTO_WARMUP_LEDGER_STORAGE_KEY) ?? "{}");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-      Object.entries(parsed)
-        .map(([id, v]) => {
-          const ts = v && typeof v === "object" && "lastSuccessfulWarmupAt" in v && typeof (v as { lastSuccessfulWarmupAt: unknown }).lastSuccessfulWarmupAt === "number"
-            ? (v as { lastSuccessfulWarmupAt: number }).lastSuccessfulWarmupAt
-            : undefined;
-          return ts ? [id, { lastSuccessfulWarmupAt: ts }] : null;
-        })
-        .filter((e): e is [string, { lastSuccessfulWarmupAt: number }] => Boolean(e))
-    );
-  } catch { return {}; }
-}
-
-// The active tab is the (tabView, activeProvider) pair flattened to one stored key.
 function readActiveTab(): { tabView: "accounts" | "gateway" | "zai"; activeProvider: ProviderTab } {
   try {
     const s = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
@@ -257,30 +222,6 @@ function formatResetAt(resetAt: number, locale: Locale): string {
   return far
     ? d.toLocaleDateString(loc, { day: "numeric", month: "short" })
     : d.toLocaleString(loc, { weekday: "short", hour: "2-digit", minute: "2-digit" });
-}
-
-function isLimitFull(pct: number | null | undefined): boolean {
-  return pct !== null && pct !== undefined && pct >= LIMIT_FULL_THRESHOLD;
-}
-
-function getPrimaryWindowMinutes(usage: UsageInfo): number {
-  return usage.primary_window_minutes ?? DEFAULT_PRIMARY_WINDOW_MINUTES;
-}
-
-function getPrimaryRemainingMs(usage: UsageInfo): number | null {
-  if (!usage.primary_resets_at) return null;
-  return usage.primary_resets_at * 1000 - Date.now();
-}
-
-function isPrimaryFullWindow(usage: UsageInfo): boolean {
-  const ms = getPrimaryRemainingMs(usage);
-  if (ms === null) return false;
-  const threshold = Math.max(0, getPrimaryWindowMinutes(usage) - AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES);
-  return ms >= threshold * 60 * 1000;
-}
-
-function getLastSuccessfulWarmupAt(ledger: AutoWarmupLedger, id: string): number | undefined {
-  return ledger[id]?.lastSuccessfulWarmupAt;
 }
 
 function getRemainingPercent(account: AccountWithUsage) {
@@ -370,9 +311,17 @@ function getRowStatus(account: AccountWithUsage): StatusFilter {
   return "ready";
 }
 
+// Name colour follows how much is usable: plenty / running low / nothing left.
+function getNameTone(remaining: number | null): "ok" | "warn" | "bad" | "" {
+  if (remaining === null) return "";
+  if (remaining <= 0) return "bad";
+  if (remaining <= 30) return "warn";
+  return "ok";
+}
+
 function getMeterTone(remaining: number | null): string {
   if (remaining === null) return "accent";
-  if (remaining <= 0) return "amber";
+  if (remaining <= 0) return "red";
   if (remaining <= 30) return "amber";
   return "green";
 }
@@ -399,6 +348,8 @@ function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
     resetsAt: w.resetsAt,
     remaining: getUsageRemaining(w.usedPercent),
     tone: getLimitTone(getUsageRemaining(w.usedPercent)),
+    /** How far through the window we are (0-100): the "XP bar" towards the reset. */
+    elapsed: getResetProgressPercentForWindow(w),
   }));
 }
 
@@ -518,6 +469,7 @@ function AccountListRow({
         selected ? "is-selected" : "",
         isActiveAcc ? "is-active-acc" : "",
         dead ? "is-dead" : "",
+        !planVisual.premium && !dead ? "is-free" : "",
       ].join(" ")}
       data-tier={planVisual.premium && planVisual.colorVar ? planVisual.tone : undefined}
       data-tinted={tint ? "" : undefined}
@@ -534,8 +486,13 @@ function AccountListRow({
       <span className="acc-main">
         <span className="acc-top">
           <LookIcon icon={look?.icon} color={tint} />
-          <span className="acc-name">{account.name}</span>
+          <span className={"acc-name" + (!dead && planVisual.premium && getNameTone(remaining) ? " acc-name--" + getNameTone(remaining) : "")}>{account.name}</span>
           <PlanMark account={account} />
+          {account.mail_address && (
+            <span className="acc-mail" title={locale_label("Почта подключена: код входа заберём сами", "Mailbox linked: the login code is fetched for you", locale)}>
+              <Mail size={12} />
+            </span>
+          )}
           {isActiveAcc && <span className="acc-active-tag">{locale_label("активен", "active", locale)}</span>}
         </span>
         {account.email && (
@@ -562,27 +519,39 @@ function AccountListRow({
         ) : (
           <>
             {/* Compact density: just the tightest remaining %. */}
-            <span className="acc-pct" style={{ color: remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
+            <span className="acc-pct" style={{ color: remaining !== null && remaining <= 0 ? "var(--bad)" : remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
               {remaining !== null ? `${Math.round(remaining)}%` : "—"}
             </span>
             {/* Otherwise one thin line per quota window: 5h, weekly, monthly… */}
             <span className="acc-wins">
               {windows.length === 0 ? (
                 <span className="acc-win-p" style={{ color: "var(--text-3)" }}>—</span>
-              ) : windows.map((w) => (
-                <span key={w.key} className="acc-win" title={w.label}>
+              ) : windows.map((w) => {
+                // One exhausted window shuts the whole account: the other bars burn red too.
+                const blocked = remaining !== null && remaining <= 0;
+                const burning = blocked && (w.remaining ?? 0) > 0;
+                return (
+                <span key={w.key} className={"acc-win" + (burning ? " is-blocked" : "")} title={burning ? locale_label("недоступно: другой лимит исчерпан", "unavailable: another limit is used up", locale) : w.label}>
                   <span className="acc-win-l">{w.short}</span>
-                  <span className="meter acc-win-m">
-                    <span
-                      className={"meter-fill meter-fill--" + getMeterTone(w.remaining)}
-                      style={{ width: Math.max(2, w.remaining ?? 0) + "%" }}
-                    />
+                  <span className="acc-win-bars">
+                    <span className="meter acc-win-m">
+                      <span
+                        className={"meter-fill meter-fill--" + (blocked ? "red" : getMeterTone(w.remaining)) + (burning ? " is-burning" : "")}
+                        style={{ width: Math.max(2, w.remaining ?? 0) + "%" }}
+                      />
+                    </span>
+                    {w.elapsed !== null && (
+                      <span className="reset-line" title={locale_label("до сброса", "until reset", locale)}>
+                        <i style={{ width: Math.max(2, w.elapsed) + "%" }} />
+                      </span>
+                    )}
                   </span>
-                  <span className="acc-win-p" style={{ color: w.remaining !== null && w.remaining <= 15 ? "var(--warn)" : undefined }}>
+                  <span className="acc-win-p" style={{ color: blocked ? "var(--bad)" : w.remaining !== null && w.remaining <= 15 ? "var(--warn)" : undefined }}>
                     {w.remaining !== null ? `${Math.round(w.remaining)}%` : "—"}
                   </span>
                 </span>
-              ))}
+                );
+              })}
             </span>
           </>
         )}
@@ -696,6 +665,75 @@ function AccountContextMenu({
   );
 }
 
+// ── Mailbox for login codes ───────────────────────────────────────────────────
+function MailRow({ account, locale, onSave, onSetPassword, onFetch }: {
+  account: AccountWithUsage;
+  locale: Locale;
+  onSave: (id: string, address: string, password: string) => Promise<unknown>;
+  onSetPassword: (id: string, password: string) => Promise<unknown>;
+  onFetch: (args: { accountId?: string; address?: string; password?: string; since?: number }) => Promise<MailCode | null>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [addr, setAddr] = useState("");
+  const [pass, setPass] = useState("");
+  const [accPass, setAccPass] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
+  const ru = locale === "ru";
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try { await onSave(account.id, addr.trim(), pass); if (accPass) await onSetPassword(account.id, accPass); setAccPass(""); setEditing(false); setPass(""); setMsg({ text: ru ? "Почта подключена - вход проверен" : "Mailbox linked - sign-in verified" }); }
+    catch (e) { setMsg({ text: e instanceof Error ? e.message : String(e), bad: true }); }
+    finally { setBusy(false); }
+  };
+  const getCode = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const c = await onFetch({ accountId: account.id });
+      if (!c) setMsg({ text: ru ? "Писем с кодом пока нет" : "No code email yet" });
+      else {
+        await navigator.clipboard.writeText(c.code).catch(() => {});
+        setMsg({ text: (ru ? "Код " : "Code ") + c.code + (ru ? " — скопирован" : " — copied") });
+      }
+    } catch (e) { setMsg({ text: String(e), bad: true }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <>
+      <div className="meta-row">
+        <span className="meta-key">{ru ? "Почта для кодов" : "Code mailbox"}</span>
+        <span className="meta-val mail-val">
+          {account.mail_address ?? "—"}
+          {account.mail_address && (
+            <button type="button" className="icon-btn icon-btn--xs" disabled={busy} title={ru ? "Получить код входа" : "Get login code"} onClick={() => void getCode()}>
+              <Mail size={12} />
+            </button>
+          )}
+          {account.mail_address ? (
+            <button type="button" className="icon-btn icon-btn--xs" title={ru ? "Изменить" : "Edit"} onClick={() => { setAddr(account.mail_address ?? ""); setEditing((v) => !v); }}>
+              <PencilLine size={12} />
+            </button>
+          ) : (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setEditing((v) => !v)}>
+              <Mail size={12} /> {ru ? "Подключить почту" : "Connect mailbox"}
+            </button>
+          )}
+        </span>
+      </div>
+      {editing && (
+        <div className="mail-edit">
+          <input className="ui-input" value={addr} onChange={(e) => { const sp = splitMailInput(e.target.value); if (sp) { setAddr(sp.address); setPass(sp.password); } else setAddr(e.target.value); }} placeholder={ru ? "почта  или  почта:пароль" : "mailbox  or  mailbox:password"} spellCheck={false} />
+          <input className="ui-input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder={account.mail_address ? (ru ? "новый пароль (пусто - оставить)" : "new password (blank = keep)") : (ru ? "пароль от почты" : "mailbox password")} />
+          <input className="ui-input" type="password" value={accPass} onChange={(e) => setAccPass(e.target.value)} placeholder={account.has_login_password ? (ru ? "пароль аккаунта сохранён (пусто - оставить)" : "account password saved (blank = keep)") : (ru ? "пароль аккаунта OpenAI (необязательно)" : "OpenAI account password (optional)")} />
+          <button type="button" className="btn btn--primary btn--sm" disabled={busy} onClick={() => void save()}>{busy ? (ru ? "Проверяю вход…" : "Checking sign-in…") : (ru ? "Подключить" : "Link")}</button>
+          {account.mail_address && <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={() => { setAddr(""); void onSave(account.id, "", "").then(() => setEditing(false)); }}>{ru ? "Убрать" : "Remove"}</button>}
+        </div>
+      )}
+      {msg && <div className={"banner banner--" + (msg.bad ? "bad" : "ok")} style={{ margin: "6px 0" }}><div className="banner-txt">{msg.text}</div></div>}
+    </>
+  );
+}
+
 // ── Account Detail Panel (right panel) ────────────────────────────────────────
 function AccountDetailPanel({
   account,
@@ -706,16 +744,16 @@ function AccountDetailPanel({
   onCopyJson,
   emailCopied,
   switching,
-  warmingUp,
-  autoWarmupEnabled,
-  autoWarmupLabel,
   onSwitch,
-  onWarmup,
   onRefresh,
   onDelete,
   onRename,
-  onToggleAutoWarmup,
   onReauthorize,
+  onSaveMail,
+  onSetLoginPassword,
+  onAutoLogin,
+  autoLoginBusy,
+  onFetchCode,
   renameRequest,
   onRenameRequestHandled,
   locale,
@@ -729,16 +767,16 @@ function AccountDetailPanel({
   onCopyJson: () => void;
   emailCopied: boolean;
   switching: boolean;
-  warmingUp: boolean;
-  autoWarmupEnabled: boolean;
-  autoWarmupLabel: string;
   onSwitch: () => void;
-  onWarmup: () => void;
   onRefresh: () => void | Promise<void>;
   onDelete: () => void;
   onRename: (newName: string) => Promise<void>;
-  onToggleAutoWarmup: () => void;
   onReauthorize?: () => void;
+  onSaveMail: (id: string, address: string, password: string) => Promise<unknown>;
+  onSetLoginPassword: (id: string, password: string) => Promise<unknown>;
+  onAutoLogin: () => void;
+  autoLoginBusy: boolean;
+  onFetchCode: (args: { accountId?: string; address?: string; password?: string; since?: number }) => Promise<MailCode | null>;
   /** Account id whose name the list asked to edit (right-click → Rename). */
   renameRequest?: string | null;
   onRenameRequestHandled: () => void;
@@ -871,7 +909,7 @@ function AccountDetailPanel({
                     onClick={() => setEditingName(true)}
                     title={t.account.rename}
                   >
-                    <span>{account.name}</span>
+                    <span className={!dead && getNameTone(remaining) ? "acc-name--" + getNameTone(remaining) : undefined}>{account.name}</span>
                     <PencilLine size={15} className="edit-pencil" />
                   </button>
                   <PlanMark account={account} size={18} />
@@ -912,15 +950,15 @@ function AccountDetailPanel({
                 <PlanMark account={account} size={11} />
                 {planVisual.label}
               </span>
+              {account.mail_address && (
+                <span className="tag tag--ok" title={account.mail_address}>
+                  <Mail size={11} /> {locale_label("ПОЧТА · АВТОВХОД", "MAIL · AUTO SIGN-IN", locale)}
+                </span>
+              )}
               <span className="tag tag--neutral">
                 {account.provider === "codex" ? <Terminal size={11} /> : <Sparkles size={11} />}
                 {account.provider === "codex" ? "Codex" : "Claude"}
               </span>
-              {autoWarmupEnabled && (
-                <span className="tag tag--accent">
-                  <Zap size={11} /> {locale_label("АВТОПРОГРЕВ", "AUTO WARM-UP", locale)}
-                </span>
-              )}
               {account.auth_mode === "chat_g_p_t" && tokenExpiry.tone !== "muted" && (
                 <span className={"tag tag--" + (tokenExpiry.tone === "danger" ? "red" : "amber")}>
                   <KeyRound size={11} /> {tokenExpiry.label}
@@ -958,6 +996,11 @@ function AccountDetailPanel({
             <div className="banner-txt">
               <strong>{faultText.short}.</strong> {faultText.detail}
             </div>
+            {needsReauth && account.mail_address && (
+              <button type="button" className="btn btn--primary btn--sm" disabled={autoLoginBusy} onClick={onAutoLogin}>
+                {autoLoginBusy ? <Loader2 size={13} className="spin" /> : <Mail size={13} />} {locale_label("Войти автоматически", "Sign in automatically", locale)}
+              </button>
+            )}
             {needsReauth && onReauthorize && (
               <button type="button" className="btn btn--danger btn--sm" onClick={onReauthorize}>
                 <KeyRound size={13} /> {t.account.refreshLogin}
@@ -1002,7 +1045,7 @@ function AccountDetailPanel({
                 <div key={item.key} className="limit-item">
                   <div className="limit-top">
                     <span className="limit-label">{item.label}</span>
-                    <span className="limit-pct" style={{ color: item.tone === "danger" || item.tone === "warning" ? "var(--warn)" : "var(--text)" }}>
+                    <span className="limit-pct" style={{ color: item.tone === "danger" || (remaining !== null && remaining <= 0) ? "var(--bad)" : item.tone === "warning" ? "var(--warn)" : "var(--text)" }}>
                       {item.remaining !== null ? `${Math.round(item.remaining)}%` : "—"}
                       <span className="limit-pct-sub">{locale_label("осталось", "left", locale)}</span>
                     </span>
@@ -1010,10 +1053,18 @@ function AccountDetailPanel({
                   <span className="meter" style={{ height: 6 }}>
                     {/* Fill = remaining (drains as used), matching the % label and the list-row meter. */}
                     <span
-                      className={"meter-fill meter-fill--" + (item.tone === "danger" ? "red" : item.tone === "warning" ? "amber" : "accent")}
+                      className={"meter-fill meter-fill--" + (item.tone === "danger" || (remaining !== null && remaining <= 0) ? "red" : item.tone === "warning" ? "amber" : "accent") + (remaining !== null && remaining <= 0 && (item.remaining ?? 0) > 0 ? " is-burning" : "")}
                       style={{ width: (item.remaining !== null ? Math.min(100, Math.max(2, item.remaining)) : 2) + "%" }}
                     />
                   </span>
+                  {remaining !== null && remaining <= 0 && (item.remaining ?? 0) > 0 && (
+                    <div className="limit-blocked">{locale_label("Недоступно: другой лимит исчерпан", "Unavailable: another limit is used up", locale)}</div>
+                  )}
+                  {item.elapsed !== null && (
+                    <span className="reset-line reset-line--lg" title={locale_label("время до сброса", "time until reset", locale)}>
+                      <i style={{ width: Math.max(2, item.elapsed) + "%" }} />
+                    </span>
+                  )}
                   {item.resetsAt && (
                     <div className="limit-eta">
                       <Clock size={12} /> {locale_label("сброс через", "resets in", locale)} {formatResetCountdown(item.resetsAt, locale)}
@@ -1047,6 +1098,9 @@ function AccountDetailPanel({
                     {formatSubscriptionRenewal(account.subscription_expires_at, locale)}
                   </span>
                 </div>
+              )}
+              {isCodex && (
+                <MailRow key={account.id} account={account} locale={locale} onSave={onSaveMail} onSetPassword={onSetLoginPassword} onFetch={onFetchCode} />
               )}
               {isCodex && account.usage?.credits_balance && (
                 <div className="meta-row">
@@ -1093,11 +1147,6 @@ function AccountDetailPanel({
 
         {/* Footer */}
         <div className="dfoot">
-          {isCodex && (
-            <button type="button" className="btn btn--ghost btn--md" onClick={onWarmup} disabled={warmingUp}>
-              <Zap size={14} className={warmingUp ? "pulse-soft" : undefined} /> {locale_label("Прогреть", "Warm up", locale)}
-            </button>
-          )}
           {/* Parked Codex accounts refresh too: a usage GET uses the stored access
               token and never rotates anything. Only parked Claude stays frozen. */}
           {account.is_active || isCodex ? (
@@ -1131,15 +1180,6 @@ function AccountDetailPanel({
               )}
             >
               <Database size={14} /> {locale_label("Из кэша", "Cached", locale)}
-            </button>
-          )}
-          {isCodex && (
-            <button
-              type="button"
-              className={"btn btn--ghost btn--md" + (autoWarmupEnabled ? " is-active" : "")}
-              onClick={onToggleAutoWarmup}
-            >
-              <Activity size={14} /> {autoWarmupLabel}
             </button>
           )}
           <span className="dfoot-spacer" />
@@ -1178,8 +1218,6 @@ function SettingsPanel({
   isExportingFull,
   isImportingFull,
   hasAccounts,
-  isWarmingAll,
-  autoWarmupAllEnabled,
   onThemeChange,
   onLanguageChange,
   onAccentChange,
@@ -1193,8 +1231,6 @@ function SettingsPanel({
   onExportSlim,
   onImportFull,
   onExportFull,
-  onWarmupAll,
-  onToggleAutoWarmupAll,
 }: {
   themePreference: ThemePreference;
   languagePreference: LanguagePreference;
@@ -1208,8 +1244,6 @@ function SettingsPanel({
   isExportingFull: boolean;
   isImportingFull: boolean;
   hasAccounts: boolean;
-  isWarmingAll: boolean;
-  autoWarmupAllEnabled: boolean;
   onThemeChange: (theme: ThemePreference) => void;
   onLanguageChange: (lang: LanguagePreference) => void;
   onAccentChange: (preset: AccentPreset) => void;
@@ -1223,8 +1257,6 @@ function SettingsPanel({
   onExportSlim: () => void;
   onImportFull: () => void;
   onExportFull: () => void;
-  onWarmupAll: () => void;
-  onToggleAutoWarmupAll: () => void;
 }) {
   const ru = t === translations.ru;
   return (
@@ -1339,21 +1371,6 @@ function SettingsPanel({
             <button type="button" className={"seg-opt" + (trayModeEnabled ? " is-active" : "")} style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => onTrayModeChange(!trayModeEnabled)}>
               <Monitor size={14} /> {t.settings.minimizeToTray}
             </button>
-          </div>
-
-          {/* Warmup tools */}
-          <div className="setting">
-            <div className="setting-label">{ru ? "Инструменты" : "Tools"}</div>
-            <div className="setting-hint">{ru ? "Массовые операции с аккаунтами." : "Bulk actions on accounts."}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <button type="button" className="btn btn--ghost btn--md btn--full" onClick={onWarmupAll} disabled={isWarmingAll || !hasAccounts}>
-                <Zap size={14} className={isWarmingAll ? "pulse-soft" : undefined} />
-                {isWarmingAll ? (ru ? "Прогрев…" : "Warming…") : t.toolbar.warmAll}
-              </button>
-              <button type="button" className={"btn btn--ghost btn--md btn--full" + (autoWarmupAllEnabled ? " is-active" : "")} onClick={onToggleAutoWarmupAll} disabled={!hasAccounts}>
-                <Activity size={14} /> {autoWarmupAllEnabled ? t.toolbar.autoWarmupOn : t.toolbar.autoWarmupOff}
-              </button>
-            </div>
           </div>
 
           {/* Account management */}
@@ -1553,8 +1570,6 @@ function App() {
     loadAccounts,
     refreshUsage,
     refreshSingleUsage,
-    warmupAccount,
-    warmupAllAccounts,
     switchAccount,
     deleteAccount,
     renameAccount,
@@ -1563,6 +1578,11 @@ function App() {
     exportAccountsSlimText,
     importAccountsSlimText,
     exportAccountJson,
+    setAccountMail,
+    setAccountLoginPassword,
+    autoRelogin,
+    checkMailLogin,
+    fetchLoginCode,
     importAccountJson,
     removeAccountAndSession,
     startOAuthLogin,
@@ -1586,7 +1606,6 @@ function App() {
   // Full Claude CLI token list, loaded at startup so the tab badge + stats are
   // correct immediately (not only after the tab is first opened). The panel keeps
   // this in sync as tokens are added / activated / deleted.
-  const [gatewayAccounts, setGatewayAccounts] = useState<GatewayAccountInfo[]>([]);
   const [claudeTokens, setClaudeTokens] = useState<ClaudeTokenAccountInfo[]>([]);
   const [reauthAccount, setReauthAccount] = useState<AccountWithUsage | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1600,16 +1619,6 @@ function App() {
   const [isImportingSlim, setIsImportingSlim] = useState(false);
   const [isExportingFull, setIsExportingFull] = useState(false);
   const [isImportingFull, setIsImportingFull] = useState(false);
-  const [isWarmingAll, setIsWarmingAll] = useState(false);
-  const [warmingUpId, setWarmingUpId] = useState<string | null>(null);
-  const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(() => {
-    try { return window.localStorage.getItem(AUTO_WARMUP_ALL_STORAGE_KEY) === "true"; } catch { return false; }
-  });
-  const [autoWarmupAccountIds, setAutoWarmupAccountIds] = useState<Set<string>>(
-    () => new Set(readStoredStringArray(AUTO_WARMUP_ACCOUNTS_STORAGE_KEY))
-  );
-  const [autoWarmupLedger, setAutoWarmupLedger] = useState<AutoWarmupLedger>(() => readStoredAutoWarmupLedger());
-  const [autoWarmupRunningIds, setAutoWarmupRunningIds] = useState<Set<string>>(new Set());
   const [warmupToast, setWarmupToast] = useState<{ message: string; isError: boolean } | null>(null);
   const [claudeUnknownToast, setClaudeUnknownToast] = useState(false);
   const [codexUnknownToast, setCodexUnknownToast] = useState(false);
@@ -1651,12 +1660,6 @@ function App() {
 
   const deferredSearchQuery = useDeferredValue(accountSearchQuery);
   const accountsDataRef = useRef<AccountWithUsage[]>([]);
-  const autoWarmupAllEnabledRef = useRef(autoWarmupAllEnabled);
-  const autoWarmupAccountIdsRef = useRef(autoWarmupAccountIds);
-  const autoWarmupLedgerRef = useRef(autoWarmupLedger);
-  const autoWarmupRunningIdsRef = useRef(autoWarmupRunningIds);
-  const autoWarmupRetryAfterRef = useRef<Record<string, number>>({});
-
   const accentTheme = accentPresets[accentPreset];
   const t = translations[resolvedLanguage];
 
@@ -1716,7 +1719,39 @@ function App() {
     }
   }, [share, removeAccountAndSession]);
 
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  const handleRefreshAll = async () => {
+    setRefreshingAll(true);
+    try {
+      await refreshUsage(accounts.filter((a) => a.provider === activeProvider));
+      showWarmupToast(t.toast.refreshed);
+    } catch { showWarmupToast(t.toast.refreshFailed, true); }
+    finally { setRefreshingAll(false); }
+  };
+
+  // Every account of the current tab as one JSON a friend can paste back in.
+  const copyAllJson = async () => {
+    const ru = resolvedLanguage === "ru";
+    try {
+      const list = accounts.filter((a) => a.provider === activeProvider);
+      const items = await Promise.all(list.map(async (a) => JSON.parse(await exportAccountJson(a.id))));
+      await navigator.clipboard.writeText(JSON.stringify({ codex_switcher_accounts: items }, null, 2));
+      showWarmupToast(ru
+        ? `Скопировано аккаунтов: ${items.length}. Внутри живые токены - храни как пароль.`
+        : `Copied ${items.length} accounts. Live tokens inside - treat it like a password.`);
+    } catch (err) { showWarmupToast(formatWarmupError(err), true); }
+  };
+
   const handleImportAccountJson = useCallback(async (contents: string, name: string) => {
+    try {
+      const bundle = JSON.parse(contents.trim());
+      if (Array.isArray(bundle?.codex_switcher_accounts)) {
+        for (const item of bundle.codex_switcher_accounts) await importAccountJson(JSON.stringify(item), "");
+        setTabView("accounts");
+        showWarmupToast(resolvedLanguage === "ru" ? `Добавлено аккаунтов: ${bundle.codex_switcher_accounts.length}` : `Added ${bundle.codex_switcher_accounts.length} accounts`);
+        return;
+      }
+    } catch (e) { if (!(e instanceof SyntaxError)) throw e; }
     const added = await importAccountJson(contents, name);
     // The JSON decides the provider, which may not be the tab the modal opened on.
     setTabView("accounts");
@@ -1763,9 +1798,6 @@ function App() {
   // Prime the Claude CLI token list once on startup so the tab badge and stats
   // reflect reality before the user ever opens the tab.
   useEffect(() => {
-    invokeBackend<GatewayAccountInfo[]>("list_gateway_accounts")
-      .then(setGatewayAccounts)
-      .catch(() => {});
     invokeBackend<ClaudeTokenAccountInfo[]>("list_claude_token_accounts")
       .then(setClaudeTokens)
       .catch(() => {});
@@ -1815,35 +1847,6 @@ function App() {
 
   useEffect(() => { if (isTauriRuntime()) void invokeBackend("refresh_tray_menu"); }, [accounts]);
   useEffect(() => { accountsDataRef.current = accounts; }, [accounts]);
-
-  useEffect(() => {
-    autoWarmupAllEnabledRef.current = autoWarmupAllEnabled;
-    try { window.localStorage.setItem(AUTO_WARMUP_ALL_STORAGE_KEY, String(autoWarmupAllEnabled)); } catch {}
-  }, [autoWarmupAllEnabled]);
-
-  useEffect(() => {
-    autoWarmupAccountIdsRef.current = autoWarmupAccountIds;
-    try { window.localStorage.setItem(AUTO_WARMUP_ACCOUNTS_STORAGE_KEY, JSON.stringify(Array.from(autoWarmupAccountIds))); } catch {}
-  }, [autoWarmupAccountIds]);
-
-  useEffect(() => {
-    autoWarmupLedgerRef.current = autoWarmupLedger;
-    try { window.localStorage.setItem(AUTO_WARMUP_LEDGER_STORAGE_KEY, JSON.stringify(autoWarmupLedger)); } catch {}
-  }, [autoWarmupLedger]);
-
-  useEffect(() => { autoWarmupRunningIdsRef.current = autoWarmupRunningIds; }, [autoWarmupRunningIds]);
-
-  useEffect(() => {
-    const validIds = new Set(accounts.map((a) => a.id));
-    setAutoWarmupAccountIds((prev) => {
-      const next = new Set(Array.from(prev).filter((id) => validIds.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-    setAutoWarmupLedger((prev) => {
-      const next = Object.fromEntries(Object.entries(prev).filter(([id]) => validIds.has(id)));
-      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
-    });
-  }, [accounts]);
 
   // Watch .credentials.json for credentials that don't match any stored account.
   // Checked on startup, on window focus and once a minute — an external re-login
@@ -2007,101 +2010,36 @@ function App() {
     try { return JSON.stringify(err); } catch { return t.toast.unknownError; }
   }, [t.toast.unknownError]);
 
-  const markSuccessfulWarmup = useCallback((id: string) => {
-    setAutoWarmupLedger((prev) => ({ ...prev, [id]: { lastSuccessfulWarmupAt: Date.now() } }));
-  }, []);
-
-  const backOffAutoWarmupRetry = useCallback((id: string) => {
-    autoWarmupRetryAfterRef.current[id] = Date.now() + AUTO_WARMUP_RETRY_BACKOFF_MS;
-  }, []);
-
-  const isAutoWarmupDue = useCallback((id: string, usage?: UsageInfo) => {
-    if (!usage || usage.error || !usage.primary_resets_at) return false;
-    if (isLimitFull(usage.secondary_used_percent)) return false;
-    if (!isPrimaryFullWindow(usage)) return false;
-    const retryAfter = autoWarmupRetryAfterRef.current[id];
-    if (retryAfter && Date.now() < retryAfter) return false;
-    const last = getLastSuccessfulWarmupAt(autoWarmupLedgerRef.current, id);
-    return !last || Date.now() - last >= AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS;
-  }, []);
-
-  const runAutoWarmupForAccount = useCallback(async (account: AccountWithUsage) => {
-    if (autoWarmupRunningIdsRef.current.has(account.id)) return;
-    if (!isAutoWarmupDue(account.id, account.usage)) return;
-    setAutoWarmupRunningIds((prev) => new Set(prev).add(account.id));
+  // ── Automatic re-login ─────────────────────────────────────────────────────
+  // An account that dropped out and has a mailbox linked signs itself back in.
+  // Anything the automation cannot do falls back to the manual "sign in again".
+  const [autoLoginId, setAutoLoginId] = useState<string | null>(null);
+  const autoLoginTriedRef = useRef<Record<string, number>>({});
+  const runAutoLogin = useCallback(async (a: AccountWithUsage) => {
+    const ru = resolvedLanguage === "ru";
+    setAutoLoginId(a.id);
+    showWarmupToast(ru ? `Автовход «${a.name}»…` : `Auto sign-in “${a.name}”…`);
     try {
-      const refreshed = await refreshSingleUsage(account.id);
-      if (!isAutoWarmupDue(account.id, refreshed)) return;
-      await warmupAccount(account.id);
-      markSuccessfulWarmup(account.id);
-      showWarmupToast(`${t.toast.autoWarmupSent} ${account.name}`);
+      await autoRelogin(a.id);
+      showWarmupToast(ru ? `«${a.name}» снова в строю` : `“${a.name}” is back`);
     } catch (err) {
-      console.error("Auto warmup failed:", err);
-      backOffAutoWarmupRetry(account.id);
-      showWarmupToast(`${t.toast.autoWarmupFailed} ${account.name}: ${formatWarmupError(err)}`, true);
-    } finally {
-      setAutoWarmupRunningIds((prev) => { const n = new Set(prev); n.delete(account.id); return n; });
-    }
-  }, [backOffAutoWarmupRetry, formatWarmupError, isAutoWarmupDue, markSuccessfulWarmup, refreshSingleUsage, showWarmupToast, t.toast.autoWarmupFailed, t.toast.autoWarmupSent, warmupAccount]);
+      showWarmupToast((ru ? `Автовход «${a.name}» не удался, войди вручную: ` : `Auto sign-in “${a.name}” failed, sign in manually: `) + formatWarmupError(err), true);
+    } finally { setAutoLoginId(null); }
+  }, [autoRelogin, formatWarmupError, resolvedLanguage, showWarmupToast]);
 
   useEffect(() => {
-    const id = window.setInterval(() => {
-      const ids = autoWarmupAccountIdsRef.current;
-      const all = autoWarmupAllEnabledRef.current;
-      if (!all && ids.size === 0) return;
-      accountsDataRef.current
-        .filter((a) => a.provider !== "claude" && (all || ids.has(a.id)) && isAutoWarmupDue(a.id, a.usage))
-        .forEach((a) => void runAutoWarmupForAccount(a));
-    }, AUTO_WARMUP_CHECK_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [isAutoWarmupDue, runAutoWarmupForAccount]);
-
-  const toggleAutoWarmupAccount = useCallback((id: string) => {
-    setAutoWarmupAccountIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const getAutoWarmupLabel = useCallback((account: AccountWithUsage) => {
-    const enabled = autoWarmupAllEnabled || autoWarmupAccountIds.has(account.id);
-    if (autoWarmupRunningIds.has(account.id)) return t.account.autoWarmupRunning;
-    if (autoWarmupAllEnabled) return t.account.autoWarmupManagedByAll;
-    return enabled ? t.account.autoWarmupOn : t.account.autoWarmupOff;
-  }, [autoWarmupAccountIds, autoWarmupAllEnabled, autoWarmupRunningIds, t.account]);
-
-  const handleWarmupAccount = async (accountId: string, accountName: string) => {
-    try {
-      setWarmingUpId(accountId);
-      await warmupAccount(accountId);
-      markSuccessfulWarmup(accountId);
-      showWarmupToast(`${t.toast.warmupSent} ${accountName}`);
-      void refreshSingleUsage(accountId, { force: true }).catch(() => {});
-    } catch (err) {
-      showWarmupToast(`${t.toast.warmupFailed} ${accountName}: ${formatWarmupError(err)}`, true);
-    } finally { setWarmingUpId(null); }
-  };
-
-  const handleWarmupAll = async () => {
-    try {
-      setIsWarmingAll(true);
-      const summary = await warmupAllAccounts();
-      if (summary.total_accounts === 0) { showWarmupToast(t.toast.noWarmupAccounts, true); return; }
-      if (summary.failed_account_ids.length === 0) {
-        showWarmupToast(`${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}`);
-      } else {
-        showWarmupToast(`${t.toast.warmed} ${summary.warmed_accounts}/${summary.total_accounts}. ${t.toast.failed}: ${summary.failed_account_ids.length}`, true);
-      }
-      const failedSet = new Set(summary.failed_account_ids);
-      // Claude accounts are never warmed; don't record them as warmed.
-      const warmed = accounts.filter((a) => a.provider !== "claude" && !failedSet.has(a.id));
-      warmed.forEach((a) => markSuccessfulWarmup(a.id));
-      void refreshUsage(warmed).catch(() => {});
-    } catch (err) {
-      showWarmupToast(`${t.toast.warmupAllFailed}: ${formatWarmupError(err)}`, true);
-    } finally { setIsWarmingAll(false); }
-  };
+    if (autoLoginId || !isTauriRuntime()) return;
+    const now = Date.now();
+    const next = accounts.find((a) =>
+      a.provider === "codex" && a.auth_mode === "chat_g_p_t" && a.mail_address &&
+      (getAccountFault(a) === "auth_revoked" || getAccountFault(a) === "unreachable") &&
+      now - (autoLoginTriedRef.current[a.id] ?? 0) > 30 * 60 * 1000
+    );
+    if (next) {
+      autoLoginTriedRef.current[next.id] = now;
+      void runAutoLogin(next);
+    }
+  }, [accounts, autoLoginId, runAutoLogin]);
 
   const handleExportSlimText = async () => {
     setConfigModalMode("slim_export"); setConfigModalError(null); setConfigPayload(""); setConfigCopied(false); setIsConfigModalOpen(true);
@@ -2289,8 +2227,8 @@ function App() {
           <button type="button" className={"tab" + (tabView === "accounts" && activeProvider === "claude" ? " is-active" : "")} onClick={() => { setTabView("accounts"); setActiveProvider("claude"); }}>
             <Sparkles size={13} /> Claude <span className="t-count">{providerCounts.claude}</span>
           </button>
-          <button type="button" className={"tab" + (tabView === "gateway" ? " is-active" : "")} onClick={() => setTabView("gateway")} title="Anthropic-compatible gateway keys">
-            <KeyRound size={13} /> Gateway / CLI <span className="t-count">{gatewayAccounts.length + claudeTokens.length}</span>
+          <button type="button" className={"tab" + (tabView === "gateway" ? " is-active" : "")} onClick={() => setTabView("gateway")} title="Claude CLI tokens">
+            <KeyRound size={13} /> CLI <span className="t-count">{claudeTokens.length}</span>
           </button>
           <button type="button" className={"tab" + (tabView === "zai" ? " is-active" : "")} onClick={() => setTabView("zai")} title="Z.ai Coding Plan / ZCode">
             <Boxes size={13} /> Z.ai / ZCode <span className="t-count">{zcodeAccounts.length}</span>
@@ -2308,17 +2246,6 @@ function App() {
             </div>
             <div className="gstat gstat--ok">
               <span className="gstat-n">{zcodeAccounts.filter((a) => a.is_active).length}</span>
-              <span className="gstat-l">{locale_label("АКТИВЕН", "ACTIVE", resolvedLanguage)}</span>
-            </div>
-          </div>
-        ) : tabView === "gateway" ? (
-          <div className="gstats">
-            <div className="gstat">
-              <span className="gstat-n">{gatewayAccounts.length}</span>
-              <span className="gstat-l">{locale_label("КЛЮЧЕЙ", "KEYS", resolvedLanguage)}</span>
-            </div>
-            <div className="gstat gstat--ok">
-              <span className="gstat-n">{gatewayAccounts.filter((g) => g.is_active).length}</span>
               <span className="gstat-l">{locale_label("АКТИВЕН", "ACTIVE", resolvedLanguage)}</span>
             </div>
           </div>
@@ -2384,7 +2311,6 @@ function App() {
       {tabView === "gateway" ? (
         <div className="token-wrap">
           <ClaudeTokenPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onTokensChange={setClaudeTokens} />
-          <GatewayPanel language={resolvedLanguage === "ru" ? "ru" : "en"} onGatewaysChange={setGatewayAccounts} />
         </div>
       ) : tabView === "zai" ? (
         <ZcodePanel
@@ -2419,6 +2345,14 @@ function App() {
                 </button>
               ))}
               <span style={{ flex: 1 }} />
+              <button type="button" className="icon-btn icon-btn--sm" disabled={refreshingAll}
+                title={locale_label("Обновить все", "Refresh all", resolvedLanguage)} onClick={() => void handleRefreshAll()}>
+                <RefreshCcw size={14} className={refreshingAll ? "spin" : undefined} />
+              </button>
+              <button type="button" className="icon-btn icon-btn--sm"
+                title={locale_label("Скопировать JSON всех аккаунтов", "Copy JSON of all accounts", resolvedLanguage)} onClick={() => void copyAllJson()}>
+                <Share2 size={14} />
+              </button>
               <button type="button" className="chip chip--add" onClick={() => setIsAddModalOpen(true)} title={t.sidebar.addAccount}>
                 + {locale_label("аккаунт", "account", resolvedLanguage)}
               </button>
@@ -2491,11 +2425,7 @@ function App() {
               onCopyJson={() => void copyAccountJson(effectiveSelectedAccount)}
               emailCopied={copiedEmailAccountId === effectiveSelectedAccount.id}
               switching={switchingId === effectiveSelectedAccount.id}
-              warmingUp={isWarmingAll || warmingUpId === effectiveSelectedAccount.id || autoWarmupRunningIds.has(effectiveSelectedAccount.id)}
-              autoWarmupEnabled={autoWarmupAllEnabled || autoWarmupAccountIds.has(effectiveSelectedAccount.id)}
-              autoWarmupLabel={getAutoWarmupLabel(effectiveSelectedAccount)}
               onSwitch={() => void handleSwitch(effectiveSelectedAccount.id, effectiveSelectedAccount.provider)}
-              onWarmup={() => void handleWarmupAccount(effectiveSelectedAccount.id, effectiveSelectedAccount.name)}
               onRefresh={async () => {
                 try {
                   // No refreshMetadata: that rotates the OAuth token from the
@@ -2511,8 +2441,12 @@ function App() {
               }}
               onDelete={() => void handleDelete(effectiveSelectedAccount.id)}
               onRename={(newName) => renameAccount(effectiveSelectedAccount.id, newName)}
-              onToggleAutoWarmup={() => toggleAutoWarmupAccount(effectiveSelectedAccount.id)}
               onReauthorize={effectiveSelectedAccount.auth_mode === "chat_g_p_t" ? () => setReauthAccount(effectiveSelectedAccount) : undefined}
+              onSaveMail={setAccountMail}
+              onSetLoginPassword={setAccountLoginPassword}
+              onAutoLogin={() => void runAutoLogin(effectiveSelectedAccount)}
+              autoLoginBusy={autoLoginId !== null}
+              onFetchCode={fetchLoginCode}
               renameRequest={renameRequestId}
               onRenameRequestHandled={() => setRenameRequestId(null)}
               locale={resolvedLanguage}
@@ -2583,8 +2517,6 @@ function App() {
           isExportingFull={isExportingFull}
           isImportingFull={isImportingFull}
           hasAccounts={providerCounts.codex > 0}
-          isWarmingAll={isWarmingAll}
-          autoWarmupAllEnabled={autoWarmupAllEnabled}
           onThemeChange={setThemePreference}
           onLanguageChange={setLanguagePreference}
           onAccentChange={setAccentPreset}
@@ -2598,8 +2530,6 @@ function App() {
           onExportSlim={() => { setIsSettingsOpen(false); void handleExportSlimText(); }}
           onImportFull={() => { setIsSettingsOpen(false); void handleImportFullFile(); }}
           onExportFull={() => { setIsSettingsOpen(false); void handleExportFullFile(); }}
-          onWarmupAll={() => void handleWarmupAll()}
-          onToggleAutoWarmupAll={() => setAutoWarmupAllEnabled((v) => !v)}
         />
       )}
 
@@ -2614,6 +2544,9 @@ function App() {
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
         onImportJson={handleImportAccountJson}
+        onFetchCode={fetchLoginCode}
+        onSaveMail={setAccountMail}
+        onCheckMail={checkMailLogin}
         provider={activeProvider}
         locale={resolvedLanguage}
       />
@@ -2633,6 +2566,11 @@ function App() {
           return completeOAuthReauth(reauthAccount.id);
         }}
         onCancelOAuth={cancelOAuthLogin}
+        onFetchCode={fetchLoginCode}
+        onSaveMail={setAccountMail}
+        onCheckMail={checkMailLogin}
+        mailAccountId={reauthAccount?.id}
+        savedMailAddress={reauthAccount?.mail_address}
         locale={resolvedLanguage}
       />
 

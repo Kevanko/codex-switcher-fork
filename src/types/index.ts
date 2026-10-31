@@ -20,6 +20,9 @@ export interface AccountInfo {
   last_used_at: string | null;
   cached_usage: UsageInfo | null;
   cached_usage_updated_at: string | null;
+  /** Mailbox that receives this account's login codes (no password). */
+  mail_address?: string | null;
+  has_login_password?: boolean;
 }
 
 export interface UsageInfo {
@@ -138,4 +141,11 @@ export interface ImportAccountsSummary {
   total_in_payload: number;
   imported_count: number;
   skipped_count: number;
+}
+
+export interface MailCode {
+  code: string;
+  from: string;
+  subject: string;
+  received_at: number | null;
 }

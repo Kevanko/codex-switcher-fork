@@ -5,6 +5,7 @@ import type {
   AccountWithUsage,
   WarmupSummary,
   ImportAccountsSummary,
+  MailCode,
 } from "../types";
 import { invokeBackend, type FileSource } from "../lib/platform";
 
@@ -503,6 +504,40 @@ export function useAccounts() {
     }
   }, [loadAccounts, refreshUsage]);
 
+  const setAccountMail = useCallback(
+    (accountId: string, address: string, password: string) =>
+      invokeBackend<void>("set_account_mail", { accountId, address, password }).then(() => loadAccounts()),
+    [loadAccounts]
+  );
+
+  const setAccountLoginPassword = useCallback(
+    (accountId: string, password: string) =>
+      invokeBackend<void>("set_account_login_password", { accountId, password }).then(() => loadAccounts()),
+    [loadAccounts]
+  );
+
+  /** Sign in again by itself: browser steps + the code from the linked mailbox. */
+  const autoRelogin = useCallback(async (accountId: string) => {
+    const account = await invokeBackend<AccountInfo>("auto_relogin", { accountId });
+    const list = await loadAccounts();
+    await refreshUsage(list);
+    return account;
+  }, [loadAccounts, refreshUsage]);
+
+  const checkMailLogin = useCallback(
+    (address: string, password: string) => invokeBackend<void>("check_mail_login", { address, password }),
+    []
+  );
+
+  /** Newest login code: from the account's saved mailbox, or from typed-in credentials. */
+  const fetchLoginCode = useCallback(
+    (args: { accountId?: string; address?: string; password?: string; since?: number }) =>
+      args.accountId
+        ? invokeBackend<MailCode | null>("fetch_login_code", { accountId: args.accountId, since: args.since })
+        : invokeBackend<MailCode | null>("fetch_login_code_with", { address: args.address, password: args.password, since: args.since }),
+    []
+  );
+
   const exportAccountJson = useCallback(
     (accountId: string) => invokeBackend<string>("export_account_json", { accountId }),
     []
@@ -722,6 +757,11 @@ export function useAccounts() {
     removeAccountAndSession,
     exportAccountsFullEncryptedFile,
     importAccountsFullEncryptedFile,
+    setAccountMail,
+    setAccountLoginPassword,
+    autoRelogin,
+    checkMailLogin,
+    fetchLoginCode,
     startOAuthLogin,
     completeOAuthLogin,
     completeOAuthReauth,

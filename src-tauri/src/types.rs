@@ -593,6 +593,10 @@ pub struct AccountInfo {
     pub last_used_at: Option<DateTime<Utc>>,
     pub cached_usage: Option<UsageInfo>,
     pub cached_usage_updated_at: Option<DateTime<Utc>>,
+    /// Mailbox that receives this account's login codes (password never leaves the backend).
+    pub mail_address: Option<String>,
+    /// The account's own password is saved (used by automatic re-login).
+    pub has_login_password: bool,
 }
 
 impl AccountInfo {
@@ -650,6 +654,13 @@ impl AccountInfo {
             last_used_at: account.last_used_at,
             cached_usage: account.cached_usage.clone(),
             cached_usage_updated_at: account.cached_usage_updated_at,
+            mail_address: account
+                .extra
+                .get("mail_login")
+                .and_then(|m| m.get("address"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            has_login_password: account.extra.get("login_password").and_then(|v| v.as_str()).map_or(false, |p| !p.is_empty()),
         }
     }
 }

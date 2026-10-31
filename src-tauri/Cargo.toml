@@ -1,6 +1,6 @@
 [package]
 name = "codex-switcher"
-version = "0.3.13"
+version = "0.3.14"
 description = "Unofficial desktop fork for local Codex account switching and usage tracking"
 authors = ["lampese"]
 edition = "2021"
@@ -34,6 +34,9 @@ sha2 = "0.10"
 rand = "0.9"
 thiserror = "2"
 anyhow = "1"
+imap = { version = "2.4", default-features = false }
+native-tls = "0.2"
+mailparse = "0.15"
 urlencoding = "2"
 futures = "0.3"
 url = "2"
