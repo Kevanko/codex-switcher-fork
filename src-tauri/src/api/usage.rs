@@ -173,6 +173,8 @@ pub async fn get_account_usage(account: &StoredAccount, force: bool) -> Result<U
                 rate_limited: None,
                 error_kind: None,
                 from_cache: None,
+                reset_credits: None,
+                reset_credits_applicable: None,
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
@@ -628,6 +630,8 @@ async fn parse_claude_usage_response(
         rate_limited: None,
         error_kind: None,
         from_cache: None,
+        reset_credits: None,
+        reset_credits_applicable: None,
     };
 
     println!(
@@ -979,6 +983,7 @@ fn collect_last_text(value: &Value, last: &mut Option<String>) {
 fn convert_payload_to_usage_info(account_id: &str, payload: RateLimitStatusPayload) -> UsageInfo {
     let (primary, secondary) = extract_rate_limits(payload.rate_limit);
     let credits = extract_credits(payload.credits);
+    let reset = payload.rate_limit_reset_credits;
 
     UsageInfo {
         account_id: account_id.to_string(),
@@ -1002,6 +1007,8 @@ fn convert_payload_to_usage_info(account_id: &str, payload: RateLimitStatusPaylo
         rate_limited: None,
         error_kind: None,
         from_cache: None,
+        reset_credits: reset.as_ref().and_then(|r| r.available_count),
+        reset_credits_applicable: reset.as_ref().and_then(|r| r.applicable_available_count),
     }
 }
 

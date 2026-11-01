@@ -267,7 +267,7 @@ input, textarea, select { font-family: inherit; }
 .workbench {
   flex: 1; min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 360px) 1fr;
+  grid-template-columns: minmax(300px, 400px) 1fr;
 }
 .col-list {
   border-right: 1px solid var(--border);
@@ -456,14 +456,14 @@ input, textarea, select { font-family: inherit; }
 /* One labelled line per quota window. Label · bar · % in a fixed grid so the
    bars line up down the list and two windows still fit a 60px row. */
 .acc-wins { display: flex; flex-direction: column; gap: 4px; }
-.acc-win { display: grid; grid-template-columns: 24px 46px 34px; align-items: center; gap: 6px; }
+.acc-win { display: grid; grid-template-columns: 22px 38px 34px 46px; align-items: center; gap: 6px; }
 .acc-win-l { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-3); text-align: right; }
 .acc-win-m { height: 4px; }
 .acc-win-p { font-family: var(--mono); font-size: calc(11px * var(--fz, 1)); font-weight: 600; text-align: right; }
 .acc-right .acc-pct { display: none; }
 .app[data-density="compact"] .acc-right .acc-pct { display: block; }
 .app[data-density="compact"] .acc-wins { display: none; }
-.app[data-density="detailed"] .acc-win { grid-template-columns: 30px 72px 38px; }
+.app[data-density="detailed"] .acc-win { grid-template-columns: 30px 72px 38px 52px; }
 .acc-sub { font-family: var(--mono); font-size: calc(11.5px * var(--fz, 1)); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* density variants */
@@ -485,6 +485,11 @@ input, textarea, select { font-family: inherit; }
 .app[data-density="comfortable"] { --row-h: 60px; }
 
 .acc-extra { display: none; }
+/* Compact is the dense-but-informative mode: plan, next reset and last use under the email. */
+.app[data-density="compact"] .acc-extra {
+  display: block; font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1));
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .app[data-density="detailed"] { --row-h: 84px; }
 .app[data-density="detailed"] .workbench { grid-template-columns: minmax(320px, 420px) 1fr; }
 .app[data-density="detailed"] .acc-main { gap: 5px; }
@@ -1072,3 +1077,11 @@ input, textarea, select { font-family: inherit; }
 @keyframes burn { 0%, 100% { box-shadow: 0 0 0 0 transparent; opacity: .85; } 50% { box-shadow: 0 0 8px 0 color-mix(in oklab, var(--bad) 70%, transparent); opacity: 1; } }
 .limit-blocked { margin-top: 4px; font-size: calc(11.5px * var(--fz, 1)); color: var(--bad); font-family: var(--mono); }
 @media (prefers-reduced-motion: reduce) { .meter-fill.is-burning { animation: none; } }
+
+.acc-win-r { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-2); white-space: nowrap; text-align: left; }
+.acc-win.is-blocked .acc-win-r { color: var(--bad); }
+
+.acc-reset { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); font-weight: 600; color: var(--text-3); }
+.acc-reset.is-ready { color: var(--ok); }
+.acc-pct-r { display: none; font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-2); }
+.app[data-density="compact"] .acc-pct-r { display: block; }

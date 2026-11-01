@@ -20,6 +20,7 @@ import {
   Clock,
   Copy,
   Crown,
+  RotateCcw,
   Database,
   Download,
   FileJson,
@@ -92,7 +93,8 @@ const THEME_STORAGE_KEY = "codex-switcher-theme";
 const LANGUAGE_STORAGE_KEY = "codex-switcher-language";
 const ACCENT_STORAGE_KEY = "codex-switcher-accent";
 const WINDOW_SIZE_STORAGE_KEY = "codex-switcher-window-size";
-const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density";
+// v2: the old key was written on every launch, so everyone had "compact" saved; start fresh on the middle mode.
+const CARD_DENSITY_STORAGE_KEY = "codex-switcher-card-density-v2";
 const PALETTE_STORAGE_KEY = "codex-switcher-palette";
 const FONT_STORAGE_KEY = "codex-switcher-font";
 const TEXT_SCALE_STORAGE_KEY = "codex-switcher-text-scale";
@@ -246,6 +248,19 @@ function formatResetCountdown(resetAt: number | null | undefined, locale: Locale
   return `${Math.floor(diff / 86400)}d`;
 }
 
+// "4ч 40м" / "5д 3ч" - the short form for list rows.
+function shortCountdown(resetAt: number | null | undefined, locale: Locale): string {
+  if (!resetAt) return "";
+  const ru = locale === "ru";
+  const diff = resetAt - Math.floor(Date.now() / 1000);
+  if (diff <= 0) return ru ? "сброс" : "reset";
+  const d = Math.floor(diff / 86400), h = Math.floor((diff % 86400) / 3600), m = Math.floor((diff % 3600) / 60);
+  const u = ru ? { d: "д", h: "ч", m: "м" } : { d: "d", h: "h", m: "m" };
+  if (d >= 1) return `${d}${u.d} ${h}${u.h}`;
+  if (h >= 1) return `${h}${u.h} ${m}${u.m}`;
+  return `${Math.max(1, m)}${u.m}`;
+}
+
 function formatAuthTokenCountdown(expiresAt: string | null | undefined, locale: Locale): {
   label: string; tone: "warning" | "danger" | "muted";
 } {
@@ -351,6 +366,21 @@ function getActiveResetItems(account: AccountWithUsage, locale: Locale) {
     /** How far through the window we are (0-100): the "XP bar" towards the reset. */
     elapsed: getResetProgressPercentForWindow(w),
   }));
+}
+
+// Spendable "limit resets": how many the account has, and whether one would apply now.
+function ResetBadge({ account, locale, size = 12 }: { account: AccountWithUsage; locale: Locale; size?: number }) {
+  const n = account.usage?.reset_credits ?? 0;
+  if (n <= 0) return null;
+  const now = account.usage?.reset_credits_applicable ?? 0;
+  const title = locale === "ru"
+    ? `Сбросов лимита доступно: ${n}${now > 0 ? " - можно применить сейчас" : " (сейчас применить нельзя - лимиты не исчерпаны)"}`
+    : `Limit resets available: ${n}${now > 0 ? " - can be used now" : " (not usable now - no limit is used up)"}`;
+  return (
+    <span className={"acc-reset" + (now > 0 ? " is-ready" : "")} title={title}>
+      <RotateCcw size={size} />{n}
+    </span>
+  );
 }
 
 // ── Plan insignia ─────────────────────────────────────────────────────────────
@@ -488,6 +518,7 @@ function AccountListRow({
           <LookIcon icon={look?.icon} color={tint} />
           <span className={"acc-name" + (!dead && planVisual.premium && getNameTone(remaining) ? " acc-name--" + getNameTone(remaining) : "")}>{account.name}</span>
           <PlanMark account={account} />
+          <ResetBadge account={account} locale={locale} />
           {account.mail_address && (
             <span className="acc-mail" title={locale_label("Почта подключена: код входа заберём сами", "Mailbox linked: the login code is fetched for you", locale)}>
               <Mail size={12} />
@@ -522,6 +553,9 @@ function AccountListRow({
             <span className="acc-pct" style={{ color: remaining !== null && remaining <= 0 ? "var(--bad)" : remaining !== null && remaining <= 15 ? "var(--warn)" : "var(--text)" }}>
               {remaining !== null ? `${Math.round(remaining)}%` : "—"}
             </span>
+            <span className="acc-pct-r">
+              {shortCountdown(windows.filter((w) => w.resetsAt).sort((a, b) => (a.remaining ?? 100) - (b.remaining ?? 100))[0]?.resetsAt, locale)}
+            </span>
             {/* Otherwise one thin line per quota window: 5h, weekly, monthly… */}
             <span className="acc-wins">
               {windows.length === 0 ? (
@@ -548,6 +582,9 @@ function AccountListRow({
                   </span>
                   <span className="acc-win-p" style={{ color: blocked ? "var(--bad)" : w.remaining !== null && w.remaining <= 15 ? "var(--warn)" : undefined }}>
                     {w.remaining !== null ? `${Math.round(w.remaining)}%` : "—"}
+                  </span>
+                  <span className="acc-win-r" title={w.resetsAt ? locale_label("сброс ", "resets ", locale) + formatResetAt(w.resetsAt, locale) : undefined}>
+                    {shortCountdown(w.resetsAt, locale)}
                   </span>
                 </span>
                 );
@@ -1102,6 +1139,19 @@ function AccountDetailPanel({
               {isCodex && (
                 <MailRow key={account.id} account={account} locale={locale} onSave={onSaveMail} onSetPassword={onSetLoginPassword} onFetch={onFetchCode} />
               )}
+              {isCodex && (account.usage?.reset_credits ?? 0) > 0 && (
+                <div className="meta-row">
+                  <span className="meta-key">{locale_label("Сбросы лимита", "Limit resets", locale)}</span>
+                  <span className="meta-val" style={{ display: "inline-flex", alignItems: "center", gap: 5, ...((account.usage?.reset_credits_applicable ?? 0) > 0 ? { color: "var(--ok)" } : {}) }}>
+                    <RotateCcw size={12} />
+                    {locale_label(`доступно ${account.usage?.reset_credits}`, `${account.usage?.reset_credits} available`, locale)}
+                    {" · "}
+                    {(account.usage?.reset_credits_applicable ?? 0) > 0
+                      ? locale_label("можно применить сейчас", "usable now", locale)
+                      : locale_label("сейчас не нужен", "not needed now", locale)}
+                  </span>
+                </div>
+              )}
               {isCodex && account.usage?.credits_balance && (
                 <div className="meta-row">
                   <span className="meta-key">{locale_label("Кредиты", "Credits", locale)}</span>
@@ -1638,8 +1688,8 @@ function App() {
   const [cardDensity, setCardDensity] = useState<CardDensity>(() => {
     try {
       const s = window.localStorage.getItem(CARD_DENSITY_STORAGE_KEY);
-      return s && s in cardDensityLabels ? (s as CardDensity) : "compact";
-    } catch { return "compact"; }
+      return s && s in cardDensityLabels ? (s as CardDensity) : "comfortable";
+    } catch { return "comfortable"; }
   });
   const [palette, setPalette] = useState<Palette>(() => readStoredChoice(PALETTE_STORAGE_KEY, palettes, "graphite"));
   const [fontPreset, setFontPreset] = useState<FontPreset>(() => readStoredChoice(FONT_STORAGE_KEY, fontPresets, "plex"));

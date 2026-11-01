@@ -27,6 +27,9 @@ export interface AccountInfo {
 
 export interface UsageInfo {
   account_id: string;
+  /** "Limit resets" still available to spend, and how many apply right now. */
+  reset_credits?: number | null;
+  reset_credits_applicable?: number | null;
   plan_type: string | null;
   primary_used_percent: number | null;
   primary_window_minutes: number | null;

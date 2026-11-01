@@ -734,6 +734,12 @@ pub struct UsageInfo {
     /// account is healthy.
     #[serde(default)]
     pub from_cache: Option<bool>,
+    /// "Limit resets" the account can still spend (`rate_limit_reset_credits.available_count`).
+    #[serde(default)]
+    pub reset_credits: Option<i64>,
+    /// How many of them would apply right now (0 while no limit is exhausted).
+    #[serde(default)]
+    pub reset_credits_applicable: Option<i64>,
 }
 
 impl UsageInfo {
@@ -754,6 +760,8 @@ impl UsageInfo {
             rate_limited: None,
             error_kind: None,
             from_cache: None,
+            reset_credits: None,
+            reset_credits_applicable: None,
         }
     }
 
@@ -787,6 +795,8 @@ impl UsageInfo {
             rate_limited: None,
             error_kind: None,
             from_cache: None,
+            reset_credits: None,
+            reset_credits_applicable: None,
         }
     }
 }
@@ -834,6 +844,16 @@ pub struct RateLimitStatusPayload {
     pub rate_limit: Option<RateLimitDetails>,
     #[serde(default)]
     pub credits: Option<CreditStatusDetails>,
+    #[serde(default)]
+    pub rate_limit_reset_credits: Option<ResetCreditsDetails>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResetCreditsDetails {
+    #[serde(default)]
+    pub available_count: Option<i64>,
+    #[serde(default)]
+    pub applicable_available_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
