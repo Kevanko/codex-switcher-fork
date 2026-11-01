@@ -439,6 +439,9 @@ pub fn update_account_chatgpt_tokens(
             }
         }
 
+        // A fresh login proves the account is alive again.
+        account.extra.remove("deactivated_at");
+
         if let Some(new_email) = email {
             account.email = Some(new_email);
         }

@@ -57,6 +57,25 @@ pub async fn set_account_login_password(account_id: String, password: String) ->
     .map_err(|e| e.to_string())
 }
 
+/// "The account works again" - forget the deactivated marker.
+#[tauri::command]
+pub async fn clear_account_deactivated(account_id: String) -> Result<(), String> {
+    with_store(|store| {
+        let changed = store
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == account_id)
+            .map(|a| a.extra.remove("deactivated_at").is_some())
+            .unwrap_or(false);
+        Ok(((), changed))
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Page text that means the account is gone, reported through the URL fragment
+/// (`eval` returns nothing, the address bar is the only channel back).
+const DETECT_DEACTIVATED_JS: &str = r#"(function(){try{var t=(document.body&&document.body.innerText)||"";if(/deleted or deactivated|has been deactivated|account_deactivated|удалён или деактивирован|удален или деактивирован|был удалён или деактивирован/i.test(t)){location.hash="cs-deactivated";}}catch(e){}})();"#;
+
 fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
@@ -91,6 +110,9 @@ fn path_of(url: &tauri::Url) -> String {
 
 #[tauri::command]
 pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountInfo, String> {
+    if get_account(&account_id).ok().flatten().map(|a| a.extra.contains_key("deactivated_at")).unwrap_or(false) {
+        return Err("DEACTIVATED: аккаунт закрыт OpenAI - автовход невозможен".into());
+    }
     if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("Автовход уже идёт для другого аккаунта - подожди".into());
     }
@@ -144,12 +166,19 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
     let deadline = Instant::now() + Duration::from_secs(240);
     let mut stuck_on = String::new();
     let mut fatal: Option<String> = None;
+    let mut last_detect = Instant::now();
 
     while Instant::now() < deadline && !done.inner().is_finished() {
         tokio::time::sleep(Duration::from_millis(700)).await;
         let Ok(u) = win.url() else { continue };
         if u.host_str() == Some("localhost") {
             break; // the callback server has the result
+        }
+        if u.fragment() == Some("cs-deactivated") {
+            crate::api::usage::mark_deactivated(&account_id);
+            log("account is deleted/deactivated according to OpenAI - stopping");
+            fatal = Some("DEACTIVATED: OpenAI удалила или деактивировала этот аккаунт - войти нельзя".to_string());
+            break;
         }
         let path = path_of(&u);
         if path != seen_path {
@@ -158,6 +187,10 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
             log(&format!("page {path}"));
         }
         let on_page_for = seen_since.elapsed();
+        if on_page_for > Duration::from_secs(2) && last_detect.elapsed() > Duration::from_secs(3) {
+            last_detect = Instant::now();
+            let _ = win.eval(DETECT_DEACTIVATED_JS);
+        }
         // Each step fires once per visit to its page.
         match path.as_str() {
             "/log-in" => {
@@ -205,7 +238,8 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
             }
             other => {
                 // Something we do not know how to drive (phone number, captcha…): hand it to the person.
-                if !shown && on_page_for > Duration::from_secs(6) {
+                let needs_human = other.contains("push-auth") || other.contains("mfa") || other.contains("passkey") || other.contains("webauthn") || other.contains("phone");
+                if !shown && on_page_for > Duration::from_secs(if needs_human { 1 } else { 6 }) {
                     shown = true;
                     stuck_on = other.to_string();
                     let _ = win.show();
@@ -230,6 +264,8 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
         log(&format!("fail on {seen_path} stuck_on={stuck_on} fatal={fatal:?}"));
         Err(if let Some(f) = fatal {
             f
+        } else if stuck_on.contains("push-auth") || stuck_on.contains("mfa") || stuck_on.contains("passkey") || stuck_on.contains("webauthn") {
+            "PHONE: на аккаунте включено подтверждение входа (push, ключ или приложение) - автовход его пройти не может. Подтверди вход в открывшемся окне или отключи это подтверждение в настройках безопасности аккаунта".to_string()
         } else if stuck_on.contains("phone") {
             "PHONE: OpenAI просит подтвердить телефон - сделай это в открывшемся окне".to_string()
         } else if stuck_on.is_empty() {

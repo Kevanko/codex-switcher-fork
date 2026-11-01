@@ -21,6 +21,7 @@ import {
   Copy,
   Crown,
   RotateCcw,
+  Ban,
   Database,
   Download,
   FileJson,
@@ -422,6 +423,13 @@ function describeFault(
           ? "OpenAI отклонила сессию. Авторизуйся в этом аккаунте заново."
           : "OpenAI rejected the session. Sign in to this account again.",
       };
+    case "deactivated":
+      return {
+        short: ru ? "Аккаунт закрыт" : "Account closed",
+        detail: ru
+          ? "OpenAI удалила или деактивировала этот аккаунт. Войти в него нельзя, автовход отключён. Код из почты получить можно. Если аккаунт вернули - нажми «Аккаунт снова работает»."
+          : "OpenAI deleted or deactivated this account. It cannot be signed in to and auto sign-in is off. Codes from the mailbox still work. If it was restored, press “Account works again”.",
+      };
     case "forbidden":
       return {
         short: ru ? "Нет доступа" : "No access",
@@ -505,6 +513,7 @@ function AccountListRow({
         selected ? "is-selected" : "",
         isActiveAcc ? "is-active-acc" : "",
         dead ? "is-dead" : "",
+        fault === "deactivated" ? "is-deactivated" : "",
         !planVisual.premium && !dead ? "is-free" : "",
       ].join(" ")}
       data-tier={planVisual.premium && planVisual.colorVar ? planVisual.tone : undefined}
@@ -524,6 +533,11 @@ function AccountListRow({
           <LookIcon icon={look?.icon} color={tint} />
           <span className={"acc-name" + (!dead && planVisual.premium && getNameTone(remaining) ? " acc-name--" + getNameTone(remaining) : "")}>{account.name}</span>
           <PlanMark account={account} />
+          {fault === "deactivated" && (
+            <span className="acc-closed" title={describeFault("deactivated", locale).detail}>
+              <Ban size={11} />{locale_label("закрыт", "closed", locale)}
+            </span>
+          )}
           <ResetBadge account={account} locale={locale} />
           {account.mail_address && (
             <span className="acc-mail" title={locale_label("Почта подключена: код входа заберём сами", "Mailbox linked: the login code is fetched for you", locale)}>
@@ -795,6 +809,7 @@ function AccountDetailPanel({
   onSaveMail,
   onSetLoginPassword,
   onAutoLogin,
+  onClearDeactivated,
   autoLoginBusy,
   onFetchCode,
   renameRequest,
@@ -818,6 +833,7 @@ function AccountDetailPanel({
   onSaveMail: (id: string, address: string, password: string) => Promise<unknown>;
   onSetLoginPassword: (id: string, password: string) => Promise<unknown>;
   onAutoLogin: () => void;
+  onClearDeactivated: () => void;
   autoLoginBusy: boolean;
   onFetchCode: (args: { accountId?: string; address?: string; password?: string; since?: number }) => Promise<MailCode | null>;
   /** Account id whose name the list asked to edit (right-click → Rename). */
@@ -911,7 +927,7 @@ function AccountDetailPanel({
   return (
     <div className="detail">
       <div
-        className={"dcard" + (dead ? " is-dead" : "")}
+        className={"dcard" + (dead ? " is-dead" : "") + (fault === "deactivated" ? " is-deactivated" : "")}
         data-tinted={colorHex(look?.color) ? "" : undefined}
         style={colorHex(look?.color) ? ({ "--tint": colorHex(look?.color) } as CSSProperties) : undefined}
       >
@@ -1039,7 +1055,12 @@ function AccountDetailPanel({
             <div className="banner-txt">
               <strong>{faultText.short}.</strong> {faultText.detail}
             </div>
-            {needsReauth && account.mail_address && (
+            {fault === "deactivated" && (
+              <button type="button" className="btn btn--ghost btn--sm" onClick={onClearDeactivated}>
+                <RotateCcw size={13} /> {locale_label("Аккаунт снова работает", "Account works again", locale)}
+              </button>
+            )}
+            {needsReauth && fault !== "deactivated" && account.mail_address && (
               <button type="button" className="btn btn--primary btn--sm" disabled={autoLoginBusy} onClick={onAutoLogin}>
                 {autoLoginBusy ? <Loader2 size={13} className="spin" /> : <Mail size={13} />} {locale_label("Войти автоматически", "Sign in automatically", locale)}
               </button>
@@ -2101,10 +2122,10 @@ function App() {
       showWarmupToast(ru ? `«${a.name}» снова в строю` : `“${a.name}” is back`);
     } catch (err) {
       const raw = formatWarmupError(err);
-      const phone = raw.startsWith("PHONE:");
+      const phone = raw.startsWith("PHONE:") || raw.startsWith("DEACTIVATED:");
       // Do not hammer an account that needs a human: 12 h after a phone request, 2 h otherwise.
       autoLoginTriedRef.current[a.id] = Date.now() + (phone ? 11.5 : 1.5) * 3_600_000;
-      showWarmupToast((ru ? `Автовход «${a.name}» не удался, войди вручную: ` : `Auto sign-in “${a.name}” failed, sign in manually: `) + raw.replace(/^PHONE:\s*/, ""), true, 9000);
+      showWarmupToast((ru ? `Автовход «${a.name}» не удался, войди вручную: ` : `Auto sign-in “${a.name}” failed, sign in manually: `) + raw.replace(/^(PHONE|DEACTIVATED):\s*/, ""), true, 9000);
     } finally { setAutoLoginId(null); }
   }, [autoRelogin, formatWarmupError, resolvedLanguage, showWarmupToast]);
 
@@ -2526,6 +2547,13 @@ function App() {
               onSaveMail={setAccountMail}
               onSetLoginPassword={setAccountLoginPassword}
               onAutoLogin={() => void runAutoLogin(effectiveSelectedAccount)}
+              onClearDeactivated={() => {
+                const id = effectiveSelectedAccount.id;
+                invokeBackend("clear_account_deactivated", { accountId: id })
+                  .then(() => loadAccounts())
+                  .then((list) => refreshUsage(list))
+                  .catch((err) => showWarmupToast(formatWarmupError(err), true));
+              }}
               autoLoginBusy={autoLoginId !== null}
               onFetchCode={fetchLoginCode}
               renameRequest={renameRequestId}

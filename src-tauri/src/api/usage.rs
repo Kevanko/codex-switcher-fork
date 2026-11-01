@@ -140,6 +140,11 @@ struct AccountsCheckEntitlement {
 /// ignores the local cooldown gate and tries the network for real, so a stale
 /// 429 cooldown never blocks the user until an app restart.
 pub async fn get_account_usage(account: &StoredAccount, force: bool) -> Result<UsageInfo> {
+    // A closed account is not polled: every request is a pointless failed sign-in.
+    // Only a fresh login (or "the account works again") clears the marker.
+    if account.extra.contains_key(DEACTIVATED_KEY) {
+        return Ok(deactivated_info(&account.id));
+    }
     if force {
         // Drop any local cooldown so the manual refresh actually hits the API.
         clear_rate_limit_cooldown(&account.id);
@@ -258,6 +263,11 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
             if chatgpt_access_token_expired(account) {
                 return Ok(parked_chatgpt_usage(account));
             }
+            let body = response.text().await.unwrap_or_default();
+            if is_deactivated_body(&body) {
+                mark_deactivated(&account.id);
+                return Ok(deactivated_info(&account.id));
+            }
             let mut info = UsageInfo::error(
                 account.id.clone(),
                 "Codex session rejected (401) on a token that has not expired".to_string(),
@@ -353,6 +363,9 @@ fn parked_chatgpt_usage(account: &StoredAccount) -> UsageInfo {
 /// The raw status text is kept in `error` for the log/tooltip, but `error_kind`
 /// is what decides the wording and whether the account is treated as dead.
 fn classified_http_error(account_id: &str, status: StatusCode, body: &str) -> UsageInfo {
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) && is_deactivated_body(body) {
+        return deactivated_info(account_id);
+    }
     let kind = match status {
         StatusCode::UNAUTHORIZED => "auth_revoked",
         // A Cloudflare challenge page is a bot check, not a closed account.
@@ -364,6 +377,34 @@ fn classified_http_error(account_id: &str, status: StatusCode, body: &str) -> Us
     let mut info = UsageInfo::error(account_id.to_string(), format!("API error: {status}"));
     info.error_kind = Some(kind.to_string());
     info
+}
+
+/// OpenAI says an account is closed in words ("account_deactivated", "has been
+/// deactivated", "deleted or deactivated"), not with a status code of its own.
+pub(crate) fn is_deactivated_body(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    b.contains("account_deactivated") || b.contains("has been deactivated") || b.contains("deleted or deactivated") || b.contains("deactivated_user")
+}
+
+/// The marker lives in the account's `extra` map, so older app versions keep it untouched.
+pub(crate) const DEACTIVATED_KEY: &str = "deactivated_at";
+
+fn deactivated_info(account_id: &str) -> UsageInfo {
+    let mut info = UsageInfo::error(account_id.to_string(), "OpenAI: account deleted or deactivated".to_string());
+    info.error_kind = Some("deactivated".to_string());
+    info
+}
+
+pub(crate) fn mark_deactivated(account_id: &str) {
+    let _ = crate::auth::with_store(|store| {
+        if let Some(a) = store.accounts.iter_mut().find(|a| a.id == account_id) {
+            if !a.extra.contains_key(DEACTIVATED_KEY) {
+                a.extra.insert(DEACTIVATED_KEY.into(), serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
+                return Ok(((), true));
+            }
+        }
+        Ok(((), false))
+    });
 }
 
 fn is_cloudflare_challenge(body: &str) -> bool {
@@ -384,7 +425,11 @@ async fn parse_usage_response(
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         println!("[Usage] Error response: {body}");
-        return Ok(classified_http_error(account_id, status, &body));
+        let info = classified_http_error(account_id, status, &body);
+        if info.error_kind.as_deref() == Some("deactivated") {
+            mark_deactivated(account_id);
+        }
+        return Ok(info);
     }
 
     let body_text = response
@@ -1046,4 +1091,21 @@ pub async fn refresh_all_usage(accounts: &[StoredAccount]) -> Vec<UsageInfo> {
 
     println!("[Usage] Refresh complete");
     results
+}
+
+#[cfg(test)]
+mod deactivated_tests {
+    use super::*;
+
+    #[test]
+    fn recognises_a_closed_account_but_not_an_expired_token() {
+        assert!(is_deactivated_body(r#"{"error":{"code":"account_deactivated","message":"..."}}"#));
+        assert!(is_deactivated_body("Your account was deleted or deactivated"));
+        assert!(!is_deactivated_body(r#"{"error":{"code":"token_expired","message":"Provided authentication token is expired."}}"#));
+        assert!(!is_deactivated_body(r#"{"error":{"code":"unauthorized_unknown"}}"#));
+        let info = classified_http_error("a", StatusCode::UNAUTHORIZED, r#"{"detail":{"code":"account_deactivated"}}"#);
+        assert_eq!(info.error_kind.as_deref(), Some("deactivated"));
+        let plain = classified_http_error("a", StatusCode::UNAUTHORIZED, "{}");
+        assert_eq!(plain.error_kind.as_deref(), Some("auth_revoked"));
+    }
 }

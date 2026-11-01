@@ -23,6 +23,8 @@ export interface AccountInfo {
   /** Mailbox that receives this account's login codes (no password). */
   mail_address?: string | null;
   has_login_password?: boolean;
+  /** OpenAI reported the account deleted or deactivated. */
+  deactivated?: boolean;
 }
 
 export interface UsageInfo {

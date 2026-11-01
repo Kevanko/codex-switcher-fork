@@ -1085,3 +1085,12 @@ input, textarea, select { font-family: inherit; }
 .acc-reset.is-ready { color: var(--ok); }
 .acc-pct-r { display: none; font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-2); }
 .app[data-density="compact"] .acc-pct-r { display: block; }
+
+/* Closed by OpenAI: not "broken red" but its own violet, so it reads as "gone", not "try again". */
+:root { --closed: #a78bfa; }
+.acc-row.is-deactivated { filter: none; opacity: .82; border-style: dashed; border-color: color-mix(in oklab, var(--closed) 45%, transparent); }
+.acc-row.is-deactivated .acc-name { color: var(--closed); text-decoration: line-through; text-decoration-thickness: 1px; }
+.acc-row.is-deactivated .acc-right { opacity: .7; }
+.acc-closed { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; font-family: var(--mono); font-size: calc(10px * var(--fz, 1)); font-weight: 600; letter-spacing: .04em; color: var(--closed); border: 1px solid color-mix(in oklab, var(--closed) 45%, transparent); border-radius: 4px; padding: 1px 5px; }
+.dcard.is-deactivated { filter: none; opacity: 1; border-style: dashed; border-color: color-mix(in oklab, var(--closed) 50%, transparent); }
+.dcard.is-deactivated .dhead-name-btn span { color: var(--closed); }

@@ -597,6 +597,8 @@ pub struct AccountInfo {
     pub mail_address: Option<String>,
     /// The account's own password is saved (used by automatic re-login).
     pub has_login_password: bool,
+    /// OpenAI reported the account deleted or deactivated.
+    pub deactivated: bool,
 }
 
 impl AccountInfo {
@@ -660,6 +662,7 @@ impl AccountInfo {
                 .and_then(|m| m.get("address"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            deactivated: account.extra.contains_key("deactivated_at"),
             has_login_password: account.extra.get("login_password").and_then(|v| v.as_str()).map_or(false, |p| !p.is_empty()),
         }
     }

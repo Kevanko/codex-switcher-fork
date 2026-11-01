@@ -118,12 +118,15 @@ export type AccountFaultKind =
   | "auth_expired"
   | "unreachable"
   | "forbidden"
+  | "deactivated"
   | "server"
   | "http";
 
-const PERSISTENT_FAULTS: AccountFaultKind[] = ["auth_revoked", "forbidden", "unreachable"];
+const PERSISTENT_FAULTS: AccountFaultKind[] = ["auth_revoked", "forbidden", "unreachable", "deactivated"];
 
 export function getAccountFault(account: AccountWithUsage): AccountFaultKind | null {
+  // Closed by OpenAI: stays marked until a fresh login or "it works again".
+  if (account.deactivated) return "deactivated";
   const usage = account.usage;
 
   // A 429 is the provider asking us to wait, not a broken account.
