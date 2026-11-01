@@ -20,6 +20,19 @@ struct PendingOAuth {
 // Global state for pending OAuth login
 static PENDING_OAUTH: Mutex<Option<PendingOAuth>> = Mutex::new(None);
 
+// The newest flow's cancel flag, kept apart from PENDING_OAUTH: `complete_*` takes the
+// pending receiver while it waits, so cancelling "the pending flow" found nothing and
+// the callback server kept port 1455 for the full 5-minute timeout. Every login after a
+// failed one then fell back to a random port, which OpenAI rejects
+// ("invalid_authorize_request").
+static CURRENT_CANCEL: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+fn cancel_current_flow() {
+    if let Some(flag) = CURRENT_CANCEL.lock().unwrap().take() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Start the OAuth login flow
 #[tauri::command]
 pub async fn start_login(account_name: String) -> Result<OAuthLoginInfo, String> {
@@ -31,9 +44,12 @@ pub async fn start_login(account_name: String) -> Result<OAuthLoginInfo, String>
         previous.cancelled.store(true, Ordering::Relaxed);
     }
 
+    cancel_current_flow();
+
     let (info, rx, cancelled) = start_oauth_login(account_name)
         .await
         .map_err(|e| e.to_string())?;
+    *CURRENT_CANCEL.lock().unwrap() = Some(cancelled.clone());
 
     // Store the receiver for later
     {
@@ -149,5 +165,7 @@ pub async fn cancel_login() -> Result<(), String> {
     if let Some(pending_oauth) = pending.take() {
         pending_oauth.cancelled.store(true, Ordering::Relaxed);
     }
+    drop(pending);
+    cancel_current_flow();
     Ok(())
 }

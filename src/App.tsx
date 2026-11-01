@@ -112,6 +112,12 @@ type CardDensity = "compact" | "comfortable" | "detailed";
 type StatusFilter = "all" | "ready" | "limit" | "error";
 type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
+// Everything that goes wrong in the UI also lands in ~/.codex-switcher/app.log.
+function logUi(level: "error" | "warn" | "info", message: string) {
+  if (!isTauriRuntime()) return;
+  void invokeBackend("log_event", { level, message }).catch(() => {});
+}
+
 const currentWindow = isTauriRuntime() ? getCurrentWindow() : null;
 const isMacOs =
   typeof navigator !== "undefined" &&
@@ -1281,6 +1287,7 @@ function SettingsPanel({
   onExportSlim,
   onImportFull,
   onExportFull,
+  onCopyLog,
 }: {
   themePreference: ThemePreference;
   languagePreference: LanguagePreference;
@@ -1307,6 +1314,7 @@ function SettingsPanel({
   onExportSlim: () => void;
   onImportFull: () => void;
   onExportFull: () => void;
+  onCopyLog: () => void;
 }) {
   const ru = t === translations.ru;
   return (
@@ -1441,6 +1449,15 @@ function SettingsPanel({
                 <FolderInput size={14} /> {isImportingFull ? t.settings.importingBackup : t.settings.importBackup}
               </button>
             </div>
+          </div>
+
+          {/* Diagnostics */}
+          <div className="setting">
+            <div className="setting-label">{ru ? "Журнал ошибок" : "Error log"}</div>
+            <div className="setting-hint">{ru ? "Все ошибки и шаги автовхода пишутся в ~/.codex-switcher/app.log. Скопируй и пришли, если что-то сломалось." : "Errors and auto sign-in steps are written to ~/.codex-switcher/app.log. Copy it when something breaks."}</div>
+            <button type="button" className="btn btn--ghost btn--md btn--full" onClick={onCopyLog}>
+              <Copy size={14} /> {ru ? "Скопировать журнал" : "Copy the log"}
+            </button>
           </div>
 
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", lineHeight: 1.5 }}>
@@ -2036,9 +2053,10 @@ function App() {
     try { await deleteAccount(accountId); } catch (err) { console.error("Failed to delete:", err); }
   };
 
-  const showWarmupToast = useCallback((message: string, isError = false) => {
+  const showWarmupToast = useCallback((message: string, isError = false, ms = 2500) => {
+    if (isError) logUi("error", message);
     setWarmupToast({ message, isError });
-    setTimeout(() => setWarmupToast(null), 2500);
+    setTimeout(() => setWarmupToast(null), ms);
   }, []);
 
   // One wording for every refresh path. A replayed snapshot is not "refreshed":
@@ -2060,6 +2078,14 @@ function App() {
     try { return JSON.stringify(err); } catch { return t.toast.unknownError; }
   }, [t.toast.unknownError]);
 
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => logUi("error", `uncaught: ${e.message} @ ${e.filename}:${e.lineno}`);
+    const onRejection = (e: PromiseRejectionEvent) => logUi("error", `unhandled rejection: ${String((e.reason as Error)?.message ?? e.reason)}`);
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => { window.removeEventListener("error", onError); window.removeEventListener("unhandledrejection", onRejection); };
+  }, []);
+
   // ── Automatic re-login ─────────────────────────────────────────────────────
   // An account that dropped out and has a mailbox linked signs itself back in.
   // Anything the automation cannot do falls back to the manual "sign in again".
@@ -2071,9 +2097,14 @@ function App() {
     showWarmupToast(ru ? `Автовход «${a.name}»…` : `Auto sign-in “${a.name}”…`);
     try {
       await autoRelogin(a.id);
+      delete autoLoginTriedRef.current[a.id];
       showWarmupToast(ru ? `«${a.name}» снова в строю` : `“${a.name}” is back`);
     } catch (err) {
-      showWarmupToast((ru ? `Автовход «${a.name}» не удался, войди вручную: ` : `Auto sign-in “${a.name}” failed, sign in manually: `) + formatWarmupError(err), true);
+      const raw = formatWarmupError(err);
+      const phone = raw.startsWith("PHONE:");
+      // Do not hammer an account that needs a human: 12 h after a phone request, 2 h otherwise.
+      autoLoginTriedRef.current[a.id] = Date.now() + (phone ? 11.5 : 1.5) * 3_600_000;
+      showWarmupToast((ru ? `Автовход «${a.name}» не удался, войди вручную: ` : `Auto sign-in “${a.name}” failed, sign in manually: `) + raw.replace(/^PHONE:\s*/, ""), true, 9000);
     } finally { setAutoLoginId(null); }
   }, [autoRelogin, formatWarmupError, resolvedLanguage, showWarmupToast]);
 
@@ -2580,6 +2611,13 @@ function App() {
           onExportSlim={() => { setIsSettingsOpen(false); void handleExportSlimText(); }}
           onImportFull={() => { setIsSettingsOpen(false); void handleImportFullFile(); }}
           onExportFull={() => { setIsSettingsOpen(false); void handleExportFullFile(); }}
+          onCopyLog={() => {
+            const ru = resolvedLanguage === "ru";
+            invokeBackend<string>("read_app_log", { lines: 300 })
+              .then((text) => navigator.clipboard.writeText(text))
+              .then(() => showWarmupToast(ru ? "Журнал скопирован" : "Log copied"))
+              .catch((err) => showWarmupToast(formatWarmupError(err), true));
+          }}
         />
       )}
 

@@ -23,11 +23,11 @@ function hydrateAccountUsage(account: AccountInfo): AccountWithUsage {
 // every minute is exactly what trips a 429. Usage windows (5h/7d) move slowly,
 // so a few minutes of staleness in the background is fine — selecting an
 // account or pressing Refresh always fetches immediately.
-const ACTIVE_USAGE_REFRESH_MS = 150_000; // ~2.5 min
-const INACTIVE_USAGE_REFRESH_MS = 360_000; // ~6 min
+const ACTIVE_USAGE_REFRESH_MS = 300_000; // 5 min
+const INACTIVE_USAGE_REFRESH_MS = 900_000; // 15 min
 // Random per-account stagger added on top of the base interval so our polls do
 // not phase-lock with each other or with the external CLI's own 60s cycle.
-const USAGE_REFRESH_JITTER_MS = 60_000;
+const USAGE_REFRESH_JITTER_MS = 120_000;
 const RATE_LIMIT_FRONTEND_BACKOFF_MS = 330_000; // > backend cooldown floor (300s)
 
 // Stable per-account jitter in [0, USAGE_REFRESH_JITTER_MS) derived from the id,
@@ -706,7 +706,7 @@ export function useAccounts() {
     loadAccounts().then((accountList) => refreshUsage(accountList));
 
     // Auto-refresh tick every 60 seconds; per-account pacing inside refreshUsage
-    // decides who actually gets fetched (active ~3 min, inactive ~6 min, both
+    // decides who actually gets fetched (active ~5 min, inactive ~15 min, both
     // jittered) so we don't out-poll the provider on the shared active token.
     const interval = setInterval(() => {
       refreshUsage(undefined, { auto: true }).catch(() => {});

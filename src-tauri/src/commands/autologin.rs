@@ -17,6 +17,25 @@ use crate::auth::{get_account, with_store};
 use crate::types::{AccountInfo, AuthData};
 
 const WINDOW: &str = "autologin";
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct RunGuard;
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Step log (no secrets) so a failed automatic sign-in can be explained afterwards.
+fn log(msg: &str) {
+    use std::io::Write;
+    crate::applog::log("INFO", &format!("[autologin] {msg}"));
+    if let Ok(dir) = crate::auth::get_config_dir() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("autologin.log")) {
+            let _ = writeln!(f, "{} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
+        }
+    }
+}
 const LOGIN_PASSWORD_KEY: &str = "login_password";
 
 /// Remember (or, when empty, forget) the account's own password.
@@ -72,7 +91,12 @@ fn path_of(url: &tauri::Url) -> String {
 
 #[tauri::command]
 pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountInfo, String> {
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Автовход уже идёт для другого аккаунта - подожди".into());
+    }
+    let _guard = RunGuard;
     let account = get_account(&account_id).map_err(|e| e.to_string())?.ok_or("Account not found")?;
+    log(&format!("start {} ({})", account.name, account_id));
     if !matches!(account.auth_data, AuthData::ChatGPT { .. }) {
         return Err("Автовход работает только для аккаунтов ChatGPT".into());
     }
@@ -87,6 +111,11 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
 
     let started_at = chrono::Utc::now().timestamp();
     let info = start_login(account.name.clone()).await?;
+    if info.callback_port != 1455 {
+        let _ = super::oauth::cancel_login().await;
+        log(&format!("abort: callback port {} instead of 1455", info.callback_port));
+        return Err("Порт 1455 занят другой программой (например Codex CLI) - закрой её и повтори".into());
+    }
     let id_for_task = account_id.clone();
     let done = tauri::async_runtime::spawn(async move { complete_reauth_login(id_for_task).await });
 
@@ -114,6 +143,7 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
     let mut last_code_poll = Instant::now() - Duration::from_secs(10);
     let deadline = Instant::now() + Duration::from_secs(240);
     let mut stuck_on = String::new();
+    let mut fatal: Option<String> = None;
 
     while Instant::now() < deadline && !done.inner().is_finished() {
         tokio::time::sleep(Duration::from_millis(700)).await;
@@ -125,6 +155,7 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
         if path != seen_path {
             seen_path = path.clone();
             seen_since = Instant::now();
+            log(&format!("page {path}"));
         }
         let on_page_for = seen_since.elapsed();
         // Each step fires once per visit to its page.
@@ -165,7 +196,13 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
                     let _ = win.eval(&fill_and_click(None, "", "form button[type=submit]"));
                 }
             }
-            "/oauth/authorize" | "" | "/api/accounts/authorize" => {}
+            "/oauth/authorize" | "" | "/api/accounts/authorize" => {
+                // The authorize page never stays: it is a redirect or an error JSON.
+                if on_page_for > Duration::from_secs(12) {
+                    fatal = Some("OpenAI отклонил запрос входа (invalid_authorize_request) - повтори позже".to_string());
+                    break;
+                }
+            }
             other => {
                 // Something we do not know how to drive (phone number, captcha…): hand it to the person.
                 if !shown && on_page_for > Duration::from_secs(6) {
@@ -190,13 +227,27 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
         done.await.map_err(|e| e.to_string()).and_then(|r| r)
     } else {
         let _ = super::oauth::cancel_login().await;
-        Err(if stuck_on.is_empty() {
+        log(&format!("fail on {seen_path} stuck_on={stuck_on} fatal={fatal:?}"));
+        Err(if let Some(f) = fatal {
+            f
+        } else if stuck_on.contains("phone") {
+            "PHONE: OpenAI просит подтвердить телефон - сделай это в открывшемся окне".to_string()
+        } else if stuck_on.is_empty() {
             format!("Не дождались входа (страница {seen_path})")
         } else {
             format!("Вход остановился на {stuck_on} - нужно действие руками (телефон/капча)")
         })
     };
     let _ = win.destroy();
-    let _ = std::fs::remove_dir_all(profile);
+    log(&format!("end ok={}", result.is_ok()));
+    // The profile folder is still locked for a moment after the window closes.
+    std::thread::spawn(move || {
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_secs(2));
+            if std::fs::remove_dir_all(&profile).is_ok() {
+                break;
+            }
+        }
+    });
     result
 }

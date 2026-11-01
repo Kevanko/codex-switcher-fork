@@ -18,9 +18,19 @@ pub async fn get_usage(account_id: String, force: Option<bool>) -> Result<UsageI
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    let usage = get_account_usage(&account, force.unwrap_or(false))
-        .await
-        .map_err(|e| e.to_string())?;
+    let key = format!("usage:{}", account.name);
+    let usage = match get_account_usage(&account, force.unwrap_or(false)).await {
+        Ok(u) => u,
+        Err(e) => {
+            crate::applog::log_change(&key, "ERROR", &format!("{}: usage request failed: {e}", account.name));
+            return Err(e.to_string());
+        }
+    };
+    match (&usage.error, usage.from_cache) {
+        (Some(err), _) => crate::applog::log_change(&key, "WARN", &format!("{}: {} ({})", account.name, err, usage.error_kind.as_deref().unwrap_or("?"))),
+        (None, Some(true)) => crate::applog::log_change(&key, "WARN", &format!("{}: sign-in refused, showing cached figures", account.name)),
+        _ => crate::applog::clear_key(&key),
+    }
     // A replayed snapshot must not refresh its own timestamp, or "last updated"
     // would claim we reached an account we could not reach.
     if usage.error.is_none() && usage.from_cache != Some(true) {

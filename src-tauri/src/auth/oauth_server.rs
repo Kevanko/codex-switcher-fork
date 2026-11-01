@@ -144,7 +144,17 @@ pub async fn start_oauth_login(
     println!("[OAuth] PKCE challenge: {}", &pkce.code_challenge[..20]);
 
     // Try official default port first; fall back to a random free port if it is busy.
-    let server = match Server::http(format!("127.0.0.1:{DEFAULT_PORT}")) {
+    // A cancelled flow releases the port up to ~1 s later; a random fallback port
+    // is never registered with OpenAI ("invalid_authorize_request"), so wait first.
+    let mut bound = Server::http(format!("127.0.0.1:{DEFAULT_PORT}"));
+    for _ in 0..60 {
+        if bound.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        bound = Server::http(format!("127.0.0.1:{DEFAULT_PORT}"));
+    }
+    let server = match bound {
         Ok(server) => server,
         Err(default_err) => {
             println!(

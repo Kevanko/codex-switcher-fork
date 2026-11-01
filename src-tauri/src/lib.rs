@@ -1,6 +1,7 @@
 //! Codex Switcher - Multi-account manager for Codex CLI
 
 pub mod api;
+pub mod applog;
 pub mod auth;
 pub mod commands;
 pub mod types;
@@ -81,6 +82,8 @@ pub fn run() {
             set_account_mail,
             check_mail_login,
             auto_relogin,
+            applog::log_event,
+            applog::read_app_log,
             set_account_login_password,
             fetch_login_code,
             fetch_login_code_with,
