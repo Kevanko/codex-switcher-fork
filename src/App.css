@@ -380,6 +380,7 @@ input, textarea, select { font-family: inherit; }
 .acc-mark--plus { color: var(--tier-plus); }
 .acc-mark--pro  { color: var(--tier-pro); }
 .acc-mark--team { color: var(--tier-team); }
+.acc-mark.is-lapsed { color: var(--text-3); opacity: .7; }
 
 /* "Обводка" — a paid row is outlined in its own metal, and carries a matching
    left rule. Free rows stay unmarked so the ranked ones read at a glance. */

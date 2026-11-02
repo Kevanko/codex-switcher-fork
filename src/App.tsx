@@ -398,9 +398,13 @@ function ResetBadge({ account, locale, size = 12 }: { account: AccountWithUsage;
 function PlanMark({ account, size = 13 }: { account: AccountWithUsage; size?: number }) {
   const { insignia, tone, label } = getPlanVisual(account);
   if (!insignia) return null;
-  const cls = "acc-mark acc-mark--" + (tone === "pro" ? "pro" : tone === "team" ? "team" : "plus");
+  // Paid period ended and not renewed: grey crown until the plan itself drops to Free.
+  const lapsed = account.provider === "codex" && Boolean(account.subscription_expires_at) &&
+    new Date(account.subscription_expires_at as string).getTime() < Date.now();
+  const cls = "acc-mark acc-mark--" + (tone === "pro" ? "pro" : tone === "team" ? "team" : "plus") + (lapsed ? " is-lapsed" : "");
+  const shown = lapsed ? `${label} · подписка истекла` : label;
   return (
-    <span className={cls} title={label} aria-label={label}>
+    <span className={cls} title={shown} aria-label={shown}>
       {insignia === "team"
         ? <Users size={size} />
         : <Crown size={size} fill={insignia === "crown-solid" ? "currentColor" : "none"} />}
@@ -2233,7 +2237,25 @@ function App() {
       const aS = getRowStatus(a), bS = getRowStatus(b);
       const od = (statusOrder[aS] ?? 3) - (statusOrder[bS] ?? 3);
       if (od !== 0) return od;
+      // Usable now: paid tier first (Pro > Team > Plus > rest, lapsed counts as rest),
+      // then the most remaining quota.
+      const tier = (x: AccountWithUsage) => {
+        const v = getPlanVisual(x);
+        if (!v.premium) return 0;
+        if (x.subscription_expires_at && new Date(x.subscription_expires_at).getTime() < Date.now()) return 0;
+        return v.tone === "pro" ? 3 : v.tone === "team" ? 2 : 1;
+      };
+      if (aS === "ready") {
+        const dt = tier(b) - tier(a);
+        if (dt !== 0) return dt;
+      }
       const aR = getRemainingPercent(a) ?? -1, bR = getRemainingPercent(b) ?? -1;
+      if (aS === "limit") {
+        // Exhausted: whichever comes back soonest goes first.
+        const reset = (x: AccountWithUsage) => getVisibleLimitWindows(x).reduce((m, w) => (w.resetsAt && (m === 0 || w.resetsAt < m) ? w.resetsAt : m), 0) || Infinity;
+        const dr = reset(a) - reset(b);
+        if (dr !== 0 && !Number.isNaN(dr)) return dr;
+      }
       return bR - aR;
     });
   }, [filteredByStatus]);
