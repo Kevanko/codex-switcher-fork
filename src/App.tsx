@@ -1868,6 +1868,24 @@ function App() {
     return () => window.clearInterval(id);
   }, []);
 
+  // Window in the background (blurred / minimised): pause CSS animations to save CPU/GPU.
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => {
+      if (document.hidden || !document.hasFocus()) root.setAttribute("data-idle", "1");
+      else root.removeAttribute("data-idle");
+    };
+    sync();
+    window.addEventListener("blur", sync);
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.removeEventListener("blur", sync);
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, []);
+
   // The search box shows a "/" hint; make the key actually focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {

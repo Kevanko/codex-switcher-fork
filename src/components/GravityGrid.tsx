@@ -88,7 +88,18 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
     const COLOR_BUCKETS = 10;
     const NUM_BUCKETS = ALPHA_BUCKETS * COLOR_BUCKETS;
 
+    // Perf: the grid used to redraw at 60 fps for as long as the cursor was inside
+    // the window (~10-14% CPU/GPU doing nothing). Now: a cursor
+    // that stops moving for 1.2 s counts as "gone" so the loop settles and sleeps.
+    const FRAME_MS = 15; // ~60 fps; the idle sleep below is the real saving
+    const IDLE_MS = 1200;
+    let lastFrame = 0;
+    let lastMove = 0;
+
     const draw = (t: number) => {
+      if (t - lastFrame < FRAME_MS) { raf = requestAnimationFrame(draw); return; }
+      lastFrame = t;
+      if (active && t - lastMove > IDLE_MS) active = false;
       intensity += ((active ? 1 : 0) - intensity) * INTENSITY_EASE;
       // Idle wobble so the funnel keeps gently moving when the cursor is still.
       const mx = mouse.x + Math.cos(t * WOBBLE_SPEED) * WOBBLE * intensity;
@@ -189,6 +200,7 @@ export function GravityGrid({ theme, accent }: { theme: string; accent: string }
     // draggable topbar.
     const onMove = (e: MouseEvent) => {
       mouse.x = e.clientX; mouse.y = e.clientY;
+      lastMove = performance.now();
       // The draggable topbar is a dead zone: hovering it counts as "cursor gone"
       // (no warp), same as leaving the window. Edges also relax the effect.
       active =

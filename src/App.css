@@ -183,7 +183,6 @@ input, textarea, select { font-family: inherit; }
   padding: 0 16px 0 14px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--surface) 82%, transparent);
-  backdrop-filter: blur(8px);
   -webkit-app-region: drag;
 }
 .topbar > * { -webkit-app-region: no-drag; flex-shrink: 0; }
@@ -642,12 +641,9 @@ input, textarea, select { font-family: inherit; }
 
 /* ── STATUS DOT ────────────────────────────────────────────────────────────── */
 .st-dot { display: inline-block; border-radius: 50%; flex: 0 0 auto; }
-.st-dot--pulse { animation: st-pulse 1.8s infinite; }
-@keyframes st-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 60%, transparent); }
-  70%  { box-shadow: 0 0 0 5px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
-}
+/* Opacity only: composited on the GPU, no repaint (a box-shadow pulse repainted every frame). */
+.st-dot--pulse { animation: st-pulse 2.4s ease-in-out infinite; }
+@keyframes st-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
 /* ── METER ─────────────────────────────────────────────────────────────────── */
 .meter { display: block; width: 100%; background: var(--surface-3); border-radius: 20px; overflow: hidden; }
@@ -1015,7 +1011,8 @@ input, textarea, select { font-family: inherit; }
 .meter-fill::after {
   content: ""; position: absolute; inset: 0;
   background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.38) 50%, transparent 70%);
-  transform: translateX(-120%); animation: xp-sweep 3.6s ease-in-out infinite;
+  /* One shine after the fill-in, not forever: an endless sweep on every bar kept the GPU busy. */
+  transform: translateX(-120%); animation: xp-sweep 1.4s ease-in-out .9s 1 both;
 }
 @keyframes xp-fill { from { width: 0; } }
 @keyframes xp-sweep { 0%, 55% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
@@ -1073,11 +1070,14 @@ input, textarea, select { font-family: inherit; }
 .acc-row.acc-row.is-selected .acc-name.acc-name--warn { color: var(--warn); }
 .acc-row.acc-row.is-selected .acc-name.acc-name--bad { color: var(--bad); }
 .acc-win.is-blocked .meter { background: color-mix(in oklab, var(--bad) 16%, var(--surface-3)); }
-.meter-fill.is-burning { animation: xp-fill .9s cubic-bezier(.2,.8,.2,1) both, burn 1.8s ease-in-out infinite; }
+.meter-fill.is-burning { animation: xp-fill .9s cubic-bezier(.2,.8,.2,1) both; box-shadow: 0 0 6px 0 color-mix(in oklab, var(--bad) 55%, transparent); }
 .meter-fill.is-burning::after { display: none; }
 @keyframes burn { 0%, 100% { box-shadow: 0 0 0 0 transparent; opacity: .85; } 50% { box-shadow: 0 0 8px 0 color-mix(in oklab, var(--bad) 70%, transparent); opacity: 1; } }
 .limit-blocked { margin-top: 4px; font-size: calc(11.5px * var(--fz, 1)); color: var(--bad); font-family: var(--mono); }
 @media (prefers-reduced-motion: reduce) { .meter-fill.is-burning { animation: none; } }
+
+/* Window not in front: freeze every running animation (set from App.tsx on blur/hide). */
+html[data-idle="1"] *, html[data-idle="1"] *::before, html[data-idle="1"] *::after { animation-play-state: paused !important; }
 
 .acc-win-r { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-2); white-space: nowrap; text-align: left; }
 .acc-win.is-blocked .acc-win-r { color: var(--bad); }
