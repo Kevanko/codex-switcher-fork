@@ -88,6 +88,7 @@ fn fill_and_click(input_sel: Option<&str>, value: &str, button_sel: &str) -> Str
   var set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
   var inSel={inp}, val={val}, btnSel={btn}, n=0;
   var t=setInterval(function(){{
+    if(location.protocol!=='https:'||!/(^|\.)(openai|chatgpt)\.com$/.test(location.hostname)){{ clearInterval(t); return; }}
     var ok=true;
     if(inSel){{
       var i=document.querySelector(inSel);
@@ -114,7 +115,7 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
         return Err("DEACTIVATED: аккаунт закрыт OpenAI - автовход невозможен".into());
     }
     if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return Err("Автовход уже идёт для другого аккаунта - подожди".into());
+        return Err("BUSY: автовход уже идёт для другого аккаунта - подожди".into());
     }
     let _guard = RunGuard;
     let account = get_account(&account_id).map_err(|e| e.to_string())?.ok_or("Account not found")?;
@@ -123,18 +124,36 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
         return Err("Автовход работает только для аккаунтов ChatGPT".into());
     }
     let email = account.email.clone().ok_or("У аккаунта нет почты в профиле")?;
-    let mail = stored_mail_pair(&account_id).map_err(|_| "Подключи почту для кодов - без неё автовход невозможен")?;
+    // Without a mailbox the password alone may be enough; a code page then goes to the person.
+    let mail = stored_mail_pair(&account_id).ok();
     let password = account
         .extra
         .get(LOGIN_PASSWORD_KEY)
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    if mail.is_none() && password.is_empty() {
+        return Err("Сохрани пароль аккаунта или подключи почту для кодов - без них автовход невозможен".into());
+    }
+    // Setup key of the authenticator app, when the account has one: used on a two-step page.
+    let totp_secret = account
+        .extra
+        .get(crate::totp::KEY)
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let mut totp_tries = 0u32;
 
     let started_at = chrono::Utc::now().timestamp();
     let info = start_login(account.name.clone()).await?;
+    // Our own flow: cleanup must not cancel a login somebody started after us.
+    let flow = super::oauth::current_flow_flag();
+    let cancel_ours = || {
+        if let Some(f) = &flow {
+            super::oauth::cancel_flow(f);
+        }
+    };
     if info.callback_port != 1455 {
-        let _ = super::oauth::cancel_login().await;
+        cancel_ours();
         log(&format!("abort: callback port {} instead of 1455", info.callback_port));
         return Err("Порт 1455 занят другой программой (например Codex CLI) - закрой её и повтори".into());
     }
@@ -167,12 +186,32 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
     let mut stuck_on = String::new();
     let mut fatal: Option<String> = None;
     let mut last_detect = Instant::now();
+    let mut code_polls = 0u32;
 
     while Instant::now() < deadline && !done.inner().is_finished() {
         tokio::time::sleep(Duration::from_millis(700)).await;
         let Ok(u) = win.url() else { continue };
         if u.host_str() == Some("localhost") {
-            break; // the callback server has the result
+            // The callback server has the code; give the exchange time to store the tokens.
+            let until = Instant::now() + Duration::from_secs(20);
+            while !done.inner().is_finished() && Instant::now() < until {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            break;
+        }
+        // Fill nothing on a page that is not OpenAI's own (redirects, look-alike sites).
+        let trusted = u.scheme() == "https"
+            && u.host_str().is_some_and(|h| {
+                h == "openai.com" || h.ends_with(".openai.com") || h == "chatgpt.com" || h.ends_with(".chatgpt.com")
+            });
+        if !trusted {
+            if !shown {
+                shown = true;
+                stuck_on = u.host_str().unwrap_or_default().to_string();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            continue;
         }
         if u.fragment() == Some("cs-deactivated") {
             crate::api::usage::mark_deactivated(&account_id);
@@ -212,9 +251,32 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
                 }
             }
             "/email-verification" => {
-                if last_code_poll.elapsed() >= Duration::from_secs(3) {
+                if mail.is_none() {
+                    // No mailbox linked: the person types the code.
+                    if !shown {
+                        shown = true;
+                        stuck_on = seen_path.clone();
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                } else if last_code_poll.elapsed() >= Duration::from_secs(3) {
                     last_code_poll = Instant::now();
-                    if let Ok(Some(c)) = fetch_login_code_with(mail.0.clone(), mail.1.clone(), Some(started_at - 30)).await {
+                    code_polls += 1;
+                    let (addr, pass) = mail.clone().unwrap_or_default();
+                    // Bounded, so a hanging IMAP server cannot stall the whole loop and its deadline.
+                    let fetched = tokio::time::timeout(
+                        Duration::from_secs(20),
+                        fetch_login_code_with(addr, pass, Some(started_at - 30)),
+                    )
+                    .await;
+                    // Say why no code arrived instead of waiting four minutes in silence.
+                    match &fetched {
+                        Err(_) if code_polls % 5 == 1 => log("mailbox: no answer within 20 s"),
+                        Ok(Err(e)) if code_polls % 5 == 1 => log(&format!("mailbox error: {e}")),
+                        Ok(Ok(None)) if code_polls % 10 == 1 => log("mailbox: no login code yet"),
+                        _ => {}
+                    }
+                    if let Ok(Ok(Some(c))) = fetched {
                         let stale_retry = code_filled_at.map(|t| t.elapsed() > Duration::from_secs(12)).unwrap_or(true);
                         if c.code != last_code || (stale_retry && code_filled_at.is_some()) {
                             last_code = c.code.clone();
@@ -234,6 +296,24 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
                 if on_page_for > Duration::from_secs(12) {
                     fatal = Some("OpenAI отклонил запрос входа (invalid_authorize_request) - повтори позже".to_string());
                     break;
+                }
+            }
+            p if p.contains("mfa") && !p.contains("push") && totp_tries < 3 && totp_secret.is_some() => {
+                // Two-step page with a saved setup key: send the current code, once per 30-second window.
+                let window = chrono::Utc::now().timestamp() / 30;
+                if acted.insert(format!("totp:{window}")) {
+                    totp_tries += 1;
+                    match crate::totp::current(totp_secret.as_deref().unwrap_or_default()) {
+                        Ok((code, _)) => {
+                            log(&format!("two-step code sent (try {totp_tries})"));
+                            let _ = win.eval(&fill_and_click(
+                                Some("input[name=code], input[autocomplete=one-time-code]"),
+                                &code,
+                                "button[type=submit], button[name=intent][value=validate]",
+                            ));
+                        }
+                        Err(error) => log(&format!("two-step key unusable: {error:#}")),
+                    }
                 }
             }
             other => {
@@ -260,10 +340,12 @@ pub async fn auto_relogin(app: AppHandle, account_id: String) -> Result<AccountI
     let result = if finished {
         done.await.map_err(|e| e.to_string()).and_then(|r| r)
     } else {
-        let _ = super::oauth::cancel_login().await;
+        cancel_ours();
         log(&format!("fail on {seen_path} stuck_on={stuck_on} fatal={fatal:?}"));
         Err(if let Some(f) = fatal {
             f
+        } else if seen_path.contains("mfa") && totp_tries >= 3 {
+            "Ключ 2FA не подошёл - проверь сохранённый ключ приложения-аутентификатора".to_string()
         } else if stuck_on.contains("push-auth") || stuck_on.contains("mfa") || stuck_on.contains("passkey") || stuck_on.contains("webauthn") {
             "PHONE: на аккаунте включено подтверждение входа (push, ключ или приложение) - автовход его пройти не может. Подтверди вход в открывшемся окне или отключи это подтверждение в настройках безопасности аккаунта".to_string()
         } else if stuck_on.contains("phone") {

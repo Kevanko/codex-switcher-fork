@@ -3,7 +3,7 @@ use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use std::{fs, path::PathBuf, process::Command};
 use uuid::Uuid;
 
-use crate::auth::storage::{load_accounts, save_accounts};
+use crate::auth::{load_accounts, with_store};
 use crate::types::{ZcodeAccount, ZcodeAccountInfo, ZcodeBalance, ZcodePlanEntry, ZcodePlanInfo};
 
 fn zcode_dir() -> Result<PathBuf> { Ok(dirs::home_dir().context("Could not find home directory")?.join(".zcode").join("v2")) }
@@ -36,73 +36,172 @@ fn entitlement(config_json: &str) -> &'static str {
 
 #[tauri::command]
 pub async fn list_zcode_accounts() -> Result<Vec<ZcodeAccountInfo>, String> {
- let mut s=load_accounts().map_err(|e|e.to_string())?;
- let mut dirty=false;
- // Resolve the active badge from the actual on-disk ZCode session on every
- // launch, including profiles created by an earlier app version.
- if let Ok((credentials,config))=read_live_snapshot() {
-   let detected=s.zcode_accounts.iter().find(|a|a.credentials_json==credentials && a.config_json==config).map(|a|a.id.clone());
-   // A match is proof; the absence of one is not. ZCode rotates tokens inside
-   // credentials.json while it runs, so the live files stop matching the
-   // snapshot we activated within minutes — that must not clear the badge.
-   if detected.is_some() && s.active_zcode_account_id != detected { s.active_zcode_account_id=detected; dirty=true; }
- }
- // Plans recorded before snapshots carried an activation time cannot be
- // attributed to an account, so they are dropped rather than trusted.
- for a in s.zcode_accounts.iter_mut() {
-   if a.activated_at.is_none() && a.plan.is_some() { a.plan = None; dirty = true; }
- }
- // Plan and token balances only move for the account ZCode is actually signed
- // into, and only from log entries written since it went live.
- if let Some(active_id) = s.active_zcode_account_id.clone() {
-   if let Some(active) = s.zcode_accounts.iter_mut().find(|a| a.id == active_id) {
-     // A snapshot that predates activation stamps starts its window now: log
-     // entries from here on are provably this account's, earlier ones are not.
-     if active.activated_at.is_none() { active.activated_at = Some(Utc::now()); dirty = true; }
-     if let Some(plan) = active.activated_at.and_then(read_live_plan) {
-       active.plan = Some(plan);
-       dirty = true;
-     }
-   }
- }
- if dirty { save_accounts(&s).map_err(|e|e.to_string())?; }
- Ok(s.zcode_accounts.iter().map(|a|info(a,s.active_zcode_account_id.as_deref())).collect())
+    with_store(|store| {
+        let mut changed = false;
+        // Live credentials drift as ZCode rotates tokens. Only a positive match
+        // can replace the current active badge.
+        if let Ok((credentials, config)) = read_live_snapshot() {
+            let detected = store
+                .zcode_accounts
+                .iter()
+                .find(|a| a.credentials_json == credentials && a.config_json == config)
+                .map(|a| a.id.clone());
+            if detected.is_some() && store.active_zcode_account_id != detected {
+                store.active_zcode_account_id = detected;
+                changed = true;
+            }
+        }
+        // A plan recorded before activation stamps cannot be attributed to the account.
+        for account in &mut store.zcode_accounts {
+            if account.activated_at.is_none() && account.plan.take().is_some() {
+                changed = true;
+            }
+        }
+        let active_id = store.active_zcode_account_id.as_deref();
+        if let Some(active) = store
+            .zcode_accounts
+            .iter_mut()
+            .find(|a| Some(a.id.as_str()) == active_id)
+        {
+            if active.activated_at.is_none() {
+                active.activated_at = Some(Utc::now());
+                changed = true;
+            }
+            if let Some(plan) = active.activated_at.and_then(read_live_plan) {
+                active.plan = Some(plan);
+                changed = true;
+            }
+        }
+        let accounts = store
+            .zcode_accounts
+            .iter()
+            .map(|a| info(a, active_id))
+            .collect();
+        Ok((accounts, changed))
+    })
+    .map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub async fn capture_zcode_account(name:String) -> Result<ZcodeAccountInfo,String> {
- let name=name.trim().to_string(); if name.is_empty(){return Err("Account name is empty".into())}
- let (cred,config)=files().map_err(|e|e.to_string())?;
- let credentials_json=fs::read_to_string(&cred).with_context(||format!("ZCode credentials not found: {}",cred.display())).map_err(|e|e.to_string())?;
- let config_json=fs::read_to_string(&config).with_context(||format!("ZCode config not found: {}",config.display())).map_err(|e|e.to_string())?;
- serde_json::from_str::<serde_json::Value>(&credentials_json).context("ZCode credentials.json is invalid").map_err(|e|e.to_string())?;
- serde_json::from_str::<serde_json::Value>(&config_json).context("ZCode config.json is invalid").map_err(|e|e.to_string())?;
- let mut s=load_accounts().map_err(|e|e.to_string())?; if s.zcode_accounts.iter().any(|a|a.name.eq_ignore_ascii_case(&name)){return Err("An account with this name already exists".into())}
- let now=Utc::now();
- let a=ZcodeAccount{id:Uuid::new_v4().to_string(),name,credentials_json,config_json,created_at:now,plan:None,activated_at:Some(now)};
- // Capturing means "this is the sign-in I am on right now", so the new snapshot
- // becomes the active one. Without this the badge would depend on the live files
- // still matching byte for byte, which stops being true as ZCode rotates tokens.
- s.active_zcode_account_id=Some(a.id.clone());
- let out=info(&a,s.active_zcode_account_id.as_deref()); s.zcode_accounts.push(a); save_accounts(&s).map_err(|e|e.to_string())?; Ok(out)
+pub async fn capture_zcode_account(name: String) -> Result<ZcodeAccountInfo, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Account name is empty".into());
+    }
+    with_store(|store| {
+        if store
+            .zcode_accounts
+            .iter()
+            .any(|a| a.name.eq_ignore_ascii_case(&name))
+        {
+            anyhow::bail!("An account with this name already exists");
+        }
+        let (credentials, config) = files()?;
+        let credentials_json = fs::read_to_string(&credentials)
+            .with_context(|| format!("ZCode credentials not found: {}", credentials.display()))?;
+        let config_json = fs::read_to_string(&config)
+            .with_context(|| format!("ZCode config not found: {}", config.display()))?;
+        serde_json::from_str::<serde_json::Value>(&credentials_json)
+            .context("ZCode credentials.json is invalid")?;
+        serde_json::from_str::<serde_json::Value>(&config_json)
+            .context("ZCode config.json is invalid")?;
+        let now = Utc::now();
+        let account = ZcodeAccount {
+            id: Uuid::new_v4().to_string(),
+            name,
+            credentials_json,
+            config_json,
+            created_at: now,
+            plan: None,
+            activated_at: Some(now),
+        };
+        store.active_zcode_account_id = Some(account.id.clone());
+        let out = info(&account, store.active_zcode_account_id.as_deref());
+        store.zcode_accounts.push(account);
+        Ok((out, true))
+    })
+    .map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub async fn activate_zcode_account(id:String) -> Result<(),String> {
- let mut s=load_accounts().map_err(|e|e.to_string())?;
- // Preserve tokens/config ZCode may have rotated since the last activation
- // before replacing the live files with another profile.
- if let Some(active_id)=s.active_zcode_account_id.as_deref() { if active_id != id { if let Ok((live_credentials,live_config))=read_live_snapshot() { if let Some(active)=s.zcode_accounts.iter_mut().find(|a|a.id==active_id) { active.credentials_json=live_credentials; active.config_json=live_config; active.plan=active.activated_at.and_then(read_live_plan).or_else(||active.plan.clone()); } } } }
- // The window reopens, but the grants recorded last time this account was
- // live are its own — keep them on screen until a fresh reading replaces them.
- if let Some(incoming)=s.zcode_accounts.iter_mut().find(|a|a.id==id) { incoming.activated_at=Some(Utc::now()); }
- let a=s.zcode_accounts.iter().find(|a|a.id==id).cloned().ok_or("ZCode account not found")?; let restart_target=zcode_executable(); close_zcode().map_err(|e|e.to_string())?;
- let (cred,config)=files().map_err(|e|e.to_string())?; let dir=cred.parent().ok_or("Invalid ZCode path")?; fs::create_dir_all(dir).map_err(|e|e.to_string())?;
- atomic_write(&cred,&a.credentials_json).map_err(|e|e.to_string())?; atomic_write(&config,&a.config_json).map_err(|e|e.to_string())?; s.active_zcode_account_id=Some(id); save_accounts(&s).map_err(|e|e.to_string())?; start_zcode(restart_target.as_deref()).map_err(|e|e.to_string())
+pub async fn activate_zcode_account(id: String) -> Result<(), String> {
+    if !load_accounts()
+        .map_err(|e| e.to_string())?
+        .zcode_accounts
+        .iter()
+        .any(|a| a.id == id)
+    {
+        return Err("ZCode account not found".into());
+    }
+    let (credentials, config) = files().map_err(|e| e.to_string())?;
+    let dir = credentials.parent().ok_or("Invalid ZCode path")?;
+    let restart_target = zcode_executable();
+    close_zcode().map_err(|e| e.to_string())?;
+
+    with_store(|store| {
+        // Preserve the outgoing profile's live credentials before replacing the files.
+        if let Some(active_id) = store
+            .active_zcode_account_id
+            .as_deref()
+            .filter(|active| *active != id)
+        {
+            if let Some(active) = store.zcode_accounts.iter_mut().find(|a| a.id == active_id) {
+                if let Ok((live_credentials, live_config)) = read_live_snapshot() {
+                    active.credentials_json = live_credentials;
+                    active.config_json = live_config;
+                    if let Some(plan) = active.activated_at.and_then(read_live_plan) {
+                        active.plan = Some(plan);
+                    }
+                }
+            }
+        }
+        let incoming = store
+            .zcode_accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .context("ZCode account not found")?;
+        fs::create_dir_all(dir)?;
+        atomic_write(&credentials, &incoming.credentials_json)?;
+        atomic_write(&config, &incoming.config_json)?;
+        // Keep the incoming profile's last known plan until a fresh reading replaces it.
+        incoming.activated_at = Some(Utc::now());
+        store.active_zcode_account_id = Some(id);
+        Ok(((), true))
+    })
+    .map_err(|e| e.to_string())?;
+    start_zcode(restart_target.as_deref()).map_err(|e| e.to_string())
 }
 fn read_live_snapshot() -> Result<(String,String)> { let (cred,config)=files()?; Ok((fs::read_to_string(cred)?,fs::read_to_string(config)?)) }
 #[tauri::command]
-pub async fn delete_zcode_account(id:String)->Result<(),String>{let mut s=load_accounts().map_err(|e|e.to_string())?;let n=s.zcode_accounts.len();s.zcode_accounts.retain(|a|a.id!=id);if n==s.zcode_accounts.len(){return Err("ZCode account not found".into())}if s.active_zcode_account_id.as_deref()==Some(id.as_str()){s.active_zcode_account_id=None}save_accounts(&s).map_err(|e|e.to_string())}
+pub async fn delete_zcode_account(id: String) -> Result<(), String> {
+    with_store(|store| {
+        let before = store.zcode_accounts.len();
+        store.zcode_accounts.retain(|a| a.id != id);
+        if store.zcode_accounts.len() == before {
+            anyhow::bail!("ZCode account not found");
+        }
+        if store.active_zcode_account_id.as_deref() == Some(id.as_str()) {
+            store.active_zcode_account_id = None;
+        }
+        Ok(((), true))
+    })
+    .map_err(|e| e.to_string())
+}
 #[tauri::command]
-pub async fn rename_zcode_account(id:String,name:String)->Result<(),String>{let mut s=load_accounts().map_err(|e|e.to_string())?;let name=name.trim().to_string();if name.is_empty(){return Err("Account name is empty".into())}let a=s.zcode_accounts.iter_mut().find(|a|a.id==id).ok_or("ZCode account not found")?;a.name=name;save_accounts(&s).map_err(|e|e.to_string())}
+pub async fn rename_zcode_account(id: String, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Account name is empty".into());
+    }
+    with_store(|store| {
+        let account = store
+            .zcode_accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .context("ZCode account not found")?;
+        account.name = name;
+        Ok(((), true))
+    })
+    .map_err(|e| e.to_string())
+}
 fn atomic_write(path:&std::path::Path,data:&str)->Result<()>{let tmp=path.with_extension("switcher.tmp");fs::write(&tmp,data)?;if path.exists(){fs::remove_file(path)?}fs::rename(tmp,path)?;Ok(())}
 #[cfg(windows)] fn close_zcode()->Result<()>{let _=Command::new("taskkill").args(["/F","/T","/IM","ZCode.exe"]).status();std::thread::sleep(std::time::Duration::from_millis(700));Ok(())}
 #[cfg(not(windows))] fn close_zcode()->Result<()>{Ok(())}
@@ -259,24 +358,29 @@ pub async fn import_zcode_account_from_file(name: String, path: String) -> Resul
     serde_json::from_str::<serde_json::Value>(&config_json)
         .map_err(|_| "config.json is not valid JSON".to_string())?;
 
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    if store.zcode_accounts.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
-        return Err("An account with this name already exists".into());
-    }
-    let account = ZcodeAccount {
-        id: Uuid::new_v4().to_string(),
-        name,
-        credentials_json,
-        config_json,
-        created_at: Utc::now(),
-        // Imported snapshots have no local balance history to read.
-        plan: None,
-        activated_at: None,
-    };
-    let out = info(&account, store.active_zcode_account_id.as_deref());
-    store.zcode_accounts.push(account);
-    save_accounts(&store).map_err(|e| e.to_string())?;
-    Ok(out)
+    with_store(|store| {
+        if store
+            .zcode_accounts
+            .iter()
+            .any(|a| a.name.eq_ignore_ascii_case(&name))
+        {
+            anyhow::bail!("An account with this name already exists");
+        }
+        let account = ZcodeAccount {
+            id: Uuid::new_v4().to_string(),
+            name,
+            credentials_json,
+            config_json,
+            created_at: Utc::now(),
+            // Imported snapshots have no local balance history to read.
+            plan: None,
+            activated_at: None,
+        };
+        let out = info(&account, store.active_zcode_account_id.as_deref());
+        store.zcode_accounts.push(account);
+        Ok((out, true))
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

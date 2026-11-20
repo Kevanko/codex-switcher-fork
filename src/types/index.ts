@@ -23,6 +23,8 @@ export interface AccountInfo {
   /** Mailbox that receives this account's login codes (no password). */
   mail_address?: string | null;
   has_login_password?: boolean;
+  /** A two-step (authenticator app) setup key is saved for this account. */
+  has_totp_secret?: boolean;
   /** OpenAI reported the account deleted or deactivated. */
   deactivated?: boolean;
 }

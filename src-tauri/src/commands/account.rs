@@ -339,6 +339,8 @@ pub async fn add_claude_account_from_credentials_text(
     ))
 }
 
+static SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Switch to a different account
 #[tauri::command]
 pub async fn switch_account(account_id: String) -> Result<(), String> {
@@ -400,16 +402,23 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         return Ok(());
     }
 
-    // Before switching, save any token refreshes the Codex CLI did for the active account.
-    if let Some(active_codex_id) = store.active_account_id.as_deref() {
-        if active_codex_id != account_id {
-            let _ = crate::auth::storage::sync_codex_tokens_from_file(active_codex_id);
-        }
-    }
+    // One switch at a time (window and tray), and no token rotation in between:
+    // a refresh finishing mid-switch would write the old account back to auth.json.
+    let _switch = SWITCH_LOCK.lock().await;
+    let _refresh = crate::auth::token_refresh::REFRESH_LOCK.lock().await;
+    let store = load_accounts().map_err(|e| e.to_string())?;
 
     let (running_pids, restart_target) = snapshot_restart_target().map_err(|e| e.to_string())?;
     if !running_pids.is_empty() {
         terminate_codex_processes(&running_pids).map_err(|e| e.to_string())?;
+    }
+
+    // Only now, with Codex stopped, save the outgoing session: a rotation it did
+    // in its last moments would otherwise be lost and its old token reused later.
+    if let Some(active_codex_id) = store.active_account_id.as_deref() {
+        if active_codex_id != account_id {
+            let _ = crate::auth::storage::sync_codex_tokens_from_file(active_codex_id);
+        }
     }
 
     // Reload store after potential token sync, then write to ~/.codex/auth.json.
@@ -427,11 +436,15 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
         return Err(err.to_string());
     }
 
-    // Update the active account in our store
-    set_active_account(&account_id).map_err(|e| e.to_string())?;
-
-    // Update last_used_at
-    touch_account(&account_id).map_err(|e| e.to_string())?;
+    // auth.json is already the new account: record it, but restart Codex even if this fails.
+    let recorded = set_active_account(&account_id).and_then(|_| touch_account(&account_id).map(|_| ()));
+    if let Err(err) = recorded {
+        if !running_pids.is_empty() {
+            let _ = restart_codex_process(restart_target.as_ref());
+        }
+        let _ = reconcile_active_account_with_current_auth();
+        return Err(err.to_string());
+    }
 
     // Restart Antigravity background process if it is running
     // This allows it to pick up the new authorization file seamlessly
@@ -465,6 +478,7 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
 /// Remove an account
 #[tauri::command]
 pub async fn delete_account(account_id: String) -> Result<(), String> {
+    let _ = crate::backups::create("before-delete");
     remove_account(&account_id).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -483,7 +497,7 @@ const SHARE_FORMAT_KEY: &str = "codex_switcher_account";
 /// where `auth` is exactly the auth.json / .credentials.json the CLI would read.
 /// Tokens are copied as-is (no refresh), so the original login is not rotated away.
 #[tauri::command]
-pub async fn export_account_json(account_id: String) -> Result<String, String> {
+pub async fn export_account_json(account_id: String, include_bindings: Option<bool>) -> Result<String, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
     // The CLI may have rotated the live tokens since we last stored them.
     if store.active_account_id.as_deref() == Some(account_id.as_str()) {
@@ -514,13 +528,39 @@ pub async fn export_account_json(account_id: String) -> Result<String, String> {
             ),
         ),
     };
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         SHARE_FORMAT_KEY: 1,
         "name": account.name,
         "provider": provider,
         "auth": auth.map_err(|e| e.to_string())?,
     });
+    if include_bindings.unwrap_or(false) {
+        let bindings = share_bindings(&account.extra);
+        if !bindings.is_empty() {
+            payload["bindings"] = serde_json::Value::Object(bindings);
+        }
+    }
     serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())
+}
+
+fn share_bindings(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    crate::backups::SHARE_BINDINGS.iter().filter_map(|key| {
+        let value = fields.get(*key)?;
+        let value = if *key == "mail_login" {
+            let address = value.get("address")?.as_str()?;
+            let password = value.get("password")?.as_str()?;
+            if address.trim().is_empty() || password.is_empty() {
+                return None;
+            }
+            serde_json::json!({ "address": address, "password": password })
+        } else {
+            let secret = value.as_str().filter(|value| !value.is_empty())?;
+            serde_json::Value::String(secret.to_owned())
+        };
+        Some((key.to_string(), value))
+    }).collect()
 }
 
 /// Add an account from pasted JSON: the shape `export_account_json` produces, or a
@@ -555,13 +595,18 @@ pub async fn import_account_json(
     };
 
     let text = auth.to_string();
-    let account = if is_claude {
+    let mut account = if is_claude {
         import_from_claude_credentials_contents(&text, name)
     } else {
         import_from_auth_json_contents(&text, name)
     }
     .map_err(|e| format!("{e:#}"))?;
 
+    if value.get(SHARE_FORMAT_KEY).and_then(|version| version.as_u64()) == Some(1) {
+        if let Some(bindings) = value.get("bindings").and_then(|fields| fields.as_object()) {
+            account.extra.extend(share_bindings(bindings));
+        }
+    }
     let stored = add_account(account).map_err(|e| e.to_string())?;
     finalize_added_account_state(&stored).map_err(|e| e.to_string())?;
     let store = load_accounts().map_err(|e| e.to_string())?;
@@ -612,17 +657,20 @@ pub async fn remove_account_and_session(account_id: String) -> Result<(), String
         }
     }
 
+    let _ = crate::backups::create("before-delete");
     remove_account(&account_id).map_err(|e| e.to_string())?;
 
     if was_active {
         // remove_account points "active" at another stored account, but no file
         // was written for it — leave the slot empty until the fresh sign-in.
-        let mut store = load_accounts().map_err(|e| e.to_string())?;
-        match provider {
-            AccountProvider::Codex => store.active_account_id = None,
-            AccountProvider::Claude => store.active_claude_account_id = None,
-        }
-        save_accounts(&store).map_err(|e| e.to_string())?;
+        crate::auth::with_store(|store| {
+            match provider {
+                AccountProvider::Codex => store.active_account_id = None,
+                AccountProvider::Claude => store.active_claude_account_id = None,
+            }
+            Ok(((), true))
+        })
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -653,8 +701,8 @@ pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccounts
         })?;
     validate_imported_store(&imported).map_err(|e| format!("{e:#}"))?;
 
-    let (merged, summary) = merge_accounts_store(current, imported);
-    save_accounts(&merged).map_err(|e| e.to_string())?;
+    drop(current);
+    let summary = import_into_store(imported)?;
     Ok(ImportAccountsSummary {
         total_in_payload,
         imported_count: summary.imported_count,
@@ -664,11 +712,12 @@ pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccounts
 
 /// Export full account config as an encrypted file.
 #[tauri::command]
-pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), String> {
+pub async fn export_accounts_full_encrypted_file(path: String, passphrase: Option<String>) -> Result<(), String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    let store = codex_only_store(&store);
-    let encrypted =
-        encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
+    let pass = passphrase.filter(|p| p.trim().chars().count() >= 8)
+        .ok_or_else(|| "Пароль файла — минимум 8 символов".to_string())?;
+    let encrypted = encode_full_encrypted_store(&store, &pass)
+        .map_err(|e| e.to_string())?;
     write_encrypted_file(&path, &encrypted).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -684,16 +733,47 @@ pub async fn export_accounts_full_encrypted_bytes() -> Result<Vec<u8>, String> {
 #[tauri::command]
 pub async fn import_accounts_full_encrypted_file(
     path: String,
+    passphrase: Option<String>,
 ) -> Result<ImportAccountsSummary, String> {
     let encrypted = read_encrypted_file(&path).map_err(|e| e.to_string())?;
-    let imported = decode_full_encrypted_store(&encrypted, FULL_PRESET_PASSPHRASE)
-        .map_err(|e| e.to_string())?;
+    // A user password first, then the built-in phrase older files were written with.
+    let imported = passphrase
+        .filter(|p| !p.is_empty())
+        .and_then(|p| decode_full_encrypted_store(&encrypted, &p).ok())
+        .map(Ok)
+        .unwrap_or_else(|| decode_full_encrypted_store(&encrypted, FULL_PRESET_PASSPHRASE))
+        .map_err(|_| "Не удалось открыть файл: неверный пароль или файл повреждён".to_string())?;
     validate_imported_store(&imported).map_err(|e| e.to_string())?;
 
-    let current = load_accounts().map_err(|e| e.to_string())?;
-    let (merged, summary) = merge_accounts_store(current, imported);
-    save_accounts(&merged).map_err(|e| e.to_string())?;
-    Ok(summary)
+    restore_full_store(imported)
+}
+
+/// Merge an imported store into the CURRENT one under the store lock, so a token
+/// rotation that landed while the import was being prepared is not overwritten.
+fn import_into_store(imported: AccountsStore) -> Result<ImportAccountsSummary, String> {
+    let _ = crate::backups::create("before-import");
+    crate::auth::with_store(|store| {
+        let (merged, summary) = merge_accounts_store(std::mem::take(store), imported);
+        *store = merged;
+        Ok((summary, true))
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn restore_full_store(imported: AccountsStore) -> Result<ImportAccountsSummary, String> {
+    crate::auth::with_store(|store| {
+        crate::backups::snapshot(store, "before-import", None)?;
+        let total_in_payload = imported.accounts.len();
+        let previous_count = store.accounts.len();
+        let changed = crate::backups::merge(store, imported);
+        let imported_count = store.accounts.len() - previous_count;
+        Ok((ImportAccountsSummary {
+            total_in_payload,
+            imported_count,
+            skipped_count: total_in_payload - imported_count,
+        }, changed))
+    })
+    .map_err(|e| format!("{e:#}"))
 }
 
 /// Import full account config from encrypted bytes uploaded through the browser UI.
@@ -703,11 +783,7 @@ pub async fn import_accounts_full_encrypted_bytes(
     let imported =
         decode_full_encrypted_store(&bytes, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
     validate_imported_store(&imported).map_err(|e| e.to_string())?;
-
-    let current = load_accounts().map_err(|e| e.to_string())?;
-    let (merged, summary) = merge_accounts_store(current, imported);
-    save_accounts(&merged).map_err(|e| e.to_string())?;
-    Ok(summary)
+    restore_full_store(imported)
 }
 
 /// Find all running Antigravity codex assistant processes
@@ -1103,15 +1179,15 @@ fn decompress_bytes_with_limit(input: &[u8], max_bytes: u64) -> anyhow::Result<V
 }
 
 fn write_encrypted_file(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    fs::write(path, bytes).with_context(|| format!("Failed to write file: {path}"))?;
+    use std::io::Write;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set file permissions: {path}"))?;
-    }
-
+    let destination = std::path::Path::new(path);
+    let folder = destination.parent().filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(folder)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(destination).with_context(|| format!("Failed to write file: {path}"))?;
     Ok(())
 }
 
@@ -1139,7 +1215,7 @@ fn validate_imported_store(store: &AccountsStore) -> anyhow::Result<()> {
         if !ids.insert(account.id.clone()) {
             anyhow::bail!("Import contains duplicate account id: {}", account.id);
         }
-        if !names.insert(account.name.clone()) {
+        if !names.insert((account.provider == AccountProvider::Claude, account.name.clone())) {
             anyhow::bail!("Import contains duplicate account name: {}", account.name);
         }
     }
@@ -1280,4 +1356,36 @@ pub async fn get_masked_account_ids() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub async fn set_masked_account_ids(ids: Vec<String>) -> Result<(), String> {
     crate::auth::storage::set_masked_account_ids(ids).map_err(|e| e.to_string())
+}
+
+
+#[cfg(test)]
+mod backup_transfer_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn portable_backup_round_trips_saved_credentials() -> anyhow::Result<()> {
+        let original: AccountsStore = serde_json::from_value(json!({
+            "accounts": [{
+                "id": "fixture", "name": "Fixture", "auth_mode": "api_key",
+                "auth_data": { "type": "api_key", "key": "fixture-key" },
+                "created_at": "2026-11-12T00:00:00Z",
+                "mail_login": { "address": "a@example.com", "password": "mail-fixture" },
+                "login_password": "login-fixture", "totp_secret": "GEZDGNBV",
+                "local_setting": "keep-only-in-backup"
+            }]
+        }))?;
+        let file = encode_full_encrypted_store(&original, "fixture-passphrase")?;
+        assert!(decode_full_encrypted_store(&file, "wrong-passphrase").is_err());
+        let restored = decode_full_encrypted_store(&file, "fixture-passphrase")?;
+        validate_imported_store(&restored)?;
+        assert_eq!(restored.accounts[0].extra, original.accounts[0].extra);
+        let shared = share_bindings(&restored.accounts[0].extra);
+        assert_eq!(shared.len(), 3);
+        assert_eq!(shared["mail_login"]["password"], "mail-fixture");
+        assert_eq!(shared["login_password"], "login-fixture");
+        assert!(!shared.contains_key("local_setting"));
+        Ok(())
+    }
 }

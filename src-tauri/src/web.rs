@@ -1,11 +1,17 @@
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
+use hmac::{digest::CtOutput, Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::Sha256;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use tokio::runtime::Runtime;
 
@@ -79,9 +85,33 @@ struct FileImportArgs {
 }
 
 pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
-    let address = format!("{host}:{port}");
-    let server = Server::http(&address)
-        .map_err(|err| anyhow::anyhow!("Failed to bind HTTP server on {address}: {err}"))?;
+    let bind_host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let listener = TcpListener::bind((bind_host, port))
+        .with_context(|| format!("Failed to bind HTTP server on {host}:{port}"))?;
+    let address = listener
+        .local_addr()
+        .context("Failed to read web server address")?;
+    let token = if !address.ip().is_loopback() {
+        Some(match std::env::var("CODEX_WEB_TOKEN") {
+            Ok(token) if !token.is_empty() && token.bytes().all(|byte| byte.is_ascii_graphic()) => {
+                (token, false)
+            }
+            Ok(_) => anyhow::bail!(
+                "CODEX_WEB_TOKEN must contain nonempty printable ASCII without spaces"
+            ),
+            Err(std::env::VarError::NotPresent) => {
+                (URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()), true)
+            }
+            Err(error) => return Err(error).context("Invalid CODEX_WEB_TOKEN"),
+        })
+    } else {
+        None
+    };
+    let server = Server::from_listener(listener, None)
+        .map_err(|err| anyhow::anyhow!("Failed to start HTTP server on {address}: {err}"))?;
     let runtime = Runtime::new().context("Failed to start async runtime")?;
     let dist_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -89,9 +119,15 @@ pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
 
     println!("Codex Switcher web server listening on http://{address}");
     println!("Serving static files from {}", dist_dir.display());
+    let token = token.map(|(token, generated)| {
+        if generated {
+            println!("Codex Switcher web access token: {token}");
+        }
+        token_tag(&token)
+    });
 
     for request in server.incoming_requests() {
-        if let Err(error) = handle_request(request, &runtime, &dist_dir) {
+        if let Err(error) = handle_request(request, &runtime, &dist_dir, token.as_ref()) {
             eprintln!("[web] request failed: {error:#}");
         }
     }
@@ -99,17 +135,121 @@ pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_request(mut request: Request, runtime: &Runtime, dist_dir: &Path) -> anyhow::Result<()> {
+type TokenTag = CtOutput<Hmac<Sha256>>;
+
+fn token_tag(token: &str) -> TokenTag {
+    // CtOutput compares fixed-length tags in constant time, regardless of token length.
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(b"codex-web access token").expect("HMAC accepts any key");
+    mac.update(token.as_bytes());
+    mac.finalize()
+}
+
+fn authorized(expected: &TokenTag, authorization: Option<&str>, query: &str) -> bool {
+    let bearer = authorization
+        .and_then(|value| value.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+        .map(|(_, token)| token);
+    bearer.is_some_and(|token| token_tag(token) == *expected)
+        || url::form_urlencoded::parse(query.as_bytes())
+            .any(|(name, token)| name == "token" && token_tag(&token) == *expected)
+}
+
+fn loopback_request_allowed(host: Option<&str>, origin: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let local_origin = format!("http://{host}");
+    let Ok(url) = url::Url::parse(&local_origin) else {
+        return false;
+    };
+    let is_local = match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    is_local && origin.is_none_or(|value| value.eq_ignore_ascii_case(&local_origin))
+}
+
+fn network_command_allowed(command: &str) -> bool {
+    // Commands that expose credentials or one-time codes stay loopback-only.
+    matches!(
+        command,
+        "list_accounts"
+            | "list_zcode_accounts"
+            | "capture_zcode_account"
+            | "get_active_account_info"
+            | "add_account_from_auth_json_text"
+            | "add_claude_account_from_credentials_text"
+            | "get_usage"
+            | "refresh_account_metadata"
+            | "refresh_all_accounts_usage"
+            | "warmup_account"
+            | "warmup_all_accounts"
+            | "switch_account"
+            | "delete_account"
+            | "rename_account"
+            | "start_login"
+            | "complete_login"
+            | "complete_reauth_login"
+            | "cancel_login"
+            | "remove_account_and_session"
+            | "check_mail_login"
+            | "import_account_json"
+            | "import_accounts_slim_text"
+            | "import_accounts_full_encrypted_bytes"
+            | "get_masked_account_ids"
+            | "set_masked_account_ids"
+            | "check_codex_processes"
+    )
+}
+
+fn handle_request(
+    mut request: Request,
+    runtime: &Runtime,
+    dist_dir: &Path,
+    token: Option<&TokenTag>,
+) -> anyhow::Result<()> {
     let method = request.method().clone();
     let url = request.url().to_string();
+    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+    let request_header = |name| {
+        request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv(name))
+            .map(|header| header.value.as_str())
+    };
+    if let Some(expected) = token {
+        if !authorized(expected, request_header("Authorization"), query) {
+            return respond_json(
+                request,
+                StatusCode(401),
+                &json!({ "error": "Unauthorized" }),
+            );
+        }
+    } else if !loopback_request_allowed(request_header("Host"), request_header("Origin")) {
+        return respond_json(
+            request,
+            StatusCode(403),
+            &json!({ "error": "Forbidden origin" }),
+        );
+    }
 
-    if method == Method::Get && url == "/api/health" {
+    if method == Method::Get && path == "/api/health" {
         respond_json(request, StatusCode(200), &json!({ "ok": true }))?;
         return Ok(());
     }
 
-    if method == Method::Post && url.starts_with("/api/invoke/") {
-        let command = url.trim_start_matches("/api/invoke/");
+    if let (Method::Post, Some(command)) = (&method, path.strip_prefix("/api/invoke/")) {
+        if token.is_some() && !network_command_allowed(command) {
+            return respond_json(
+                request,
+                StatusCode(403),
+                &json!({ "error": "Command unavailable in network mode" }),
+            );
+        }
         let payload = parse_request_json(&mut request)?;
         let result = runtime.block_on(invoke_web_command(command, payload));
         match result {
@@ -120,7 +260,7 @@ fn handle_request(mut request: Request, runtime: &Runtime, dist_dir: &Path) -> a
     }
 
     if method == Method::Get {
-        serve_static(request, dist_dir, &url)?;
+        serve_static(request, dist_dir, path)?;
         return Ok(());
     }
 
@@ -201,7 +341,7 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "cancel_login" => to_json(cancel_login().await?),
         "export_account_json" => {
             let args: AccountIdArgs = parse_args(payload)?;
-            to_json(crate::commands::export_account_json(args.account_id).await?)
+            to_json(crate::commands::export_account_json(args.account_id, None).await?)
         }
         "remove_account_and_session" => {
             let args: AccountIdArgs = parse_args(payload)?;
@@ -308,8 +448,7 @@ fn serve_static(request: Request, dist_dir: &Path, url: &str) -> anyhow::Result<
 }
 
 fn sanitize_path(url: &str) -> anyhow::Result<PathBuf> {
-    let path = url.split('?').next().unwrap_or("/");
-    let raw = path.trim_start_matches('/');
+    let raw = url.trim_start_matches('/');
     let candidate = Path::new(raw);
 
     for component in candidate.components() {
@@ -327,6 +466,7 @@ fn serve_file(request: Request, path: PathBuf) -> anyhow::Result<()> {
     let mime = mime_type_for_path(&path);
     let response = Response::from_data(data)
         .with_header(header("Content-Type", mime)?)
+        .with_header(header("Referrer-Policy", "no-referrer")?)
         .with_header(header("Cache-Control", "no-cache")?);
     request.respond(response)?;
     Ok(())
@@ -335,7 +475,8 @@ fn serve_file(request: Request, path: PathBuf) -> anyhow::Result<()> {
 fn respond_json(request: Request, status: StatusCode, payload: &Value) -> anyhow::Result<()> {
     let response = Response::from_string(serde_json::to_string(payload)?)
         .with_status_code(status)
-        .with_header(header("Content-Type", "application/json; charset=utf-8")?);
+        .with_header(header("Content-Type", "application/json; charset=utf-8")?)
+        .with_header(header("Cache-Control", "no-store")?);
     request.respond(response)?;
     Ok(())
 }
@@ -378,5 +519,65 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         "txt" => "text/plain; charset=utf-8",
         "webp" => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{authorized, loopback_request_allowed, network_command_allowed, token_tag};
+
+    #[test]
+    fn accepts_only_the_matching_bearer_or_query_token() {
+        let expected = token_tag("test+token");
+        assert!(authorized(&expected, Some("Bearer test+token"), ""));
+        assert!(authorized(&expected, None, "other=1&token=test%2Btoken"));
+        assert!(!authorized(&expected, None, ""));
+        assert!(!authorized(
+            &expected,
+            Some("Bearer test+wrong"),
+            "token=test"
+        ));
+        assert!(!authorized(
+            &expected,
+            Some("Basic test+token"),
+            "other=test%2Btoken"
+        ));
+    }
+
+    #[test]
+    fn network_mode_blocks_secret_commands() {
+        for command in [
+            "export_account_json",
+            "export_accounts_slim_text",
+            "export_accounts_full_encrypted_bytes",
+            "export_accounts_full_encrypted_file",
+            "get_gateway_key_secret",
+            "get_claude_token_secret",
+            "set_account_mail",
+            "fetch_login_code",
+            "fetch_login_code_with",
+            "get_totp_code",
+            "set_totp_secret",
+        ] {
+            assert!(!network_command_allowed(command), "{command}");
+        }
+        for command in ["list_accounts", "switch_account", "delete_account"] {
+            assert!(network_command_allowed(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn loopback_requires_a_local_host_and_matching_browser_origin() {
+        assert!(loopback_request_allowed(
+            Some("localhost:3210"),
+            Some("http://localhost:3210")
+        ));
+        assert!(loopback_request_allowed(Some("127.0.0.1:3210"), None));
+        assert!(loopback_request_allowed(Some("[::1]:3210"), None));
+        assert!(!loopback_request_allowed(Some("example.test:3210"), None));
+        assert!(!loopback_request_allowed(
+            Some("localhost:3210"),
+            Some("https://example.test")
+        ));
     }
 }

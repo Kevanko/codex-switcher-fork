@@ -40,11 +40,22 @@ function usageJitterForAccount(accountId: string): number {
   return Math.abs(hash) % USAGE_REFRESH_JITTER_MS;
 }
 
+export interface RefreshSummary {
+  total: number;
+  ok: number;
+  failed: number;
+  cached: number;
+  rateLimited: number;
+}
+
 function isNetworkError(msg: string): boolean {
   if (!navigator.onLine) return true;
   const m = msg.toLowerCase();
   return (
     m.includes("connection refused") ||
+    m.includes("failed to send") ||
+    m.includes("timed out") ||
+    m.includes("dns error") ||
     m.includes("failed to connect") ||
     m.includes("error sending request") ||
     m.includes("error trying to connect") ||
@@ -72,6 +83,9 @@ export function useAccounts() {
   const maxConcurrentUsageRequests = 3;
   // Per-account pacing state for the automatic poll.
   const usageAttemptAtRef = useRef<Record<string, number>>({});
+  // Bumped when an account gets a new session (re-login): answers to requests
+  // started with the old session are dropped instead of overwriting fresh data.
+  const sessionGenRef = useRef<Record<string, number>>({});
   const usageBlockedUntilRef = useRef<Record<string, number>>({});
   // Debounce for OS "online" events, which fire on every adapter change on Windows.
   const lastOnlineRefreshRef = useRef<number>(0);
@@ -157,7 +171,8 @@ export function useAccounts() {
     async (
       accountList?: AccountInfo[] | AccountWithUsage[],
       options?: { refreshMetadata?: boolean; auto?: boolean }
-    ) => {
+    ): Promise<RefreshSummary> => {
+      const summary: RefreshSummary = { total: 0, ok: 0, failed: 0, cached: 0, rateLimited: 0 };
       try {
         let list: AccountInfo[] | AccountWithUsage[] = [
           ...(accountList ?? accountsRef.current),
@@ -193,11 +208,10 @@ export function useAccounts() {
           list = list.filter(
             (account) => now >= (usageBlockedUntilRef.current[account.id] ?? 0)
           );
-          if (list.length === 0) return;
         }
 
         if (list.length === 0) {
-          return;
+          return summary;
         }
 
         if (options?.refreshMetadata) {
@@ -220,9 +234,12 @@ export function useAccounts() {
         const usageResults = new Map<string, UsageInfo>();
 
         const attemptStamp = Date.now();
+        const genAtStart: Record<string, number> = {};
         accountIds.forEach((id) => {
           usageAttemptAtRef.current[id] = attemptStamp;
+          genAtStart[id] = sessionGenRef.current[id] ?? 0;
         });
+        summary.total = accountIds.length;
 
         setAccounts((prev) =>
           prev.map((account) =>
@@ -267,22 +284,32 @@ export function useAccounts() {
           setAccounts((prev) =>
             prev.map((a) => accountIdSet.has(a.id) ? { ...a, usageLoading: false } : a)
           );
-          return;
+          return summary;
         }
 
         // Some succeeded → we're back online (or were never offline).
         if (networkErrorCount === 0) setNetworkOffline(false);
 
         usageResults.forEach((usage, id) => {
+          // A new session arrived while this request ran: its answer is about the old one.
+          if ((sessionGenRef.current[id] ?? 0) !== genAtStart[id]) {
+            usageResults.delete(id);
+            return;
+          }
           if (usage.rate_limited) {
             usageBlockedUntilRef.current[id] = Date.now() + RATE_LIMIT_FRONTEND_BACKOFF_MS;
-          }
+            summary.rateLimited++;
+          } else if (usage.from_cache) summary.cached++;
+          else if (!usage.error) summary.ok++;
         });
+        // Errors, thrown requests and dropped stale answers all count as not refreshed.
+        summary.failed = summary.total - summary.ok - summary.cached - summary.rateLimited;
 
         setAccounts((prev) =>
           prev.map((account) => {
             const usage = usageResults.get(account.id);
-            if (!usage) return account;
+            // Failed in the background with older data on screen: stop the spinner anyway.
+            if (!usage) return accountIdSet.has(account.id) ? { ...account, usageLoading: false } : account;
             if (usage.rate_limited && account.usage && !account.usage.error) {
               // Transient 429: keep the last good data, just flag the failed refresh.
               return { ...account, usageWarning: true, usageLoading: false };
@@ -301,6 +328,7 @@ export function useAccounts() {
             };
           })
         );
+        return summary;
       } catch (err) {
         console.error("Failed to refresh usage:", err);
         throw err;
@@ -506,23 +534,32 @@ export function useAccounts() {
 
   const setAccountMail = useCallback(
     (accountId: string, address: string, password: string) =>
-      invokeBackend<void>("set_account_mail", { accountId, address, password }).then(() => loadAccounts()),
+      invokeBackend<void>("set_account_mail", { accountId, address, password }).then(() => loadAccounts(true)),
     [loadAccounts]
   );
 
   const setAccountLoginPassword = useCallback(
     (accountId: string, password: string) =>
-      invokeBackend<void>("set_account_login_password", { accountId, password }).then(() => loadAccounts()),
+      invokeBackend<void>("set_account_login_password", { accountId, password }).then(() => loadAccounts(true)),
+    [loadAccounts]
+  );
+
+  /** Saves the authenticator setup key of an account; an empty key removes it. */
+  const setAccountTotpSecret = useCallback(
+    (accountId: string, secret: string) =>
+      invokeBackend<void>("set_totp_secret", { accountId, secret }).then(() => loadAccounts(true)),
     [loadAccounts]
   );
 
   /** Sign in again by itself: browser steps + the code from the linked mailbox. */
   const autoRelogin = useCallback(async (accountId: string) => {
     const account = await invokeBackend<AccountInfo>("auto_relogin", { accountId });
-    const list = await loadAccounts();
-    await refreshUsage(list);
+    sessionGenRef.current[accountId] = (sessionGenRef.current[accountId] ?? 0) + 1;
+    // Only the re-logged account: a full batch per auto-login ran into 429s.
+    await loadAccounts(true);
+    await refreshSingleUsage(accountId, { force: true });
     return account;
-  }, [loadAccounts, refreshUsage]);
+  }, [loadAccounts, refreshSingleUsage]);
 
   const checkMailLogin = useCallback(
     (address: string, password: string) => invokeBackend<void>("check_mail_login", { address, password }),
@@ -539,7 +576,7 @@ export function useAccounts() {
   );
 
   const exportAccountJson = useCallback(
-    (accountId: string) => invokeBackend<string>("export_account_json", { accountId }),
+    (accountId: string, includeBindings = false) => invokeBackend<string>("export_account_json", { accountId, includeBindings }),
     []
   );
 
@@ -589,9 +626,9 @@ export function useAccounts() {
   );
 
   const exportAccountsFullEncryptedFile = useCallback(
-    async (path: string) => {
+    async (path: string, passphrase?: string) => {
       try {
-        await invokeBackend("export_accounts_full_encrypted_file", { path });
+        await invokeBackend("export_accounts_full_encrypted_file", { path, passphrase });
       } catch (err) {
         throw err;
       }
@@ -600,11 +637,11 @@ export function useAccounts() {
   );
 
   const importAccountsFullEncryptedFile = useCallback(
-    async (path: string) => {
+    async (path: string, passphrase?: string) => {
       try {
         const summary = await invokeBackend<ImportAccountsSummary>(
           "import_accounts_full_encrypted_file",
-          { path }
+          { path, passphrase }
         );
         const accountList = await loadAccounts();
         await refreshUsage(accountList);
@@ -759,6 +796,7 @@ export function useAccounts() {
     importAccountsFullEncryptedFile,
     setAccountMail,
     setAccountLoginPassword,
+    setAccountTotpSecret,
     autoRelogin,
     checkMailLogin,
     fetchLoginCode,

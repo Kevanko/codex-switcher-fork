@@ -15,7 +15,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::auth::storage::{get_config_dir, load_accounts, save_accounts};
+use crate::auth::{get_config_dir, load_accounts, with_store};
 use crate::types::{ClaudeTokenAccount, ClaudeTokenAccountInfo};
 
 /// `claude setup-token` tokens are valid for exactly one year.
@@ -100,28 +100,27 @@ fn store_token_account(
         anyhow::bail!("Token is empty");
     }
 
-    let mut store = load_accounts()?;
-    if store
-        .claude_token_accounts
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case(&name))
-    {
-        anyhow::bail!("A token account named '{name}' already exists");
-    }
-
-    let now = Utc::now();
-    let account = ClaudeTokenAccount {
-        id: Uuid::new_v4().to_string(),
-        name,
-        token,
-        created_at: now,
-        expires_at: now + Duration::days(TOKEN_TTL_DAYS),
-        plan_label,
-    };
-    let info = to_info(store.active_claude_token_id.as_deref(), &account);
-    store.claude_token_accounts.push(account);
-    save_accounts(&store)?;
-    Ok(info)
+    with_store(|store| {
+        if store
+            .claude_token_accounts
+            .iter()
+            .any(|a| a.name.eq_ignore_ascii_case(&name))
+        {
+            anyhow::bail!("A token account named '{name}' already exists");
+        }
+        let now = Utc::now();
+        let account = ClaudeTokenAccount {
+            id: Uuid::new_v4().to_string(),
+            name,
+            token,
+            created_at: now,
+            expires_at: now + Duration::days(TOKEN_TTL_DAYS),
+            plan_label,
+        };
+        let info = to_info(store.active_claude_token_id.as_deref(), &account);
+        store.claude_token_accounts.push(account);
+        Ok((info, true))
+    })
 }
 
 /// Extract a Claude OAuth token from `claude setup-token` output. Conservative:
@@ -204,36 +203,40 @@ pub async fn rename_claude_token_account(id: String, name: String) -> Result<(),
     if name.is_empty() {
         return Err("Account name is empty".to_string());
     }
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    if store
-        .claude_token_accounts
-        .iter()
-        .any(|a| a.id != id && a.name.eq_ignore_ascii_case(&name))
-    {
-        return Err(format!("A token account named '{name}' already exists"));
-    }
-    let account = store
-        .claude_token_accounts
-        .iter_mut()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("Token account not found: {id}"))?;
-    account.name = name;
-    save_accounts(&store).map_err(|e| e.to_string())
+    with_store(|store| {
+        if store
+            .claude_token_accounts
+            .iter()
+            .any(|a| a.id != id && a.name.eq_ignore_ascii_case(&name))
+        {
+            anyhow::bail!("A token account named '{name}' already exists");
+        }
+        let account = store
+            .claude_token_accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .with_context(|| format!("Token account not found: {id}"))?;
+        account.name = name;
+        Ok(((), true))
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn delete_claude_token_account(id: String) -> Result<(), String> {
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    let before = store.claude_token_accounts.len();
-    store.claude_token_accounts.retain(|a| a.id != id);
-    if store.claude_token_accounts.len() == before {
-        return Err(format!("Token account not found: {id}"));
-    }
-    let was_active = store.active_claude_token_id.as_deref() == Some(id.as_str());
-    if was_active {
-        store.active_claude_token_id = None;
-    }
-    save_accounts(&store).map_err(|e| e.to_string())?;
+    let was_active = with_store(|store| {
+        let before = store.claude_token_accounts.len();
+        store.claude_token_accounts.retain(|a| a.id != id);
+        if store.claude_token_accounts.len() == before {
+            anyhow::bail!("Token account not found: {id}");
+        }
+        let was_active = store.active_claude_token_id.as_deref() == Some(id.as_str());
+        if was_active {
+            store.active_claude_token_id = None;
+        }
+        Ok((was_active, true))
+    })
+    .map_err(|e| e.to_string())?;
     if was_active {
         apply_claude_token_env(None).map_err(|e| e.to_string())?;
     }
@@ -243,27 +246,30 @@ pub async fn delete_claude_token_account(id: String) -> Result<(), String> {
 /// Make a token account the active one (injects its token into the environment).
 #[tauri::command]
 pub async fn activate_claude_token_account(id: String) -> Result<(), String> {
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    let token = store
-        .claude_token_accounts
-        .iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("Token account not found: {id}"))?
-        .token
-        .clone();
-    // A gateway (GLM) env override would shadow this token — clear it first.
-    let _ = crate::commands::gateway::deactivate_active_gateway();
-    store.active_claude_token_id = Some(id);
-    save_accounts(&store).map_err(|e| e.to_string())?;
+    let (token, had_gateway) = with_store(|store| {
+        let token = store
+            .claude_token_accounts
+            .iter()
+            .find(|a| a.id == id)
+            .with_context(|| format!("Token account not found: {id}"))?
+            .token
+            .clone();
+        let had_gateway = store.active_gateway_id.take().is_some();
+        store.active_claude_token_id = Some(id);
+        Ok(((token, had_gateway), true))
+    })
+    .map_err(|e| e.to_string())?;
+    if had_gateway {
+        let _ = crate::commands::gateway::clear_gateway_env();
+    }
     apply_claude_token_env(Some(&token)).map_err(|e| e.to_string())
 }
 
 /// Clear the active token account (removes the injected env var).
 #[tauri::command]
 pub async fn deactivate_claude_token() -> Result<(), String> {
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    store.active_claude_token_id = None;
-    save_accounts(&store).map_err(|e| e.to_string())?;
+    with_store(|store| Ok(((), store.active_claude_token_id.take().is_some())))
+        .map_err(|e| e.to_string())?;
     apply_claude_token_env(None).map_err(|e| e.to_string())
 }
 

@@ -756,7 +756,9 @@ input, textarea, select { font-family: inherit; }
 .swatch-btn.is-active { border-color: var(--border-strong); color: var(--text); background: var(--surface-3); }
 .swatch-dot { width: 18px; height: 18px; border-radius: 50%; flex: 0 0 auto; box-shadow: inset 0 0 0 2px rgba(255,255,255,.12); }
 
-.settings-actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+/* One button per row: the labels are long, two columns pushed them past the panel's right edge. */
+.settings-actions-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
+.settings-actions-grid .btn { min-width: 0; white-space: normal; text-align: left; justify-content: flex-start; }
 
 /* ── CONFIG / EXPORT-IMPORT MODAL ──────────────────────────────────────────── */
 .config-overlay {
@@ -1093,5 +1095,30 @@ html[data-idle="1"] *, html[data-idle="1"] *::before, html[data-idle="1"] *::aft
 .acc-row.is-deactivated .acc-name { color: var(--closed); text-decoration: line-through; text-decoration-thickness: 1px; }
 .acc-row.is-deactivated .acc-right { opacity: .7; }
 .acc-closed { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; font-family: var(--mono); font-size: calc(10px * var(--fz, 1)); font-weight: 600; letter-spacing: .04em; color: var(--closed); border: 1px solid color-mix(in oklab, var(--closed) 45%, transparent); border-radius: 4px; padding: 1px 5px; }
+.acc-closed.acc-stale { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
+/* Old figures of an aged-out sign-in must not look like live quota. */
+.acc-row:has(.acc-stale) .acc-right, .dcard.is-stale .limit-block { opacity: .5; }
 .dcard.is-deactivated { filter: none; opacity: 1; border-style: dashed; border-color: color-mix(in oklab, var(--closed) 50%, transparent); }
 .dcard.is-deactivated .dhead-name-btn span { color: var(--closed); }
+
+/* ── Project sync panel ─────────────────────────────────────────────────────
+   Sits under the topbar, so the window controls and the panel's own close
+   button no longer stack on top of each other. */
+.scrim.is-below-bar { top: 52px; }
+.panel.is-below-bar { top: 52px; }
+/* Backups in Settings: one row per snapshot, ten per page, everything wraps inside the panel. */
+.backup-heading { margin-top: 14px; }
+.backup-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.backup-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.backup-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 10px; min-width: 0;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2, var(--surface));
+}
+.backup-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 160px; }
+.backup-name { font-size: calc(12.5px * var(--fz, 1)); color: var(--text); }
+.backup-meta { font-family: var(--mono); font-size: calc(10.5px * var(--fz, 1)); color: var(--text-3); overflow-wrap: anywhere; }
+.backup-actions { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.backup-actions .btn, .backup-actions .icon-btn, .backup-confirm .btn { white-space: nowrap; }
+.backup-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; max-width: 100%; }
+.backup-confirm-text { font-size: calc(11.5px * var(--fz, 1)); color: var(--text-2, var(--text-3)); }
+.backup-pager { display: flex; align-items: center; justify-content: center; gap: 10px; font-family: var(--mono); font-size: calc(11px * var(--fz, 1)); color: var(--text-3); }

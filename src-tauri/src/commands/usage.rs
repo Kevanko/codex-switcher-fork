@@ -22,8 +22,9 @@ pub async fn get_usage(account_id: String, force: Option<bool>) -> Result<UsageI
     let usage = match get_account_usage(&account, force.unwrap_or(false)).await {
         Ok(u) => u,
         Err(e) => {
-            crate::applog::log_change(&key, "ERROR", &format!("{}: usage request failed: {e}", account.name));
-            return Err(e.to_string());
+            // {:#} keeps the cause chain (TLS, DNS, timeout) instead of only "Failed to send GET request".
+            crate::applog::log_change(&key, "ERROR", &format!("{}: usage request failed: {e:#}", account.name));
+            return Err(format!("{e:#}"));
         }
     };
     match (&usage.error, usage.from_cache) {
@@ -102,7 +103,8 @@ pub async fn refresh_all_accounts_usage() -> Result<Vec<UsageInfo>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
     let usage_list = refresh_all_usage(&store.accounts).await;
     for usage in &usage_list {
-        if usage.error.is_none() {
+        // A replayed snapshot is not a fresh answer: storing it would renew its date.
+        if usage.error.is_none() && usage.from_cache != Some(true) {
             let _ = update_account_usage_cache(&usage.account_id, usage);
         }
     }

@@ -1,4 +1,4 @@
-# End-to-end update test on a real Windows machine (CI: windows-latest).
+﻿# End-to-end update test on a real Windows machine (CI: windows-latest).
 #
 # For each old release: install it the way users do, seed a store holding every
 # kind of data, then run the NEW installer with exactly the arguments the in-app
@@ -50,7 +50,7 @@ function Seed-Store {
   New-Item -ItemType Directory -Force $storeDir | Out-Null
   # Every kind of data any version has stored, plus one field from "the future".
   @'
-{"version":1,"accounts":[{"id":"e2e-1","name":"E2E Codex","email":"e2e@example.com","plan_type":"plus","provider":"codex","auth_mode":"api_key","auth_data":{"type":"api_key","key":"sk-e2e"},"created_at":"2025-01-01T00:00:00Z","future_account_field":42}],
+{"version":1,"accounts":[{"id":"e2e-1","name":"E2E Codex","email":"e2e@example.com","plan_type":"plus","provider":"codex","auth_mode":"api_key","auth_data":{"type":"api_key","key":"sk-e2e"},"created_at":"2025-01-01T00:00:00Z","future_account_field":42,"mail_login":{"address":"mail-e2e@example.com","password":"fixture-mail"},"login_password":"fixture-login","totp_secret":"GEZDGNBV"}],
  "active_account_id":null,"active_claude_account_id":null,"masked_account_ids":[],
  "claude_token_accounts":[{"id":"t1","name":"cli","token":"sk-ant-oat01-e2e","created_at":"2026-01-01T00:00:00Z","expires_at":"2027-01-01T00:00:00Z","plan_label":null}],
  "active_claude_token_id":null,
@@ -62,8 +62,13 @@ function Seed-Store {
 
 function Check-Store($label) {
   $s = Get-Content -Raw (Join-Path $storeDir "accounts.json") | ConvertFrom-Json
+  $account = $s.accounts | Where-Object id -eq "e2e-1"
   foreach ($check in @(
-      @{ ok = ($s.accounts | Where-Object id -eq "e2e-1"); what = "the Codex account" },
+      @{ ok = $account; what = "the Codex account" },
+      @{ ok = ($account.mail_login.address -eq "mail-e2e@example.com" -and $account.mail_login.password -eq "fixture-mail"); what = "the mailbox binding" },
+      @{ ok = ($account.login_password -eq "fixture-login"); what = "the saved sign-in password" },
+      @{ ok = ($account.totp_secret -eq "GEZDGNBV"); what = "the saved 2FA key" },
+      @{ ok = ($account.future_account_field -eq 42 -and $s.e2e_future_store_field.keep -eq "me"); what = "unknown store fields" },
       @{ ok = ($s.claude_token_accounts | Where-Object id -eq "t1"); what = "the Claude CLI token" },
       @{ ok = ($s.gateway_accounts | Where-Object id -eq "g1"); what = "the gateway key" })) {
     if (-not $check.ok) { Fail "${label}: update lost $($check.what) from accounts.json" }

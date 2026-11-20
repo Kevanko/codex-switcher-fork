@@ -93,7 +93,13 @@ pub async fn fetch_login_code_with(address: String, password: String, since: Opt
     fetch_code(address, password, since).await
 }
 
+/// OpenAI login codes stop working about 10 minutes after they are sent; an older
+/// mail would only offer a code the sign-in page rejects.
+const CODE_MAX_AGE_SECS: i64 = 10 * 60;
+
 async fn fetch_code(addr: String, pass: String, since: Option<i64>) -> Result<Option<MailCode>, String> {
+    let floor = chrono::Utc::now().timestamp() - CODE_MAX_AGE_SECS;
+    let since = Some(since.map_or(floor, |s| s.max(floor)));
     tokio::task::spawn_blocking(move || imap_latest_code(&addr, &pass, since))
         .await
         .map_err(|e| e.to_string())?
@@ -200,8 +206,9 @@ fn imap_latest_code_on(host: &str, addr: &str, pass: &str, since: Option<i64>) -
         list.sort_by_key(|f| std::cmp::Reverse(f.message));
         for f in list {
             let at = f.internal_date().map(|d| d.timestamp());
-            if let (Some(s), Some(a)) = (since, at) {
-                if a < s {
+            if let Some(s) = since {
+                // Unknown age counts as too old: better no code than an expired one.
+                if at.is_none_or(|a| a < s) {
                     continue;
                 }
             }
@@ -259,7 +266,8 @@ fn collect_text(part: &mailparse::ParsedMail, out: &mut String) {
 }
 
 fn strip_html(s: &str) -> String {
-    let lower = s.to_lowercase();
+    // ASCII-only lowering keeps byte offsets identical to `s` (to_lowercase can change lengths, e.g. 'İ').
+    let lower = s.to_ascii_lowercase();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     let bytes = s.as_bytes();

@@ -100,7 +100,7 @@ export async function pickClaudeCredentialsFile(): Promise<FileSource | null> {
   return pickBrowserFile(".json,application/json");
 }
 
-export async function exportFullBackupFile(): Promise<boolean> {
+export async function exportFullBackupFile(passphrase: string): Promise<boolean> {
   if (isTauriRuntime()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const selected = await save({
@@ -110,7 +110,7 @@ export async function exportFullBackupFile(): Promise<boolean> {
     });
 
     if (!selected) return false;
-    await invokeBackend("export_accounts_full_encrypted_file", { path: selected });
+    await invokeBackend("export_accounts_full_encrypted_file", { path: selected, passphrase });
     return true;
   }
 
@@ -123,7 +123,7 @@ export async function exportFullBackupFile(): Promise<boolean> {
   return true;
 }
 
-export async function importFullBackupFile(): Promise<ImportAccountsSummary | null> {
+export async function importFullBackupFile(passphrase: string): Promise<ImportAccountsSummary | null> {
   if (isTauriRuntime()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({
@@ -135,6 +135,7 @@ export async function importFullBackupFile(): Promise<ImportAccountsSummary | nu
     if (!selected || Array.isArray(selected)) return null;
     return invokeBackend<ImportAccountsSummary>("import_accounts_full_encrypted_file", {
       path: selected,
+      passphrase,
     });
   }
 

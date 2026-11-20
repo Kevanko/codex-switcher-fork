@@ -60,6 +60,15 @@ pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<Stor
                 .unwrap_or_else(|| account.clone());
             match &synced.auth_data {
                 AuthData::ChatGPT { access_token, .. } if chatgpt_token_expired(access_token) => {
+                    // A running Codex holds this refresh token in memory and rotates it
+                    // itself; rotating it here would leave Codex with a spent token
+                    // (refresh_token_invalidated). Only a stopped Codex leaves it to us.
+                    let codex_running = crate::commands::process::snapshot_restart_target()
+                        .map(|(pids, _)| !pids.is_empty())
+                        .unwrap_or(true);
+                    if codex_running {
+                        return Ok(synced);
+                    }
                     refresh_chatgpt_tokens(&synced).await
                 }
                 _ => Ok(synced),
@@ -76,8 +85,30 @@ fn chatgpt_token_expired(access_token: &str) -> bool {
     }
 }
 
+/// One rotation at a time: a refresh token is single-use, so two concurrent
+/// exchanges of the same one end in `refresh_token_invalidated` / `reused`.
+pub(crate) static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Force-refresh ChatGPT OAuth tokens for an account.
 pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAccount> {
+    let _guard = REFRESH_LOCK.lock().await;
+    // Re-read under the lock: whoever held it before may already have rotated
+    // this session, and the caller's copy then carries a spent refresh token.
+    let latest = load_accounts()?
+        .accounts
+        .into_iter()
+        .find(|a| a.id == account.id)
+        .unwrap_or_else(|| account.clone());
+    if let (
+        AuthData::ChatGPT { refresh_token: theirs, .. },
+        AuthData::ChatGPT { refresh_token: ours, access_token, .. },
+    ) = (&account.auth_data, &latest.auth_data)
+    {
+        if theirs != ours && !chatgpt_token_expired(access_token) {
+            return Ok(latest);
+        }
+    }
+    let account = &latest;
     let (current_id_token, current_refresh_token, current_account_id) = match &account.auth_data {
         AuthData::ApiKey { .. } => return Ok(account.clone()),
         AuthData::ClaudeOAuth { .. } => return Ok(account.clone()),
@@ -117,8 +148,14 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 
     // Keep ~/.codex/auth.json in sync when this is the active account.
     if is_active {
-        if let Err(err) = switch_to_account(&updated) {
-            println!("[Auth] Failed to sync active auth.json after token refresh: {err}");
+        // Re-check right before writing: a switch may have happened during the POST,
+        // and writing this account back would undo it.
+        let still_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
+        if still_active {
+            if let Err(err) = switch_to_account(&updated) {
+                // The new pair is already in accounts.json; the next switch writes it out.
+                crate::applog::log("ERROR", &format!("{}: auth.json not updated after token refresh: {err}", account.name));
+            }
         }
     }
 
@@ -279,7 +316,13 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
                 break;
             }
             Err(err) => {
+                // Retry only when the request surely never reached the server: a
+                // timeout after sending may have spent the one-shot token already.
+                let retryable = err.is_connect();
                 last_send_error = Some(err);
+                if !retryable {
+                    break;
+                }
                 if attempt < 3 {
                     sleep(Duration::from_millis(250 * u64::from(attempt))).await;
                 }

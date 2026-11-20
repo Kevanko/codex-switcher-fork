@@ -3,9 +3,16 @@
 pub mod api;
 pub mod applog;
 pub mod auth;
+mod backups;
 pub mod commands;
+pub mod totp;
 pub mod types;
 pub mod web;
+
+/// Tests that point the data folder at a temporary directory take this lock: the environment
+/// variable is process-wide.
+#[cfg(test)]
+pub(crate) static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use tauri::Manager;
 
@@ -53,6 +60,9 @@ pub fn run() {
             // OAuth account isn't silently shadowed ("connectors disabled … takes
             // precedence"). Best-effort, off the UI thread.
             std::thread::spawn(|| {
+                if let Err(error) = backups::snapshot_on_startup() {
+                    crate::applog::log("WARN", &format!("Account backup: {error:#}"));
+                }
                 if let Ok(store) = crate::auth::load_accounts() {
                     if store.active_gateway_id.is_none() && store.active_claude_token_id.is_none() {
                         let _ = crate::commands::gateway::clear_claude_auth_overrides();
@@ -74,6 +84,12 @@ pub fn run() {
             add_account_from_file,
             add_claude_account_from_file,
             switch_account,
+            backups::list_backups,
+            backups::create_backup,
+            backups::restore_backup,
+            backups::delete_backup,
+            totp::get_totp_code,
+            totp::set_totp_secret,
             delete_account,
             rename_account,
             export_accounts_slim_text,

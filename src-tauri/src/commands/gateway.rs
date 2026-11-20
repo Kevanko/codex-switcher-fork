@@ -18,7 +18,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::auth::storage::{get_config_dir, load_accounts, save_accounts};
+use crate::auth::{get_config_dir, load_accounts, with_store};
 use crate::types::{GatewayAccount, GatewayAccountInfo};
 
 /// Every env var that can override Claude Code's `~/.claude/.credentials.json`
@@ -132,30 +132,16 @@ fn del_env(name: &str) {
         .status();
 }
 
-/// Clear any active gateway: env vars + store pointer. Called when another Claude
-/// auth mechanism takes over (regular OAuth switch / Claude CLI token activate).
-/// No-op when no gateway is active, so it stays cheap on every switch.
-pub fn deactivate_active_gateway() -> Result<()> {
-    let mut store = load_accounts()?;
-    if store.active_gateway_id.take().is_none() {
-        return Ok(());
-    }
-    save_accounts(&store)?;
+/// Remove the gateway's environment after its active pointer has been cleared.
+pub(super) fn clear_gateway_env() -> Result<()> {
     apply_gateway_env(None)
 }
 
-/// Force Claude Code back to plain `~/.claude/.credentials.json`: drop the active
-/// gateway / CLI-token store pointers and their mirror files, and wipe EVERY
-/// auth-override env var. Unlike `deactivate_active_gateway`, this does NOT
-/// early-return when the store shows nothing active — a stray `ANTHROPIC_API_KEY`
-/// set outside the app (GLM/z.ai installer, shared-folder shell) must be cleared
-/// too. Called when a regular Claude OAuth account becomes active.
+/// Force Claude Code back to plain `~/.claude/.credentials.json`. Clear the
+/// gateway pointer, both mirror files and every auth-override env var, including
+/// vars set outside the app. Called when a regular Claude OAuth account becomes active.
 pub fn clear_claude_auth_overrides() -> Result<()> {
-    let mut store = load_accounts()?;
-    let changed = store.active_gateway_id.take().is_some();
-    if changed {
-        save_accounts(&store)?;
-    }
+    with_store(|store| Ok(((), store.active_gateway_id.take().is_some())))?;
     let _ = fs::remove_file(active_gateway_file()?);
     let _ = fs::remove_file(get_config_dir()?.join("claude-active-token"));
     #[cfg(windows)]
@@ -206,27 +192,27 @@ pub async fn add_gateway_account(
         return Err("Base URL must start with http:// or https://".to_string());
     }
 
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    if store
-        .gateway_accounts
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case(&name))
-    {
-        return Err(format!("A gateway account named '{name}' already exists"));
-    }
-
-    let account = GatewayAccount {
-        id: Uuid::new_v4().to_string(),
-        name,
-        base_url,
-        key,
-        model,
-        created_at: Utc::now(),
-    };
-    let info = to_info(store.active_gateway_id.as_deref(), &account);
-    store.gateway_accounts.push(account);
-    save_accounts(&store).map_err(|e| e.to_string())?;
-    Ok(info)
+    with_store(|store| {
+        if store
+            .gateway_accounts
+            .iter()
+            .any(|a| a.name.eq_ignore_ascii_case(&name))
+        {
+            anyhow::bail!("A gateway account named '{name}' already exists");
+        }
+        let account = GatewayAccount {
+            id: Uuid::new_v4().to_string(),
+            name,
+            base_url,
+            key,
+            model,
+            created_at: Utc::now(),
+        };
+        let info = to_info(store.active_gateway_id.as_deref(), &account);
+        store.gateway_accounts.push(account);
+        Ok((info, true))
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -235,36 +221,40 @@ pub async fn rename_gateway_account(id: String, name: String) -> Result<(), Stri
     if name.is_empty() {
         return Err("Account name is empty".to_string());
     }
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    if store
-        .gateway_accounts
-        .iter()
-        .any(|a| a.id != id && a.name.eq_ignore_ascii_case(&name))
-    {
-        return Err(format!("A gateway account named '{name}' already exists"));
-    }
-    let account = store
-        .gateway_accounts
-        .iter_mut()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("Gateway account not found: {id}"))?;
-    account.name = name;
-    save_accounts(&store).map_err(|e| e.to_string())
+    with_store(|store| {
+        if store
+            .gateway_accounts
+            .iter()
+            .any(|a| a.id != id && a.name.eq_ignore_ascii_case(&name))
+        {
+            anyhow::bail!("A gateway account named '{name}' already exists");
+        }
+        let account = store
+            .gateway_accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .with_context(|| format!("Gateway account not found: {id}"))?;
+        account.name = name;
+        Ok(((), true))
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn delete_gateway_account(id: String) -> Result<(), String> {
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    let before = store.gateway_accounts.len();
-    store.gateway_accounts.retain(|a| a.id != id);
-    if store.gateway_accounts.len() == before {
-        return Err(format!("Gateway account not found: {id}"));
-    }
-    let was_active = store.active_gateway_id.as_deref() == Some(id.as_str());
-    if was_active {
-        store.active_gateway_id = None;
-    }
-    save_accounts(&store).map_err(|e| e.to_string())?;
+    let was_active = with_store(|store| {
+        let before = store.gateway_accounts.len();
+        store.gateway_accounts.retain(|a| a.id != id);
+        if store.gateway_accounts.len() == before {
+            anyhow::bail!("Gateway account not found: {id}");
+        }
+        let was_active = store.active_gateway_id.as_deref() == Some(id.as_str());
+        if was_active {
+            store.active_gateway_id = None;
+        }
+        Ok((was_active, true))
+    })
+    .map_err(|e| e.to_string())?;
     if was_active {
         apply_gateway_env(None).map_err(|e| e.to_string())?;
     }
@@ -274,24 +264,25 @@ pub async fn delete_gateway_account(id: String) -> Result<(), String> {
 /// Make a gateway account active (injects its env for new `claude` sessions).
 #[tauri::command]
 pub async fn activate_gateway_account(id: String) -> Result<(), String> {
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    let account = store
-        .gateway_accounts
-        .iter()
-        .find(|a| a.id == id)
-        .cloned()
-        .ok_or_else(|| format!("Gateway account not found: {id}"))?;
-    store.active_gateway_id = Some(id);
-    save_accounts(&store).map_err(|e| e.to_string())?;
+    let account = with_store(|store| {
+        let account = store
+            .gateway_accounts
+            .iter()
+            .find(|a| a.id == id)
+            .cloned()
+            .with_context(|| format!("Gateway account not found: {id}"))?;
+        store.active_gateway_id = Some(id);
+        Ok((account, true))
+    })
+    .map_err(|e| e.to_string())?;
     apply_gateway_env(Some(&account)).map_err(|e| e.to_string())
 }
 
 /// Clear the active gateway (removes the injected env vars).
 #[tauri::command]
 pub async fn deactivate_gateway() -> Result<(), String> {
-    let mut store = load_accounts().map_err(|e| e.to_string())?;
-    store.active_gateway_id = None;
-    save_accounts(&store).map_err(|e| e.to_string())?;
+    with_store(|store| Ok(((), store.active_gateway_id.take().is_some())))
+        .map_err(|e| e.to_string())?;
     apply_gateway_env(None).map_err(|e| e.to_string())
 }
 

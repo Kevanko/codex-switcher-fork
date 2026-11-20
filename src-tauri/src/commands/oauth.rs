@@ -132,6 +132,17 @@ pub async fn complete_reauth_login(account_id: String) -> Result<AccountInfo, St
         }
     };
 
+    // Someone else signed in in that window: never put their session on this card
+    // (it keeps this account's mailbox, password and 2FA key).
+    let existing_email = crate::auth::get_account(&account_id)
+        .map_err(|e| e.to_string())?
+        .and_then(|a| a.email);
+    if let (Some(was), Some(now)) = (existing_email.as_deref(), email.as_deref()) {
+        if !was.eq_ignore_ascii_case(now) {
+            return Err(format!("Вошли в другой аккаунт ({now}), а не в {was} - карточка не изменена"));
+        }
+    }
+
     let updated = update_account_chatgpt_tokens(
         &account_id,
         id_token,
@@ -156,6 +167,26 @@ pub async fn complete_reauth_login(account_id: String) -> Result<AccountInfo, St
         active_id,
         active_claude_id,
     ))
+}
+
+/// Cancel flag of the flow started last, so a caller can later cancel exactly
+/// that flow and not a newer one somebody else started meanwhile.
+pub(crate) fn current_flow_flag() -> Option<Arc<AtomicBool>> {
+    CURRENT_CANCEL.lock().unwrap().clone()
+}
+
+/// Cancel only the flow behind `flag` (no-op once a newer flow replaced it).
+pub(crate) fn cancel_flow(flag: &Arc<AtomicBool>) {
+    flag.store(true, Ordering::Relaxed);
+    let mut current = CURRENT_CANCEL.lock().unwrap();
+    if current.as_ref().is_some_and(|c| Arc::ptr_eq(c, flag)) {
+        *current = None;
+    }
+    drop(current);
+    let mut pending = PENDING_OAUTH.lock().unwrap();
+    if pending.as_ref().is_some_and(|p| Arc::ptr_eq(&p.cancelled, flag)) {
+        *pending = None;
+    }
 }
 
 /// Cancel a pending OAuth login

@@ -53,6 +53,7 @@ import { useAccounts } from "./hooks/useAccounts";
 import { splitMailInput } from "./lib/mail";
 import { AddAccountModal, UpdateChecker, ClaudeTokenPanel, ZcodePanel } from "./components";
 import { GravityGrid } from "./components/GravityGrid";
+import { BackupsList } from "./components/BackupsList";
 import type { AccountWithUsage, MailCode, ClaudeTokenAccountInfo, UsageInfo, ZcodeAccountInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -317,8 +318,14 @@ function isRateLimitedUsage(account: AccountWithUsage): boolean {
   return Boolean(account.usage?.rate_limited) || Boolean(account.usageWarning);
 }
 
+/** Parked Codex account whose saved sign-in aged out: its figures are old and it needs a login. */
+function isStaleLogin(account: AccountWithUsage): boolean {
+  return account.provider === "codex" && !account.is_active && Boolean(account.usage?.from_cache) && !account.usage?.error;
+}
+
 function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" | "danger" | "muted" {
   if (account.usage?.error) return isRateLimitedUsage(account) ? "warning" : "danger";
+  if (isStaleLogin(account)) return "warning";
   const r = getRemainingPercent(account);
   if (r === null) return "muted";
   if (r <= 0) return "danger";
@@ -328,6 +335,8 @@ function getAccountHealthTone(account: AccountWithUsage): "success" | "warning" 
 
 function getRowStatus(account: AccountWithUsage): StatusFilter {
   if (account.usage?.error && !isRateLimitedUsage(account)) return "error";
+  // Not "ready": the old figures say nothing about whether it signs in.
+  if (isStaleLogin(account)) return "error";
   const r = getRemainingPercent(account);
   if (r !== null && r <= 0) return "limit";
   return "ready";
@@ -543,6 +552,11 @@ function AccountListRow({
             </span>
           )}
           <ResetBadge account={account} locale={locale} />
+          {isStaleLogin(account) && (
+            <span className="acc-closed acc-stale" title={locale_label("Сохранённый вход устарел: цифры старые, нужен вход заново", "Saved sign-in aged out: old figures, sign in again", locale)}>
+              <KeyRound size={11} />{locale_label("вход", "sign-in", locale)}
+            </span>
+          )}
           {account.mail_address && (
             <span className="acc-mail" title={locale_label("Почта подключена: код входа заберём сами", "Mailbox linked: the login code is fetched for you", locale)}>
               <Mail size={12} />
@@ -707,7 +721,7 @@ function AccountContextMenu({
           <Copy size={14} /> {t.account.copyEmail}
         </button>
         <button type="button" className="ctx-item" role="menuitem" onClick={run(onCopyJson)}>
-          <FileJson size={14} /> {locale_label("Копировать как JSON", "Copy as JSON", locale)}
+          <FileJson size={14} /> {locale_label("Передать аккаунт", "Share account", locale)}
         </button>
         <button type="button" className="ctx-item" role="menuitem" disabled={!account.email} onClick={run(onToggleMask)}>
           {masked ? <Eye size={14} /> : <EyeOff size={14} />}
@@ -751,10 +765,14 @@ function MailRow({ account, locale, onSave, onSetPassword, onFetch }: {
     setBusy(true); setMsg(null);
     try {
       const c = await onFetch({ accountId: account.id });
-      if (!c) setMsg({ text: ru ? "Писем с кодом пока нет" : "No code email yet" });
+      if (!c) setMsg({ text: ru ? "Свежих писем с кодом нет (старше 10 минут не показываем — такой код уже не примут)" : "No fresh code email (older than 10 minutes is hidden — it would be rejected)" });
       else {
         await navigator.clipboard.writeText(c.code).catch(() => {});
-        setMsg({ text: (ru ? "Код " : "Code ") + c.code + (ru ? " — скопирован" : " — copied") });
+        const ageMin = c.received_at ? Math.max(0, Math.round((Date.now() / 1000 - c.received_at) / 60)) : null;
+        setMsg({ text: (ru ? "Код " : "Code ") + c.code + (ru ? " — скопирован" : " — copied") + (ageMin !== null ? (ru ? ` (пришёл ${ageMin} мин назад)` : ` (arrived ${ageMin} min ago)`) : "") });
+        // The code stops working ~10 minutes after it was sent: hide it then.
+        const leftMs = c.received_at ? c.received_at * 1000 + 600_000 - Date.now() : 600_000;
+        setTimeout(() => setMsg((m) => (m?.text.includes(c.code) ? null : m)), Math.max(0, leftMs));
       }
     } catch (e) { setMsg({ text: String(e), bad: true }); }
     finally { setBusy(false); }
@@ -795,6 +813,119 @@ function MailRow({ account, locale, onSave, onSetPassword, onFetch }: {
   );
 }
 
+// Two-step setup key of an authenticator app. The key stays in the backend; this row shows the
+// current six-digit code with the seconds left, so a sign-in that asks for it can be finished.
+function TotpRow({ account, locale, onSave }: { account: AccountWithUsage; locale: string; onSave: (id: string, secret: string) => Promise<unknown> }) {
+  const ru = locale === "ru";
+  const hasKey = Boolean(account.has_totp_secret);
+  const [code, setCode] = useState<{ value: string; until: number } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [editing, setEditing] = useState(false);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!hasKey) {
+      setCode(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = () => {
+      invokeBackend<{ code: string; remaining: number }>("get_totp_code", { accountId: account.id })
+        .then((next) => {
+          if (cancelled) return;
+          setCode({ value: next.code, until: Date.now() + next.remaining * 1000 });
+          timer = window.setTimeout(load, next.remaining * 1000 + 200);
+        })
+        .catch((error) => {
+          if (!cancelled) setMsg({ text: String(error), bad: true });
+        });
+    };
+    load();
+    const ticker = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearInterval(ticker);
+    };
+  }, [account.id, hasKey]);
+
+  const save = async (value: string) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await onSave(account.id, value);
+      setEditing(false);
+      setKey("");
+      setMsg({ text: value ? (ru ? "Ключ сохранён" : "Key saved") : (ru ? "Ключ удалён" : "Key removed") });
+    } catch (error) {
+      setMsg({ text: error instanceof Error ? error.message : String(error), bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const left = code ? Math.max(0, Math.ceil((code.until - now) / 1000)) : 0;
+  return (
+    <>
+      <div className="meta-row">
+        <span className="meta-key">{ru ? "Код 2FA" : "2FA code"}</span>
+        <span className="meta-val mail-val">
+          {hasKey && code ? (
+            <>
+              <span style={{ fontFamily: "var(--mono)", letterSpacing: "0.12em" }}>
+                {code.value.slice(0, 3)} {code.value.slice(3)}
+              </span>
+              <span className="meta-key">{left} {ru ? "с" : "s"}</span>
+              <button
+                type="button"
+                className="icon-btn icon-btn--xs"
+                title={ru ? "Скопировать код" : "Copy code"}
+                onClick={() => void navigator.clipboard.writeText(code.value).catch(() => {})}
+              >
+                <Copy size={12} />
+              </button>
+            </>
+          ) : (
+            <span>{hasKey ? "…" : "—"}</span>
+          )}
+          <button
+            type="button"
+            className={hasKey ? "icon-btn icon-btn--xs" : "btn btn--ghost btn--sm"}
+            title={hasKey ? (ru ? "Изменить ключ" : "Edit key") : undefined}
+            onClick={() => setEditing((value) => !value)}
+          >
+            {hasKey ? <PencilLine size={12} /> : <><KeyRound size={12} /> {ru ? "Добавить ключ 2FA" : "Add 2FA key"}</>}
+          </button>
+        </span>
+      </div>
+      {editing && (
+        <div className="mail-edit">
+          <input
+            className="ui-input"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder={ru ? "секретный ключ из приложения-аутентификатора" : "setup key from the authenticator app"}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button type="button" className="btn btn--primary btn--sm" disabled={busy || !key.trim()} onClick={() => void save(key)}>
+            {ru ? "Сохранить" : "Save"}
+          </button>
+          {hasKey && (
+            <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={() => void save("")}>
+              {ru ? "Убрать" : "Remove"}
+            </button>
+          )}
+        </div>
+      )}
+      {msg && <div className={"banner banner--" + (msg.bad ? "bad" : "ok")} style={{ margin: "6px 0" }}><div className="banner-txt">{msg.text}</div></div>}
+    </>
+  );
+}
+
 // ── Account Detail Panel (right panel) ────────────────────────────────────────
 function AccountDetailPanel({
   account,
@@ -812,6 +943,7 @@ function AccountDetailPanel({
   onReauthorize,
   onSaveMail,
   onSetLoginPassword,
+  onSetTotp,
   onAutoLogin,
   onClearDeactivated,
   autoLoginBusy,
@@ -836,6 +968,7 @@ function AccountDetailPanel({
   onReauthorize?: () => void;
   onSaveMail: (id: string, address: string, password: string) => Promise<unknown>;
   onSetLoginPassword: (id: string, password: string) => Promise<unknown>;
+  onSetTotp: (id: string, secret: string) => Promise<unknown>;
   onAutoLogin: () => void;
   onClearDeactivated: () => void;
   autoLoginBusy: boolean;
@@ -931,7 +1064,7 @@ function AccountDetailPanel({
   return (
     <div className="detail">
       <div
-        className={"dcard" + (dead ? " is-dead" : "") + (fault === "deactivated" ? " is-deactivated" : "")}
+        className={"dcard" + (dead ? " is-dead" : "") + (fault === "deactivated" ? " is-deactivated" : "") + (isStaleLogin(account) ? " is-stale" : "")}
         data-tinted={colorHex(look?.color) ? "" : undefined}
         style={colorHex(look?.color) ? ({ "--tint": colorHex(look?.color) } as CSSProperties) : undefined}
       >
@@ -1064,13 +1197,36 @@ function AccountDetailPanel({
                 <RotateCcw size={13} /> {locale_label("Аккаунт снова работает", "Account works again", locale)}
               </button>
             )}
-            {needsReauth && fault !== "deactivated" && account.mail_address && (
+            {needsReauth && fault !== "deactivated" && (account.mail_address || account.has_login_password) && (
               <button type="button" className="btn btn--primary btn--sm" disabled={autoLoginBusy} onClick={onAutoLogin}>
                 {autoLoginBusy ? <Loader2 size={13} className="spin" /> : <Mail size={13} />} {locale_label("Войти автоматически", "Sign in automatically", locale)}
               </button>
             )}
             {needsReauth && onReauthorize && (
               <button type="button" className="btn btn--danger btn--sm" onClick={onReauthorize}>
+                <KeyRound size={13} /> {t.account.refreshLogin}
+              </button>
+            )}
+          </div>
+        )}
+        {/* Parked account whose saved sign-in aged out: no fault, but it needs a fresh login to show live numbers. */}
+        {isCodex && account.usage?.from_cache && !faultText && (
+          <div className="banner banner--warn">
+            <KeyRound size={17} />
+            <div className="banner-txt">
+              {locale_label(
+                "Сохранённый вход устарел — показаны прошлые цифры. Переключись на аккаунт или войди заново.",
+                "The saved sign-in has aged out — showing old numbers. Switch to the account or sign in again.",
+                locale
+              )}
+            </div>
+            {(account.mail_address || account.has_login_password) && (
+              <button type="button" className="btn btn--primary btn--sm" disabled={autoLoginBusy} onClick={onAutoLogin}>
+                {autoLoginBusy ? <Loader2 size={13} className="spin" /> : <Mail size={13} />} {locale_label("Войти автоматически", "Sign in automatically", locale)}
+              </button>
+            )}
+            {onReauthorize && (
+              <button type="button" className="btn btn--ghost btn--sm" onClick={onReauthorize}>
                 <KeyRound size={13} /> {t.account.refreshLogin}
               </button>
             )}
@@ -1169,6 +1325,9 @@ function AccountDetailPanel({
               )}
               {isCodex && (
                 <MailRow key={account.id} account={account} locale={locale} onSave={onSaveMail} onSetPassword={onSetLoginPassword} onFetch={onFetchCode} />
+              )}
+              {isCodex && (
+                <TotpRow key={`totp-${account.id}`} account={account} locale={locale} onSave={onSetTotp} />
               )}
               {isCodex && (account.usage?.reset_credits ?? 0) > 0 && (
                 <div className="meta-row">
@@ -1274,7 +1433,7 @@ function AccountDetailPanel({
               locale
             )}
           >
-            <Share2 size={14} /> {locale_label("Копировать JSON", "Copy JSON", locale)}
+            <Share2 size={14} /> {locale_label("Передать аккаунт", "Share account", locale)}
           </button>
           <button type="button" className="icon-btn icon-btn--md" title={t.account.delete || "Удалить"} onClick={onDelete}>
             <Trash2 size={16} />
@@ -1313,6 +1472,8 @@ function SettingsPanel({
   onImportFull,
   onExportFull,
   onCopyLog,
+  onBackupsRestored,
+  onToast,
 }: {
   themePreference: ThemePreference;
   languagePreference: LanguagePreference;
@@ -1337,15 +1498,18 @@ function SettingsPanel({
   onClose: () => void;
   onOpenImportSlim: () => void;
   onExportSlim: () => void;
-  onImportFull: () => void;
-  onExportFull: () => void;
+  onImportFull: (passphrase: string) => void;
+  onExportFull: (passphrase: string) => void;
   onCopyLog: () => void;
+  onBackupsRestored: () => void;
+  onToast: (message: string, isError?: boolean, ms?: number) => void;
 }) {
   const ru = t === translations.ru;
+  const [backupPassword, setBackupPassword] = useState("");
   return (
     <>
-      <div className="scrim" onClick={onClose} />
-      <div className="panel" role="dialog" aria-label={t.settings.title}>
+      <div className="scrim is-below-bar" onClick={onClose} />
+      <div className="panel is-below-bar" role="dialog" aria-label={t.settings.title}>
         <div className="panel-head">
           <div>
             <div className="panel-title">{t.settings.title}</div>
@@ -1467,13 +1631,34 @@ function SettingsPanel({
               <button type="button" className="btn btn--ghost btn--md" onClick={onOpenImportSlim}>
                 <Upload size={14} /> {t.settings.importSlim}
               </button>
-              <button type="button" className="btn btn--ghost btn--md" onClick={onExportFull} disabled={isExportingFull || !hasAccounts}>
+            </div>
+          </div>
+
+          <div className="setting">
+            <div className="setting-label">{ru ? "Резервные копии" : "Backups"}</div>
+            <div className="setting-hint">
+              {ru ? "Файл для переноса на другой ПК включает аккаунты, сохранённые пароли и ключи 2FA."
+                : "The file for moving to another PC includes accounts, saved passwords, and 2FA keys."}
+            </div>
+            {isTauriRuntime() && (
+              <label className="setting-hint">
+                {ru ? "Пароль файла (от 8 символов при сохранении)" : "File password (at least 8 characters to save)"}
+                <input className="ui-input" type="password" autoComplete="off"
+                  value={backupPassword} onChange={(event) => setBackupPassword(event.target.value)} />
+              </label>
+            )}
+            <div className="settings-actions-grid">
+              <button type="button" className="btn btn--ghost btn--md"
+                onClick={() => onExportFull(backupPassword)}
+                disabled={isExportingFull || isImportingFull || !hasAccounts || (isTauriRuntime() && [...backupPassword.trim()].length < 8)}>
                 <Database size={14} /> {isExportingFull ? t.settings.exportingBackup : t.settings.exportBackup}
               </button>
-              <button type="button" className="btn btn--ghost btn--md" onClick={onImportFull} disabled={isImportingFull}>
+              <button type="button" className="btn btn--ghost btn--md" onClick={() => onImportFull(backupPassword)} disabled={isImportingFull || isExportingFull}>
                 <FolderInput size={14} /> {isImportingFull ? t.settings.importingBackup : t.settings.importBackup}
               </button>
             </div>
+            <div className="setting-label backup-heading">{ru ? "Локальные снимки" : "Local snapshots"}</div>
+            <BackupsList ru={ru} onRestored={onBackupsRestored} onToast={onToast} />
           </div>
 
           {/* Diagnostics */}
@@ -1561,7 +1746,7 @@ function ConfigModal({
   );
 }
 
-// ── Share Modal (copy as JSON → optionally give the login away) ─────────────
+// ── Share account ─────────────────────────────────────────────────────────
 // Both copies share one refresh token; whoever refreshes first signs the other
 // out. "Give away" removes it here (and the CLI's session file) so only the
 // friend's copy stays alive, then opens a fresh sign-in for yourself.
@@ -1573,6 +1758,7 @@ function ShareAccountModal({
   removing,
   locale,
   onCopy,
+  copying,
   onGiveAway,
   onClose,
 }: {
@@ -1582,13 +1768,15 @@ function ShareAccountModal({
   copied: boolean;
   removing: boolean;
   locale: Locale;
-  onCopy: () => void;
+  onCopy: (includeBindings: boolean) => void;
+  copying: boolean;
   onGiveAway: () => void;
   onClose: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const ru = locale === "ru";
   const isClaude = account.provider === "claude";
+  const hasBindings = isTauriRuntime() && Boolean(account.mail_address || account.has_login_password || account.has_totp_secret);
   const file = isClaude ? "~/.claude/.credentials.json" : "~/.codex/auth.json";
   const cli = isClaude ? "Claude Code" : "Codex";
   return (
@@ -1606,13 +1794,29 @@ function ShareAccountModal({
           <button type="button" className="icon-btn icon-btn--md" onClick={onClose} title={ru ? "Закрыть" : "Close"}><X size={16} /></button>
         </div>
         <div className="config-body">
-          <textarea className="config-textarea" readOnly value={json} placeholder={ru ? "Готовлю…" : "Preparing…"} spellCheck={false} style={{ minHeight: 150 }} />
-          <div className="modal-footer" style={{ marginTop: 0 }}>
-            <button type="button" className="btn btn--primary btn--md" onClick={onCopy} disabled={!json}>
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-              {copied ? (ru ? "Скопировано" : "Copied") : (ru ? "Скопировать" : "Copy")}
+          <div className="settings-actions-grid">
+            <button type="button" className="btn btn--primary btn--md" onClick={() => onCopy(false)} disabled={copying}>
+              <Copy size={14} /> {ru ? "Копировать только вход" : "Copy sign-in only"}
             </button>
+            {hasBindings && (
+              <button type="button" className="btn btn--ghost btn--md" onClick={() => onCopy(true)} disabled={copying}>
+                <Copy size={14} /> {ru ? "Копировать с привязками" : "Copy with saved credentials"}
+              </button>
+            )}
           </div>
+          {hasBindings && (
+            <p className="setting-hint">
+              {ru ? "Второй вариант также передаёт сохранённые пароли почты и аккаунта и ключ 2FA."
+                : "The second option also shares the saved mailbox and account passwords and 2FA key."}
+            </p>
+          )}
+          <div role="status" className="setting-hint">
+            {copying ? (ru ? "Подготовка…" : "Preparing…") : copied ? (ru ? "Скопировано" : "Copied") : ""}
+          </div>
+          {error && json && (
+            <textarea className="config-textarea" readOnly value={json} spellCheck={false}
+              aria-label={ru ? "Данные для копирования вручную" : "Data for manual copying"} />
+          )}
 
           <div className="share-giveaway">
             <div className="share-giveaway-title">
@@ -1635,7 +1839,7 @@ function ShareAccountModal({
                 </button>
               </div>
             ) : (
-              <button type="button" className="btn btn--ghost btn--md share-giveaway-btn" onClick={() => setConfirming(true)} disabled={!json}>
+              <button type="button" className="btn btn--ghost btn--md share-giveaway-btn" onClick={() => setConfirming(true)} disabled={!copied}>
                 <Trash2 size={14} /> {ru ? "Удалить у себя и войти заново…" : "Remove mine and sign in again…"}
               </button>
             )}
@@ -1672,6 +1876,7 @@ function App() {
     exportAccountJson,
     setAccountMail,
     setAccountLoginPassword,
+    setAccountTotpSecret,
     autoRelogin,
     checkMailLogin,
     fetchLoginCode,
@@ -1747,7 +1952,7 @@ function App() {
   const [zcodeAccounts, setZcodeAccounts] = useState<ZcodeAccountInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [renameRequestId, setRenameRequestId] = useState<string | null>(null);
-  const [share, setShare] = useState<{ account: AccountWithUsage; json: string; error: string | null; copied: boolean; removing: boolean } | null>(null);
+  const [share, setShare] = useState<{ account: AccountWithUsage; json: string; error: string | null; copied: boolean; copying: boolean; removing: boolean } | null>(null);
   const [accountLooks, setAccountLooks] = useState<Record<string, AccountLook>>(() => loadAccountLooks());
 
   const deferredSearchQuery = useDeferredValue(accountSearchQuery);
@@ -1773,28 +1978,29 @@ function App() {
     }).catch(() => {});
   }, []);
 
-  // One click puts the account on the clipboard as JSON a friend can paste into
-  // "+ account" → "Paste JSON". It carries live tokens, so the toast says so.
   const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-  const copyShareJson = useCallback((json: string) => {
-    void navigator.clipboard.writeText(json).then(() => {
-      setShare((s) => (s ? { ...s, copied: true } : s));
-      setTimeout(() => setShare((s) => (s ? { ...s, copied: false } : s)), 1600);
-    }).catch(() => setShare((s) => (s ? { ...s, error: resolvedLanguage === "ru" ? "Буфер обмена недоступен — выдели текст и скопируй вручную." : "Clipboard unavailable — select the text and copy it manually." } : s)));
-  }, [resolvedLanguage]);
-
-  // Opens the share window and puts the JSON on the clipboard straight away.
-  const copyAccountJson = useCallback(async (account: AccountWithUsage) => {
-    setShare({ account, json: "", error: null, copied: false, removing: false });
+  const copyShareJson = async (includeBindings: boolean) => {
+    if (!share || share.copying) return;
+    const { account } = share;
+    const pending = { ...share, copying: true, copied: false, json: "", error: null };
+    setShare(pending);
+    let json = "";
     try {
-      const json = await exportAccountJson(account.id);
-      setShare((s) => (s && s.account.id === account.id ? { ...s, json } : s));
-      copyShareJson(json);
+      json = await exportAccountJson(account.id, includeBindings);
+      await navigator.clipboard.writeText(json);
+      setShare((current) => current === pending ? { ...pending, copying: false, copied: true } : current);
     } catch (err) {
-      setShare((s) => (s ? { ...s, error: errText(err) } : s));
+      setShare((current) => current === pending ? {
+        ...pending, json, copying: false,
+        error: json ? (resolvedLanguage === "ru" ? "Буфер обмена недоступен. Скопируй данные из поля." : "Clipboard unavailable. Copy the data from the field.") : errText(err),
+      } : current);
     }
-  }, [exportAccountJson, copyShareJson]);
+  };
+
+  const copyAccountJson = (account: AccountWithUsage) => {
+    setShare({ account, json: "", error: null, copied: false, copying: false, removing: false });
+  };
 
   const giveAccountAway = useCallback(async () => {
     if (!share) return;
@@ -1815,8 +2021,13 @@ function App() {
   const handleRefreshAll = async () => {
     setRefreshingAll(true);
     try {
-      await refreshUsage(accounts.filter((a) => a.provider === activeProvider));
-      showWarmupToast(t.toast.refreshed);
+      const s = await refreshUsage(accounts.filter((a) => a.provider === activeProvider));
+      const ru = resolvedLanguage === "ru";
+      if (s.total === 0) showWarmupToast(ru ? "Нечего обновлять: аккаунты этой вкладки обновляются при переключении или стоят в паузе после 429" : "Nothing to refresh: these accounts update on switch or are cooling down after a 429");
+      else if (s.ok === s.total) showWarmupToast(t.toast.refreshed);
+      else showWarmupToast(ru
+        ? `Обновлено ${s.ok} из ${s.total}` + (s.cached ? `, устарел вход: ${s.cached}` : "") + (s.rateLimited ? `, 429: ${s.rateLimited}` : "") + (s.failed ? `, ошибка: ${s.failed}` : "")
+        : `Refreshed ${s.ok} of ${s.total}` + (s.cached ? `, sign-in aged out: ${s.cached}` : "") + (s.rateLimited ? `, 429: ${s.rateLimited}` : "") + (s.failed ? `, failed: ${s.failed}` : ""), s.ok === 0, 5000);
     } catch { showWarmupToast(t.toast.refreshFailed, true); }
     finally { setRefreshingAll(false); }
   };
@@ -2064,6 +2275,8 @@ function App() {
     try {
       setSwitchingId(accountId);
       await switchAccount(accountId);
+      // Fresh figures for the new active account instead of the stale "switch to it" banner.
+      if (provider === "codex") void refreshSingleUsage(accountId).catch(() => {});
       if (provider === "claude") {
         showWarmupToast(
           locale_label(
@@ -2104,13 +2317,20 @@ function App() {
 
   // One wording for every refresh path. A replayed snapshot is not "refreshed":
   // the server refused the saved sign-in and these are old numbers.
-  const reportRefresh = (usage: UsageInfo | undefined) => {
+  const reportRefresh = (usage: UsageInfo | undefined, account?: AccountWithUsage) => {
     const ru = resolvedLanguage === "ru";
     if (usage?.rate_limited) showWarmupToast(t.toast.refreshRateLimited, true);
     else if (usage?.error) showWarmupToast(t.toast.refreshFailed, true);
+    // A linked mailbox can fix an aged-out sign-in right away instead of only telling about it.
+    // Respect the pause set after a failed attempt (phone/2FA pages need a person).
+    else if (usage?.from_cache && (account?.mail_address || account?.has_login_password) && !autoLoginId && (autoLoginTriedRef.current[account.id] ?? 0) < Date.now()) void runAutoLogin(account);
+    // Parked Claude accounts are never contacted on purpose: their replay is normal.
+    else if (usage?.from_cache && account?.provider === "claude") showWarmupToast(ru
+      ? "Неактивный аккаунт Claude не опрашивается — цифры обновятся после переключения на него"
+      : "Inactive Claude accounts are not polled — figures update after you switch to it");
     else if (usage?.from_cache) showWarmupToast(ru
-      ? "Сервер не принял сохранённый вход — показаны прошлые цифры. Переключись на аккаунт или войди заново."
-      : "The saved sign-in was refused — showing old numbers. Switch to the account or sign in again.", true);
+      ? "Сохранённый вход устарел — показаны прошлые цифры. Переключись на аккаунт или войди заново."
+      : "The saved sign-in has aged out — showing old numbers. Switch to the account or sign in again.", true);
     else showWarmupToast(t.toast.refreshed);
   };
 
@@ -2134,8 +2354,12 @@ function App() {
   // Anything the automation cannot do falls back to the manual "sign in again".
   const [autoLoginId, setAutoLoginId] = useState<string | null>(null);
   const autoLoginTriedRef = useRef<Record<string, number>>({});
+  // State updates land a render late; the ref closes the gap between two starts.
+  const autoLoginBusyRef = useRef(false);
   const runAutoLogin = useCallback(async (a: AccountWithUsage) => {
     const ru = resolvedLanguage === "ru";
+    if (autoLoginBusyRef.current) return;
+    autoLoginBusyRef.current = true;
     setAutoLoginId(a.id);
     showWarmupToast(ru ? `Автовход «${a.name}»…` : `Auto sign-in “${a.name}”…`);
     try {
@@ -2144,19 +2368,23 @@ function App() {
       showWarmupToast(ru ? `«${a.name}» снова в строю` : `“${a.name}” is back`);
     } catch (err) {
       const raw = formatWarmupError(err);
+      // Another sign-in (manual or automatic) holds the login: not this account's failure.
+      if (raw.startsWith("BUSY:")) { delete autoLoginTriedRef.current[a.id]; return; }
       const phone = raw.startsWith("PHONE:") || raw.startsWith("DEACTIVATED:");
       // Do not hammer an account that needs a human: 12 h after a phone request, 2 h otherwise.
       autoLoginTriedRef.current[a.id] = Date.now() + (phone ? 11.5 : 1.5) * 3_600_000;
       showWarmupToast((ru ? `Автовход «${a.name}» не удался, войди вручную: ` : `Auto sign-in “${a.name}” failed, sign in manually: `) + raw.replace(/^(PHONE|DEACTIVATED):\s*/, ""), true, 9000);
-    } finally { setAutoLoginId(null); }
+    } finally { autoLoginBusyRef.current = false; setAutoLoginId(null); }
   }, [autoRelogin, formatWarmupError, resolvedLanguage, showWarmupToast]);
 
   useEffect(() => {
     if (autoLoginId || !isTauriRuntime()) return;
     const now = Date.now();
     const next = accounts.find((a) =>
-      a.provider === "codex" && a.auth_mode === "chat_g_p_t" && a.mail_address &&
-      (getAccountFault(a) === "auth_revoked" || getAccountFault(a) === "unreachable") &&
+      a.provider === "codex" && a.auth_mode === "chat_g_p_t" && (a.mail_address || a.has_login_password) &&
+      // from_cache = parked and its saved sign-in aged out; it never heals on its own.
+      // Not for the active one: Codex refreshes it itself after a switch.
+      (getAccountFault(a) === "auth_revoked" || getAccountFault(a) === "unreachable" || (!getAccountFault(a) && a.usage?.from_cache && !a.is_active)) &&
       now - (autoLoginTriedRef.current[a.id] ?? 0) > 30 * 60 * 1000
     );
     if (next) {
@@ -2196,27 +2424,26 @@ function App() {
     } finally { setIsImportingSlim(false); }
   };
 
-  const handleExportFullFile = async () => {
+  const handleExportFullFile = async (passphrase: string) => {
     try {
       setIsExportingFull(true);
-      const exported = await exportFullBackupFile();
+      const exported = await exportFullBackupFile(passphrase);
       if (!exported) return;
       showWarmupToast(t.toast.fullExportOk);
-    } catch { showWarmupToast(t.toast.fullExportFailed, true); }
+    } catch (err) { showWarmupToast(errText(err), true, 6000); }
     finally { setIsExportingFull(false); }
   };
 
-  const handleImportFullFile = async () => {
+  const handleImportFullFile = async (passphrase: string) => {
     try {
       setIsImportingFull(true);
-      const summary = await importFullBackupFile();
+      const summary = await importFullBackupFile(passphrase);
       if (!summary) return;
-      const list = await loadAccounts();
-      await refreshUsage(list);
+      await loadAccounts();
       const ids = await loadMaskedAccountIds();
       setMaskedAccounts(new Set(ids));
-      showWarmupToast(`${t.toast.imported} ${summary.imported_count}, ${t.toast.skipped} ${summary.skipped_count}`);
-    } catch { showWarmupToast(t.toast.fullImportFailed, true); }
+      showWarmupToast(resolvedLanguage === "ru" ? "Резервная копия восстановлена" : "Backup restored");
+    } catch (err) { showWarmupToast(errText(err), true, 6000); }
     finally { setIsImportingFull(false); }
   };
 
@@ -2575,7 +2802,7 @@ function App() {
                   // get_usage already syncs the active account's token from the
                   // live auth.json safely.
                   const usage = await refreshSingleUsage(effectiveSelectedAccount.id, { force: true });
-                  reportRefresh(usage);
+                  reportRefresh(usage, effectiveSelectedAccount);
                 } catch {
                   // Backend errors can be a whole HTML page — show a short, fixed message.
                   showWarmupToast(t.toast.refreshFailed, true);
@@ -2586,6 +2813,7 @@ function App() {
               onReauthorize={effectiveSelectedAccount.auth_mode === "chat_g_p_t" ? () => setReauthAccount(effectiveSelectedAccount) : undefined}
               onSaveMail={setAccountMail}
               onSetLoginPassword={setAccountLoginPassword}
+              onSetTotp={setAccountTotpSecret}
               onAutoLogin={() => void runAutoLogin(effectiveSelectedAccount)}
               onClearDeactivated={() => {
                 const id = effectiveSelectedAccount.id;
@@ -2627,7 +2855,7 @@ function App() {
             t={t}
             onClose={() => setContextMenu(null)}
             onSwitch={() => void handleSwitch(target.id, target.provider)}
-            onRefresh={() => { void refreshSingleUsage(target.id, { force: true }).then(reportRefresh).catch(() => showWarmupToast(t.toast.refreshFailed, true)); }}
+            onRefresh={() => { void refreshSingleUsage(target.id, { force: true }).then((usage) => reportRefresh(usage, target)).catch(() => showWarmupToast(t.toast.refreshFailed, true)); }}
             onRename={() => setRenameRequestId(target.id)}
             onCopyEmail={() => copyAccountEmail(target)}
             onCopyJson={() => void copyAccountJson(target)}
@@ -2647,7 +2875,8 @@ function App() {
           copied={share.copied}
           removing={share.removing}
           locale={resolvedLanguage}
-          onCopy={() => copyShareJson(share.json)}
+          copying={share.copying}
+          onCopy={(includeBindings) => void copyShareJson(includeBindings)}
           onGiveAway={() => void giveAccountAway()}
           onClose={() => setShare(null)}
         />
@@ -2677,8 +2906,8 @@ function App() {
           onClose={() => setIsSettingsOpen(false)}
           onOpenImportSlim={() => { setIsSettingsOpen(false); openImportSlimTextModal(); }}
           onExportSlim={() => { setIsSettingsOpen(false); void handleExportSlimText(); }}
-          onImportFull={() => { setIsSettingsOpen(false); void handleImportFullFile(); }}
-          onExportFull={() => { setIsSettingsOpen(false); void handleExportFullFile(); }}
+          onImportFull={(passphrase) => void handleImportFullFile(passphrase)}
+          onExportFull={(passphrase) => void handleExportFullFile(passphrase)}
           onCopyLog={() => {
             const ru = resolvedLanguage === "ru";
             invokeBackend<string>("read_app_log", { lines: 300 })
@@ -2686,6 +2915,8 @@ function App() {
               .then(() => showWarmupToast(ru ? "Журнал скопирован" : "Log copied"))
               .catch((err) => showWarmupToast(formatWarmupError(err), true));
           }}
+          onBackupsRestored={() => { void loadAccounts(); }}
+          onToast={(message, isError, ms) => showWarmupToast(message, isError, ms)}
         />
       )}
 

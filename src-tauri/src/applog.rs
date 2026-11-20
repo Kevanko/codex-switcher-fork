@@ -14,14 +14,23 @@ fn path() -> Option<std::path::PathBuf> {
     crate::auth::get_config_dir().ok().map(|d| d.join("app.log"))
 }
 
+/// Serializes rotation and appends: without it two threads interleave halves of their lines.
+static WRITE: Mutex<()> = Mutex::new(());
+
 pub fn log(level: &str, msg: &str) {
     let Some(p) = path() else { return };
+    let line = format!(
+        "{} {:<5} {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        level,
+        msg.replace('\n', " | ")
+    );
+    let _guard = WRITE.lock().unwrap_or_else(|p| p.into_inner());
     if std::fs::metadata(&p).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
         let _ = std::fs::rename(&p, p.with_extension("log.1"));
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let one_line = msg.replace('\n', " | ");
-        let _ = writeln!(f, "{} {:<5} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), level, one_line);
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

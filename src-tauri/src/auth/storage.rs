@@ -13,6 +13,22 @@ use crate::types::{
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
+    // Accounts live in one folder the person picks. Order: CODEX_SWITCHER_HOME,
+    // then the folder written to %APPDATA%\com.lampese.codex-switcher\data-dir.txt,
+    // then the default ~/.codex-switcher.
+    if let Ok(dir) = std::env::var("CODEX_SWITCHER_HOME") {
+        if !dir.trim().is_empty() {
+            return Ok(PathBuf::from(dir.trim()));
+        }
+    }
+    if let Some(config) = dirs::config_dir() {
+        let pointer = config.join("com.lampese.codex-switcher").join("data-dir.txt");
+        if let Ok(text) = fs::read_to_string(pointer) {
+            if !text.trim().is_empty() {
+                return Ok(PathBuf::from(text.trim()));
+            }
+        }
+    }
     let home = dirs::home_dir().context("Could not find home directory")?;
     Ok(home.join(".codex-switcher"))
 }
@@ -160,7 +176,14 @@ pub(crate) fn sweep_stale_temp_files(final_path: &std::path::Path, prefix: &str)
         let Some(name) = name.to_str() else {
             continue;
         };
-        if name.starts_with(prefix) {
+        // Only orphans: a fresh temp file may belong to a writer that is still running.
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_none_or(|age| age > std::time::Duration::from_secs(120));
+        if name.starts_with(prefix) && old {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -193,8 +216,13 @@ pub(crate) fn with_store<T>(
     // guard, so a panic in another holder doesn't corrupt our in-memory view.
     let _guard = store_lock().lock().unwrap_or_else(|poison| poison.into_inner());
     let mut store = load_accounts()?;
+    let bindings = crate::backups::bindings(&store);
     let (value, changed) = f(&mut store)?;
     if changed {
+        if bindings != crate::backups::bindings(&store) {
+            crate::backups::checkpoint(&store, "automatic")
+                .context("Не удалось создать резервную копию привязок")?;
+        }
         save_accounts(&store)?;
     }
     Ok(value)
@@ -513,7 +541,8 @@ pub fn update_account_usage_cache(account_id: &str, usage: &UsageInfo) -> Result
         }
         account.cached_usage_updated_at = Some(Utc::now());
 
-        Ok((account.clone(), should_update))
+        // Always persist: the date changed even when the figures did not.
+        Ok((account.clone(), true))
     })
 }
 
@@ -565,11 +594,28 @@ pub fn sync_codex_tokens_from_file(account_id: &str) -> Result<()> {
             {
                 // Verify this is the same user before overwriting (match by refresh_token or account_id).
                 let same_by_refresh = *refresh_token == tokens.refresh_token;
+                // account_id is the workspace: two members of one Team share it,
+                // so the person (e-mail in the id_token) must match as well.
+                let stored_email = crate::types::parse_chatgpt_id_token_claims(id_token).email;
+                let file_email = crate::types::parse_chatgpt_id_token_claims(&tokens.id_token).email;
+                let same_person = match (&stored_email, &file_email) {
+                    (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                    _ => true,
+                };
                 let same_by_id = stored_account_id.is_some()
                     && tokens.account_id.is_some()
-                    && *stored_account_id == tokens.account_id;
+                    && *stored_account_id == tokens.account_id
+                    && same_person;
+                // Never step back: a file read before our own rotation must not
+                // overwrite the newer pair we already stored.
+                let stored_exp = crate::types::parse_jwt_expiry(access_token);
+                let file_exp = crate::types::parse_jwt_expiry(&tokens.access_token);
+                let not_older = match (stored_exp, file_exp) {
+                    (Some(s), Some(f)) => f >= s,
+                    _ => true,
+                };
 
-                if same_by_refresh || same_by_id {
+                if (same_by_refresh || same_by_id) && not_older {
                     changed = *id_token != tokens.id_token
                         || *access_token != tokens.access_token
                         || *refresh_token != tokens.refresh_token;
@@ -621,13 +667,16 @@ mod tests {
         for p in [&keep, &stale_a, &stale_b, &unrelated] {
             fs::write(p, "x").unwrap();
         }
+        // stale_a is an old orphan; stale_b was just written by a live writer.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        fs::File::options().write(true).open(&stale_a).unwrap().set_modified(past).unwrap();
 
         sweep_stale_temp_files(&keep, ".accounts.json.tmp-");
 
         assert!(keep.exists(), "final file must survive");
         assert!(unrelated.exists(), "non-matching files must survive");
-        assert!(!stale_a.exists(), "stale temp must be removed");
-        assert!(!stale_b.exists(), "stale temp must be removed");
+        assert!(!stale_a.exists(), "old orphan temp must be removed");
+        assert!(stale_b.exists(), "a fresh temp of a running writer must survive");
 
         let _ = fs::remove_dir_all(&dir);
     }

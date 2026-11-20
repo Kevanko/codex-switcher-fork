@@ -313,6 +313,12 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
             }
         }
 
+        // The first 401 may already say the account is closed.
+        let body = response.text().await.unwrap_or_default();
+        if is_deactivated_body(&body) {
+            mark_deactivated(&fresh_account.id);
+            return Ok(deactivated_info(&fresh_account.id));
+        }
         // Not a revoked account: the CLI simply has not refreshed the token yet.
         let mut info = UsageInfo::error(
             fresh_account.id.clone(),
@@ -354,8 +360,13 @@ fn parked_chatgpt_usage(account: &StoredAccount) -> UsageInfo {
             snapshot.from_cache = Some(true);
             snapshot
         }
-        // Never fetched yet (or last fetch errored): neutral empty bar, not an error.
-        _ => UsageInfo::empty(account.id.clone()),
+        // Never fetched yet (or last fetch errored): neutral empty bar, not an error,
+        // but still flagged so the UI offers a fresh sign-in instead of "refreshed".
+        _ => {
+            let mut info = UsageInfo::empty(account.id.clone());
+            info.from_cache = Some(true);
+            info
+        }
     }
 }
 
@@ -438,7 +449,7 @@ async fn parse_usage_response(
         .context("Failed to read response body")?;
     println!(
         "[Usage] Response body: {}",
-        &body_text[..body_text.len().min(200)]
+        truncate_text(&body_text, 200)
     );
 
     let payload: RateLimitStatusPayload =
@@ -608,6 +619,8 @@ fn parked_claude_usage(account: &StoredAccount) -> UsageInfo {
             let mut snapshot = snapshot.clone();
             snapshot.account_id = account.id.clone();
             snapshot.rate_limited = None;
+            // A replay: the card shows its date instead of passing it off as live.
+            snapshot.from_cache = Some(true);
             snapshot
         }
         // Never fetched yet (or last fetch errored): neutral empty bar, not an error.
